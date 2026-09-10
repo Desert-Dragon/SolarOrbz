@@ -1,0 +1,272 @@
+// SolarOrbz - Editor preview actor implementation
+
+#include "SolarOrbzIcoSphereActor.h"
+#include "SolarOrbzTerrainLayerStack.h"
+#include "SolarOrbzBiomeStack.h"
+#include "SolarOrbzBiome.h"
+#include "ProceduralMeshComponent.h"
+#include "Materials/MaterialInterface.h"
+#include "Engine/StaticMesh.h"
+#include "MeshDescription.h"
+#include "StaticMeshAttributes.h"
+#include "UObject/Package.h"
+#include "UObject/SavePackage.h"
+#include "AssetRegistry/AssetRegistryModule.h"
+#include "Misc/PackageName.h"
+
+DEFINE_LOG_CATEGORY_STATIC(LogSolarOrbz, Log, All);
+
+ASolarOrbzIcoSphereActor::ASolarOrbzIcoSphereActor()
+{
+	PrimaryActorTick.bCanEverTick = false;
+
+	ProcMesh = CreateDefaultSubobject<UProceduralMeshComponent>(TEXT("ProcMesh"));
+	SetRootComponent(ProcMesh);
+	ProcMesh->bUseAsyncCooking = true;
+}
+
+void ASolarOrbzIcoSphereActor::OnConstruction(const FTransform& Transform)
+{
+	Super::OnConstruction(Transform);
+	RegenerateMesh();
+}
+
+#if WITH_EDITOR
+void ASolarOrbzIcoSphereActor::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
+{
+	Super::PostEditChangeProperty(PropertyChangedEvent);
+
+	static const TSet<FName> RegenTriggers =
+	{
+		GET_MEMBER_NAME_CHECKED(ASolarOrbzIcoSphereActor, Radius),
+		GET_MEMBER_NAME_CHECKED(ASolarOrbzIcoSphereActor, VerticesPerMeter),
+		GET_MEMBER_NAME_CHECKED(ASolarOrbzIcoSphereActor, MaxSubdivisions),
+		GET_MEMBER_NAME_CHECKED(ASolarOrbzIcoSphereActor, bEnablePreviewCollision),
+		GET_MEMBER_NAME_CHECKED(ASolarOrbzIcoSphereActor, TerrainStack),
+		GET_MEMBER_NAME_CHECKED(ASolarOrbzIcoSphereActor, BiomeStack),
+		GET_MEMBER_NAME_CHECKED(ASolarOrbzIcoSphereActor, bShowBiomeDebugColors),
+		GET_MEMBER_NAME_CHECKED(ASolarOrbzIcoSphereActor, DebugBiomeMaterial),
+		GET_MEMBER_NAME_CHECKED(ASolarOrbzIcoSphereActor, DefaultMaterial),
+	};
+
+	if (RegenTriggers.Contains(PropertyChangedEvent.GetPropertyName()))
+	{
+		RegenerateMesh();
+	}
+}
+#endif
+
+void ASolarOrbzIcoSphereActor::RegenerateMesh()
+{
+	if (!ProcMesh)
+	{
+		return;
+	}
+
+	LastSubdivisionLevelUsed = FSolarOrbzIcoSphereGenerator::Generate(Radius, VerticesPerMeter, CachedMeshData, MaxSubdivisions);
+
+	// Keep the pristine outward sphere direction for every vertex - both passes displace
+	// along this, not along the (changing) recomputed normal, so height stays purely radial.
+	TArray<FVector> OriginalUnitDirections = CachedMeshData.Normals;
+
+	// --- Pass A: base terrain (procedural noise and/or authored heightmap). ---
+	if (TerrainStack)
+	{
+		for (int32 i = 0; i < CachedMeshData.Vertices.Num(); ++i)
+		{
+			const FVector& UnitDirection = OriginalUnitDirections[i];
+			const float Height = TerrainStack->EvaluateHeight(UnitDirection, CachedMeshData.UVs[i]);
+			CachedMeshData.Vertices[i] += UnitDirection * Height;
+		}
+
+		// Recompute now so Pass B has real slope data to mask against, not the pristine sphere's.
+		FSolarOrbzIcoSphereGenerator::RecomputeSmoothNormals(CachedMeshData);
+	}
+
+	// --- Pass B: biome-specific detail, masked by climate/composite conditions and blended on top. ---
+	TArray<FLinearColor> BiomeDebugColors;
+	if (BiomeStack)
+	{
+		if (bShowBiomeDebugColors)
+		{
+			BiomeDebugColors.SetNum(CachedMeshData.Vertices.Num());
+		}
+
+		for (int32 i = 0; i < CachedMeshData.Vertices.Num(); ++i)
+		{
+			const FVector& UnitDirection = OriginalUnitDirections[i];
+
+			FSolarOrbzBiomeSampleContext Context;
+			Context.UnitDirection = UnitDirection;
+			Context.UV = CachedMeshData.UVs[i];
+			Context.Elevation = FVector::DotProduct(CachedMeshData.Vertices[i], UnitDirection) - Radius;
+			Context.Slope = FMath::Clamp(1.0f - FVector::DotProduct(CachedMeshData.Normals[i], UnitDirection), 0.0f, 1.0f);
+
+			const float BiomeHeight = BiomeStack->EvaluateBiomeTerrainContribution(Context);
+			CachedMeshData.Vertices[i] += UnitDirection * BiomeHeight;
+
+			if (bShowBiomeDebugColors)
+			{
+				if (const USolarOrbzBiome* Dominant = BiomeStack->GetDominantBiome(Context))
+				{
+					BiomeDebugColors[i] = Dominant->PreviewColor;
+				}
+				else
+				{
+					BiomeDebugColors[i] = FLinearColor::Black; // no biome layer applies here
+				}
+			}
+		}
+
+		FSolarOrbzIcoSphereGenerator::RecomputeSmoothNormals(CachedMeshData);
+	}
+
+	ProcMesh->SetMaterial(0, bShowBiomeDebugColors ? DebugBiomeMaterial : DefaultMaterial);
+
+	TArray<FProcMeshTangent> ProcTangents;
+	ProcTangents.Reserve(CachedMeshData.Tangents.Num());
+	for (const FVector& T : CachedMeshData.Tangents)
+	{
+		ProcTangents.Add(FProcMeshTangent(T, false));
+	}
+
+	const TArray<FVector2D> EmptyUVChannel;
+
+	ProcMesh->ClearAllMeshSections();
+	ProcMesh->CreateMeshSection_LinearColor(
+		0,
+		CachedMeshData.Vertices,
+		CachedMeshData.Triangles,
+		CachedMeshData.Normals,
+		CachedMeshData.UVs,
+		EmptyUVChannel, EmptyUVChannel, EmptyUVChannel,
+		BiomeDebugColors,
+		ProcTangents,
+		bEnablePreviewCollision);
+
+	UE_LOG(LogSolarOrbz, Log, TEXT("SolarOrbz: generated icosphere at subdivision level %d (%d verts, %d tris)"),
+		LastSubdivisionLevelUsed, CachedMeshData.Vertices.Num(), CachedMeshData.Triangles.Num() / 3);
+}
+
+void ASolarOrbzIcoSphereActor::BakeToStaticMeshAsset()
+{
+#if WITH_EDITOR
+	if (CachedMeshData.Vertices.Num() == 0)
+	{
+		RegenerateMesh();
+	}
+
+	if (CachedMeshData.Triangles.Num() == 0)
+	{
+		UE_LOG(LogSolarOrbz, Warning, TEXT("SolarOrbz: nothing to bake, mesh data is empty."));
+		return;
+	}
+
+	const FString CleanAssetName = BakeAssetName.IsEmpty() ? TEXT("SM_IcoSphere") : BakeAssetName;
+	const FString ObjectPath = FPaths::Combine(BakePackagePath, CleanAssetName);
+	const FString PackageName = FPackageName::ObjectPathToPackageName(ObjectPath);
+
+	UPackage* Package = CreatePackage(*PackageName);
+	if (!Package)
+	{
+		UE_LOG(LogSolarOrbz, Error, TEXT("SolarOrbz: failed to create package '%s'"), *PackageName);
+		return;
+	}
+	Package->FullyLoad();
+
+	UStaticMesh* NewStaticMesh = NewObject<UStaticMesh>(Package, FName(*CleanAssetName), RF_Public | RF_Standalone);
+	if (!NewStaticMesh)
+	{
+		UE_LOG(LogSolarOrbz, Error, TEXT("SolarOrbz: failed to create UStaticMesh object."));
+		return;
+	}
+
+	// --- Build a MeshDescription from our generator output. ---
+	// Vertices sharing an exact position get a single FVertexID (so normal/tangent-generation and
+	// any future LOD reduction see correct topology); each array entry still gets its own
+	// FVertexInstanceID, which is exactly what lets the UV-seam and pole duplicates carry different UVs.
+	FMeshDescription MeshDescription;
+	FStaticMeshAttributes Attributes(MeshDescription);
+	Attributes.Register();
+
+	TVertexAttributesRef<FVector3f> VertexPositions = Attributes.GetVertexPositions();
+	TVertexInstanceAttributesRef<FVector3f> InstanceNormals = Attributes.GetVertexInstanceNormals();
+	TVertexInstanceAttributesRef<FVector3f> InstanceTangents = Attributes.GetVertexInstanceTangents();
+	TVertexInstanceAttributesRef<float> InstanceBinormalSigns = Attributes.GetVertexInstanceBinormalSigns();
+	TVertexInstanceAttributesRef<FVector4f> InstanceColors = Attributes.GetVertexInstanceColors();
+	TVertexInstanceAttributesRef<FVector2f> InstanceUVs = Attributes.GetVertexInstanceUVs();
+	InstanceUVs.SetNumChannels(1);
+
+	const FPolygonGroupID PolygonGroupID = MeshDescription.CreatePolygonGroup();
+	Attributes.GetPolygonGroupMaterialSlotNames()[PolygonGroupID] = FName(TEXT("Default"));
+
+	TMap<FVector, FVertexID> PositionToVertexID;
+	PositionToVertexID.Reserve(CachedMeshData.Vertices.Num());
+
+	TArray<FVertexInstanceID> InstanceIDs;
+	InstanceIDs.SetNum(CachedMeshData.Vertices.Num());
+
+	for (int32 i = 0; i < CachedMeshData.Vertices.Num(); ++i)
+	{
+		const FVector& Pos = CachedMeshData.Vertices[i];
+
+		FVertexID VertexID;
+		if (const FVertexID* Existing = PositionToVertexID.Find(Pos))
+		{
+			VertexID = *Existing;
+		}
+		else
+		{
+			VertexID = MeshDescription.CreateVertex();
+			VertexPositions[VertexID] = FVector3f(Pos);
+			PositionToVertexID.Add(Pos, VertexID);
+		}
+
+		const FVertexInstanceID InstanceID = MeshDescription.CreateVertexInstance(VertexID);
+		InstanceNormals[InstanceID] = FVector3f(CachedMeshData.Normals[i]);
+		InstanceTangents[InstanceID] = FVector3f(CachedMeshData.Tangents[i]);
+		InstanceBinormalSigns[InstanceID] = 1.0f;
+		InstanceColors[InstanceID] = FVector4f(1.0f, 1.0f, 1.0f, 1.0f);
+		InstanceUVs.Set(InstanceID, 0, FVector2f(CachedMeshData.UVs[i]));
+
+		InstanceIDs[i] = InstanceID;
+	}
+
+	for (int32 TriStart = 0; TriStart < CachedMeshData.Triangles.Num(); TriStart += 3)
+	{
+		const FVertexInstanceID Corners[3] =
+		{
+			InstanceIDs[CachedMeshData.Triangles[TriStart]],
+			InstanceIDs[CachedMeshData.Triangles[TriStart + 1]],
+			InstanceIDs[CachedMeshData.Triangles[TriStart + 2]],
+		};
+		MeshDescription.CreateTriangle(PolygonGroupID, Corners);
+	}
+
+	UStaticMesh::FBuildMeshDescriptionsParams BuildParams;
+	BuildParams.bBuildSimpleCollision = true;
+	BuildParams.bFastBuild = false;
+	BuildParams.bCommitMeshDescription = true;
+
+	FMeshNaniteSettings NewNaniteSettings = NewStaticMesh->GetNaniteSettings();
+	NewNaniteSettings.bEnabled = false; // flip on later once you're baking at final terrain density.
+	NewStaticMesh->SetNaniteSettings(NewNaniteSettings);
+
+	NewStaticMesh->BuildFromMeshDescriptions({ &MeshDescription }, BuildParams);
+
+	NewStaticMesh->GetStaticMaterials().Empty();
+	NewStaticMesh->GetStaticMaterials().Add(FStaticMaterial());
+
+	NewStaticMesh->MarkPackageDirty();
+	FAssetRegistryModule::AssetCreated(NewStaticMesh);
+	Package->SetDirtyFlag(true);
+
+	const FString PackageFileName = FPackageName::LongPackageNameToFilename(PackageName, FPackageName::GetAssetPackageExtension());
+	FSavePackageArgs SaveArgs;
+	SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
+	SaveArgs.SaveFlags = SAVE_NoError;
+	const bool bSaved = UPackage::SavePackage(Package, NewStaticMesh, *PackageFileName, SaveArgs);
+
+	UE_LOG(LogSolarOrbz, Log, TEXT("SolarOrbz: baked '%s' -> %s"), *CleanAssetName, bSaved ? TEXT("saved to disk") : TEXT("created in memory but NOT saved"));
+#endif
+}
