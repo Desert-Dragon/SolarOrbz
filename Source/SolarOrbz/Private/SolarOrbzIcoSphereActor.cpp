@@ -38,7 +38,7 @@ void ASolarOrbzIcoSphereActor::PostEditChangeProperty(FPropertyChangedEvent& Pro
 
 	static const TSet<FName> RegenTriggers =
 	{
-		GET_MEMBER_NAME_CHECKED(ASolarOrbzIcoSphereActor, Radius),
+		GET_MEMBER_NAME_CHECKED(ASolarOrbzIcoSphereActor, RadiusMeters),
 		GET_MEMBER_NAME_CHECKED(ASolarOrbzIcoSphereActor, VerticesPerMeter),
 		GET_MEMBER_NAME_CHECKED(ASolarOrbzIcoSphereActor, MaxSubdivisions),
 		GET_MEMBER_NAME_CHECKED(ASolarOrbzIcoSphereActor, bEnablePreviewCollision),
@@ -63,7 +63,12 @@ void ASolarOrbzIcoSphereActor::RegenerateMesh()
 		return;
 	}
 
-	LastSubdivisionLevelUsed = FSolarOrbzIcoSphereGenerator::Generate(Radius, VerticesPerMeter, CachedMeshData, MaxSubdivisions);
+	// The generator's own API works in UE units (cm) throughout, matching every other UE
+	// system (collision, physics, etc). RadiusMeters is purely a user-facing convenience -
+	// convert once, right here, and every internal calculation below stays in cm.
+	const float RadiusCm = RadiusMeters * 100.0f;
+
+	LastSubdivisionLevelUsed = FSolarOrbzIcoSphereGenerator::Generate(RadiusCm, VerticesPerMeter, CachedMeshData, MaxSubdivisions);
 
 	// Keep the pristine outward sphere direction for every vertex - both passes displace
 	// along this, not along the (changing) recomputed normal, so height stays purely radial.
@@ -99,7 +104,7 @@ void ASolarOrbzIcoSphereActor::RegenerateMesh()
 			FSolarOrbzBiomeSampleContext Context;
 			Context.UnitDirection = UnitDirection;
 			Context.UV = CachedMeshData.UVs[i];
-			Context.Elevation = FVector::DotProduct(CachedMeshData.Vertices[i], UnitDirection) - Radius;
+			Context.Elevation = FVector::DotProduct(CachedMeshData.Vertices[i], UnitDirection) - RadiusCm;
 			Context.Slope = FMath::Clamp(1.0f - FVector::DotProduct(CachedMeshData.Normals[i], UnitDirection), 0.0f, 1.0f);
 
 			const float BiomeHeight = BiomeStack->EvaluateBiomeTerrainContribution(Context);

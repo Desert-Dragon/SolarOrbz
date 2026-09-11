@@ -69,15 +69,14 @@ void SSolarOrbzMainPanel::Construct(const FArguments& InArgs)
 
 			+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 2.0f)
 			[
-				MakeLabeledRow(LOCTEXT("RadiusLabel", "Radius (cm)"),
+				MakeLabeledRow(LOCTEXT("RadiusLabel", "Radius (m)"),
 					SNew(SSpinBox<float>)
-					.MinValue(1.0f)
-					.MaxValue(10000000.0f)
+					.MinValue(0.01f)
 					.MinSliderValue(1.0f)
-					.MaxSliderValue(100000.0f)
-					.Delta(10.0f)
-					.Value_Lambda([this]() { return Radius; })
-					.OnValueChanged_Lambda([this](float NewValue) { Radius = NewValue; })
+					.MaxSliderValue(1000000.0f) // slider convenience range (1,000 km) - typing goes further, no hard ceiling
+					.Delta(1.0f)
+					.Value_Lambda([this]() { return RadiusMeters; })
+					.OnValueChanged_Lambda([this](float NewValue) { RadiusMeters = NewValue; })
 				)
 			]
 
@@ -85,10 +84,9 @@ void SSolarOrbzMainPanel::Construct(const FArguments& InArgs)
 			[
 				MakeLabeledRow(LOCTEXT("DensityLabel", "Vertices / Meter"),
 					SNew(SSpinBox<float>)
-					.MinValue(0.01f)
-					.MaxValue(100.0f)
+					.MinValue(0.001f)
 					.MinSliderValue(0.01f)
-					.MaxSliderValue(20.0f)
+					.MaxSliderValue(20.0f) // slider convenience range - typing goes further, no hard ceiling
 					.Delta(0.05f)
 					.Value_Lambda([this]() { return VerticesPerMeter; })
 					.OnValueChanged_Lambda([this](float NewValue) { VerticesPerMeter = NewValue; })
@@ -100,7 +98,8 @@ void SSolarOrbzMainPanel::Construct(const FArguments& InArgs)
 				MakeLabeledRow(LOCTEXT("MaxSubdivLabel", "Max Subdivisions"),
 					SNew(SSpinBox<int32>)
 					.MinValue(0)
-					.MaxValue(8)
+					.MinSliderValue(0)
+					.MaxSliderValue(10) // slider convenience range - typing goes further, no hard ceiling (watch the stats line!)
 					.Value_Lambda([this]() { return MaxSubdivisions; })
 					.OnValueChanged_Lambda([this](int32 NewValue) { MaxSubdivisions = NewValue; })
 				)
@@ -197,7 +196,7 @@ FReply SSolarOrbzMainPanel::OnGenerateClicked()
 
 	if (ASolarOrbzIcoSphereActor* Actor = PreviewActor.Get())
 	{
-		Actor->Radius = Radius;
+		Actor->RadiusMeters = RadiusMeters;
 		Actor->VerticesPerMeter = VerticesPerMeter;
 		Actor->MaxSubdivisions = MaxSubdivisions;
 		Actor->bEnablePreviewCollision = bEnablePreviewCollision;

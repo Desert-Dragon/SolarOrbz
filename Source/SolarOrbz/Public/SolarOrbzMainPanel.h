@@ -19,7 +19,7 @@ public:
 
 private:
 	// --- Staged parameters, pushed onto the preview actor when Generate is pressed. ---
-	float Radius = 100.0f;
+	float RadiusMeters = 1000.0f;
 	float VerticesPerMeter = 1.0f;
 	int32 MaxSubdivisions = 6;
 	bool bEnablePreviewCollision = false;

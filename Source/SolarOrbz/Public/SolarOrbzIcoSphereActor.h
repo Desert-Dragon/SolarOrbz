@@ -18,16 +18,16 @@ class SOLARORBZ_API ASolarOrbzIcoSphereActor : public AActor
 public:
 	ASolarOrbzIcoSphereActor();
 
-	/** Sphere radius, UE units (cm). */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "SolarOrbz|IcoSphere", meta = (ClampMin = "1.0"))
-	float Radius = 100.0f;
-
-	/** Desired vertex density along the surface, vertices per meter. */
+	/** Sphere radius, in meters. No upper limit - performance is your only ceiling at extreme scales/densities. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "SolarOrbz|IcoSphere", meta = (ClampMin = "0.01"))
+	float RadiusMeters = 1000.0f;
+
+	/** Desired vertex density along the surface, vertices per meter. No upper limit. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "SolarOrbz|IcoSphere", meta = (ClampMin = "0.001"))
 	float VerticesPerMeter = 1.0f;
 
-	/** Safety clamp on subdivision level regardless of requested density. Each +1 is ~4x the triangle count. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "SolarOrbz|IcoSphere", meta = (ClampMin = "0", ClampMax = "8"))
+	/** Subdivision level cap. No upper limit - each +1 is roughly 4x the triangle count, so watch the stats line once you push this high. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "SolarOrbz|IcoSphere", meta = (ClampMin = "0"))
 	int32 MaxSubdivisions = 6;
 
 	/** Optional terrain recipe (procedural noise and/or an authored heightmap) applied as radial displacement after the base sphere is built. */
