@@ -62,7 +62,7 @@ void FSolarOrbzIcoSphereGenerator::RecomputeSmoothNormals(FSolarOrbzIcoSphereMes
 	}
 }
 
-int32 FSolarOrbzIcoSphereGenerator::ComputeSubdivisionLevelForEdgeLength(float Radius, float TargetEdgeLength, int32 MaxSubdivisions)
+int32 FSolarOrbzIcoSphereGenerator::ComputeSubdivisionLevelForEdgeLength(float Radius, float TargetEdgeLength, int32 MaxSubdivisions, int32* OutUnclampedLevel)
 {
 	using namespace SolarOrbzIcoSphere;
 
@@ -70,21 +70,30 @@ int32 FSolarOrbzIcoSphereGenerator::ComputeSubdivisionLevelForEdgeLength(float R
 
 	if (TargetEdgeLength <= KINDA_SMALL_NUMBER)
 	{
+		if (OutUnclampedLevel)
+		{
+			*OutUnclampedLevel = MaxSubdivisions;
+		}
 		return MaxSubdivisions;
 	}
 
 	const double Ratio = BaseEdgeLength / (double)TargetEdgeLength;
 	const int32 Level = Ratio > 1.0 ? (int32)FMath::CeilToDouble(FMath::Log2(Ratio)) : 0;
 
+	if (OutUnclampedLevel)
+	{
+		*OutUnclampedLevel = FMath::Max(Level, 0);
+	}
+
 	return FMath::Clamp(Level, 0, MaxSubdivisions);
 }
 
-int32 FSolarOrbzIcoSphereGenerator::Generate(float Radius, float VerticesPerMeter, FSolarOrbzIcoSphereMeshData& OutMeshData, int32 MaxSubdivisions)
+int32 FSolarOrbzIcoSphereGenerator::Generate(float Radius, float VerticesPerMeter, FSolarOrbzIcoSphereMeshData& OutMeshData, int32 MaxSubdivisions, int32* OutUnclampedLevel)
 {
 	// UE units are centimeters, so "per meter" density -> divide 100 by it to get target edge length in cm.
 	const float TargetEdgeLength = VerticesPerMeter > KINDA_SMALL_NUMBER ? (100.0f / VerticesPerMeter) : Radius;
 
-	const int32 Level = ComputeSubdivisionLevelForEdgeLength(Radius, TargetEdgeLength, MaxSubdivisions);
+	const int32 Level = ComputeSubdivisionLevelForEdgeLength(Radius, TargetEdgeLength, MaxSubdivisions, OutUnclampedLevel);
 	GenerateAtSubdivisionLevel(Radius, Level, OutMeshData);
 	return Level;
 }

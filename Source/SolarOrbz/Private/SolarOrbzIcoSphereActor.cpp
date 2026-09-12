@@ -68,7 +68,14 @@ void ASolarOrbzIcoSphereActor::RegenerateMesh()
 	// convert once, right here, and every internal calculation below stays in cm.
 	const float RadiusCm = RadiusMeters * 100.0f;
 
-	LastSubdivisionLevelUsed = FSolarOrbzIcoSphereGenerator::Generate(RadiusCm, VerticesPerMeter, CachedMeshData, MaxSubdivisions);
+	LastSubdivisionLevelUsed = FSolarOrbzIcoSphereGenerator::Generate(RadiusCm, VerticesPerMeter, CachedMeshData, MaxSubdivisions, &LastRequestedSubdivisionLevel);
+
+	if (LastRequestedSubdivisionLevel > LastSubdivisionLevelUsed)
+	{
+		UE_LOG(LogSolarOrbz, Warning,
+			TEXT("SolarOrbz: Vertices Per Meter (%.4f) would need subdivision level %d at this radius, but Max Subdivisions caps it at %d - the density setting is NOT being reached. Raise Max Subdivisions or lower Vertices Per Meter."),
+			VerticesPerMeter, LastRequestedSubdivisionLevel, LastSubdivisionLevelUsed);
+	}
 
 	// Keep the pristine outward sphere direction for every vertex - both passes displace
 	// along this, not along the (changing) recomputed normal, so height stays purely radial.

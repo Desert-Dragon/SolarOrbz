@@ -188,9 +188,23 @@ FReply SSolarOrbzMainPanel::OnGenerateClicked()
 	{
 		if (UWorld* World = GEditor->GetEditorWorldContext().World())
 		{
+			// Deliberately NOT requesting an explicit Name here. SpawnActor treats a naming
+			// collision on an explicitly-requested name as fatal (crashes the editor) rather than
+			// picking a different one - and a stale name can linger from Undo history or a
+			// not-yet-garbage-collected actor from a previous Generate/Clear cycle. Leaving Name
+			// unset lets the engine generate its own guaranteed-unique internal name instead;
+			// the human-readable Outliner label is set separately below and has no such constraint.
 			FActorSpawnParameters SpawnParams;
-			SpawnParams.Name = MakeUniqueObjectName(World, ASolarOrbzIcoSphereActor::StaticClass(), TEXT("SolarOrbzIcoSphere"));
+			SpawnParams.NameMode = FActorSpawnParameters::ESpawnActorNameMode::Requested;
+
 			PreviewActor = World->SpawnActor<ASolarOrbzIcoSphereActor>(SpawnParams);
+
+#if WITH_EDITOR
+			if (ASolarOrbzIcoSphereActor* NewActor = PreviewActor.Get())
+			{
+				NewActor->SetActorLabel(TEXT("SolarOrbzIcoSphere"));
+			}
+#endif
 		}
 	}
 
@@ -237,11 +251,21 @@ FText SSolarOrbzMainPanel::GetStatsText() const
 {
 	if (const ASolarOrbzIcoSphereActor* Actor = PreviewActor.Get())
 	{
-		return FText::Format(
+		FText Stats = FText::Format(
 			LOCTEXT("StatsFormat", "Subdivision level {0}   |   {1} verts   |   {2} tris"),
 			FText::AsNumber(Actor->GetLastSubdivisionLevelUsed()),
 			FText::AsNumber(Actor->GetPreviewVertexCount()),
 			FText::AsNumber(Actor->GetPreviewTriangleCount()));
+
+		if (Actor->WasLastGenerationDensityLimited())
+		{
+			Stats = FText::Format(
+				LOCTEXT("StatsFormatDensityCapped", "{0}\n⚠ Vertices Per Meter would need level {1} here - Max Subdivisions is capping it. The density value is not being reached."),
+				Stats,
+				FText::AsNumber(Actor->GetLastRequestedSubdivisionLevel()));
+		}
+
+		return Stats;
 	}
 	return LOCTEXT("StatsEmpty", "No preview generated yet.");
 }

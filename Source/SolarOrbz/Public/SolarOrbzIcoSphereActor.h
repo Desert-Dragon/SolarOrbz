@@ -73,6 +73,12 @@ public:
 	/** Subdivision level used for the last generated preview. */
 	int32 GetLastSubdivisionLevelUsed() const { return LastSubdivisionLevelUsed; }
 
+	/** Subdivision level Vertices Per Meter actually asked for, before the MaxSubdivisions clamp. */
+	int32 GetLastRequestedSubdivisionLevel() const { return LastRequestedSubdivisionLevel; }
+
+	/** True if MaxSubdivisions, not Vertices Per Meter, determined the last generation's resolution - i.e. the density slider is currently doing nothing because the cap is binding instead. */
+	bool WasLastGenerationDensityLimited() const { return LastRequestedSubdivisionLevel > LastSubdivisionLevelUsed; }
+
 	/** Vertex count of the last generated preview (post UV-seam/pole splitting). */
 	int32 GetPreviewVertexCount() const { return CachedMeshData.Vertices.Num(); }
 
@@ -92,4 +98,5 @@ private:
 	// Cached from the last RegenerateMesh() call so Bake doesn't need to redo the generation work.
 	FSolarOrbzIcoSphereMeshData CachedMeshData;
 	int32 LastSubdivisionLevelUsed = 0;
+	int32 LastRequestedSubdivisionLevel = 0;
 };

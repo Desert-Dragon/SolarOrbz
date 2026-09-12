@@ -59,19 +59,27 @@ public:
 	 * (100 / VerticesPerMeter) UE units - i.e. VerticesPerMeter is verts
 	 * per meter of surface, since UE units are centimeters.
 	 *
-	 * @param Radius            Sphere radius, in UE units (cm).
-	 * @param VerticesPerMeter  Desired linear vertex density along the surface.
-	 * @param OutMeshData       Receives the generated mesh.
-	 * @param MaxSubdivisions   Safety clamp (each level ~4x's the triangle count).
+	 * @param Radius              Sphere radius, in UE units (cm).
+	 * @param VerticesPerMeter    Desired linear vertex density along the surface.
+	 * @param OutMeshData         Receives the generated mesh.
+	 * @param MaxSubdivisions     Safety clamp (each level ~4x's the triangle count).
+	 * @param OutUnclampedLevel   Optional. Receives the subdivision level that would have been needed
+	 *                            to actually hit VerticesPerMeter, before clamping to MaxSubdivisions.
+	 *                            Compare this to the return value: if they differ, the requested density
+	 *                            was NOT reached - MaxSubdivisions was the binding constraint instead.
 	 * @return The subdivision level actually used.
 	 */
-	static int32 Generate(float Radius, float VerticesPerMeter, FSolarOrbzIcoSphereMeshData& OutMeshData, int32 MaxSubdivisions = 8);
+	static int32 Generate(float Radius, float VerticesPerMeter, FSolarOrbzIcoSphereMeshData& OutMeshData, int32 MaxSubdivisions = 8, int32* OutUnclampedLevel = nullptr);
 
 	/** Generate an icosphere at an explicit subdivision level (0 = base icosahedron, 12 verts, 20 tris). */
 	static void GenerateAtSubdivisionLevel(float Radius, int32 SubdivisionLevel, FSolarOrbzIcoSphereMeshData& OutMeshData);
 
-	/** Returns the subdivision level whose average edge length best matches TargetEdgeLength, clamped to MaxSubdivisions. */
-	static int32 ComputeSubdivisionLevelForEdgeLength(float Radius, float TargetEdgeLength, int32 MaxSubdivisions = 8);
+	/**
+	 * Returns the subdivision level whose average edge length best matches TargetEdgeLength, clamped to MaxSubdivisions.
+	 * @param OutUnclampedLevel  Optional. Receives the level before clamping - compare to the return value
+	 *                           to detect when MaxSubdivisions, not the density target, determined the result.
+	 */
+	static int32 ComputeSubdivisionLevelForEdgeLength(float Radius, float TargetEdgeLength, int32 MaxSubdivisions = 8, int32* OutUnclampedLevel = nullptr);
 
 	/** Vertex count of a base icosahedron subdivided N times (handy for UI feedback before generating). */
 	static int64 EstimateVertexCount(int32 SubdivisionLevel);
@@ -82,20 +90,6 @@ public:
 	 * normals are no longer correct once the surface isn't a sphere anymore.
 	 */
 	static void RecomputeSmoothNormals(FSolarOrbzIcoSphereMeshData& MeshData);
-
-	/**
-	 * Equirectangular UV for a point on the unit sphere (U = longitude around Z, V = latitude from +Z).
-	 * Shared by mesh UV generation and any code sampling a heightmap/biome texture, so both stay
-	 * in exact agreement about which pixel corresponds to which point on the sphere.
-	 */
-	static FVector2D ComputeSphericalUV(const FVector& UnitSpherePosition);
-
-	/**
-	 * Recomputes area-weighted smooth vertex normals (and simple tangents) from the mesh's current
-	 * vertex positions and triangle list. Call this after displacing vertices for terrain - the
-	 * original sphere normals no longer describe the displaced surface.
-	 */
-	static void RecomputeSmoothNormalsAndTangents(FSolarOrbzIcoSphereMeshData& MeshData);
 
 private:
 	// Working data during subdivision - unit-sphere positions, radius is applied at finalize time.
