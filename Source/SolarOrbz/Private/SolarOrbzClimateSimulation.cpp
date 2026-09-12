@@ -12,13 +12,13 @@ namespace SolarOrbzClimate
 	static constexpr double PI_D = 3.14159265358979323846;
 }
 
-void FSolarOrbzClimateGrid::Sample(const FVector& UnitDirection, float& OutTemperature01, float& OutMoisture01) const
+void FSolarOrbzClimateGrid::Sample(const FVector& UnitDirection, float& OutTemperatureKelvin, float& OutMoisture01) const
 {
 	using namespace SolarOrbzClimate;
 
 	if (!IsValid())
 	{
-		OutTemperature01 = 0.5f;
+		OutTemperatureKelvin = 288.0f;
 		OutMoisture01 = 0.5f;
 		return;
 	}
@@ -47,7 +47,7 @@ void FSolarOrbzClimateGrid::Sample(const FVector& UnitDirection, float& OutTempe
 		return FMath::Lerp(A, B, Ty);
 	};
 
-	OutTemperature01 = SampleBilinear(Temperature01);
+	OutTemperatureKelvin = SampleBilinear(TemperatureKelvin);
 	OutMoisture01 = SampleBilinear(Moisture01);
 }
 
@@ -61,8 +61,17 @@ void USolarOrbzClimateSimulationAsset::Simulate(const USolarOrbzTerrainLayerStac
 	OutGrid.Reset();
 	OutGrid.Width = W;
 	OutGrid.Height = H;
-	OutGrid.Temperature01.SetNumZeroed(W * H);
+	OutGrid.TemperatureKelvin.SetNumZeroed(W * H);
 	OutGrid.Moisture01.SetNumZeroed(W * H);
+
+	// Earth's sea-level air density is the reference point Atmosphere Density scales against - not
+	// authored anywhere, just the baseline "1x" a thin or thick atmosphere is relative to. Square-rooted
+	// so the huge real-world range (Mars ~0.02, Venus ~65) doesn't translate into an equally huge,
+	// unusable multiplier on moisture - it's a directional nudge, not exact atmospheric physics.
+	constexpr float EarthReferenceDensityKgPerM3 = 1.225f;
+	const float AtmosphereDensityFactor = FMath::Sqrt(FMath::Max(AtmosphereDensityAtSeaLevel, 0.0f) / EarthReferenceDensityKgPerM3);
+	const float EffectiveMoistureCapacity = MoistureCapacity * AtmosphereDensityFactor;
+	const float EffectiveEvaporationRate = EvaporationRate * AtmosphereDensityFactor;
 
 	// --- Pass 1: sample elevation (via the same TerrainStack the mesh uses) and derive temperature for every cell. ---
 	TArray<float> ElevationCm;
@@ -93,7 +102,9 @@ void USolarOrbzClimateSimulationAsset::Simulate(const USolarOrbzTerrainLayerStac
 			const float LatitudeAbs = FMath::Abs((float)Z); // 0 equator .. 1 pole
 			const float ElevationAboveSeaKm = FMath::Max(Elevation - SeaLevel, 0.0f) / 100000.0f; // cm -> km
 			const float BaseTemp = FMath::Lerp(EquatorTemperature, PoleTemperature, LatitudeAbs);
-			OutGrid.Temperature01[Idx] = FMath::Clamp(BaseTemp - LapseRatePerKm * ElevationAboveSeaKm, 0.0f, 1.0f);
+			// Floored at absolute zero only - deliberately not clamped to any Earth-relative range,
+			// so a lava world or a cryogenic moon are both representable.
+			OutGrid.TemperatureKelvin[Idx] = FMath::Max(BaseTemp - LapseRatePerKm * ElevationAboveSeaKm, 0.0f);
 		}
 	}
 
@@ -132,7 +143,7 @@ void USolarOrbzClimateSimulationAsset::Simulate(const USolarOrbzTerrainLayerStac
 
 			if (Elevation <= SeaLevel)
 			{
-				Carried = FMath::Min(MoistureCapacity, Carried + EvaporationRate);
+				Carried = FMath::Min(EffectiveMoistureCapacity, Carried + EffectiveEvaporationRate);
 			}
 			else
 			{

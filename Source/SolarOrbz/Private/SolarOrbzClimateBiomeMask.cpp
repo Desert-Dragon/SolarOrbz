@@ -43,11 +43,11 @@ float USolarOrbzClimateBiomeMask::GetWeight(const FSolarOrbzBiomeSampleContext& 
 
 	if (Temperature.bEnabled)
 	{
-		// Simulated when available; otherwise the same latitude proxy Latitude above uses, inverted
-		// (equator = hottest = 1) so the axis is at least directionally correct without a simulation.
+		// Simulated (Kelvin) when available; otherwise a generic Earth-like Lerp by latitude, in the
+		// same Kelvin units, so the Min/Max above stay meaningful whether or not a simulation exists.
 		const float TemperatureValue = Context.bHasClimateData
 			? Context.Temperature
-			: (1.0f - FMath::Abs(Context.UnitDirection.Z));
+			: FMath::Lerp(288.0f, 255.0f, FMath::Abs(Context.UnitDirection.Z));
 		Weight *= Temperature.Evaluate(TemperatureValue);
 		if (Weight <= KINDA_SMALL_NUMBER)
 		{

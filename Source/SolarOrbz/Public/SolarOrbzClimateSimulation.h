@@ -2,11 +2,16 @@
 // (not per-vertex) on an independent lat/long grid, sampling elevation from
 // the same TerrainLayerStack used for the mesh. Produces:
 //
-//   - Temperature: latitude baseline minus an elevation lapse rate.
+//   - Temperature: latitude baseline (Kelvin) minus an elevation lapse rate -
+//                   a real physical unit, not a normalized 0..1 scalar, so
+//                   an icy moon and a Venus-hot furnace are both directly
+//                   representable rather than "hotter/colder than Earth."
 //   - Moisture:    wind advected around each latitude band, picking up
 //                   moisture over ocean cells and raining it out over land,
 //                   with extra rainfall on uphill slopes (orographic effect,
-//                   i.e. real rain shadows behind mountain ranges).
+//                   i.e. real rain shadows behind mountain ranges). Scaled by
+//                   sea-level atmospheric density, so a thin atmosphere runs
+//                   drier and a thick one runs wetter for the same wind tuning.
 //
 // Both fields land in FSolarOrbzBiomeSampleContext for ClimateBiomeMask to
 // read, replacing its old noise-based moisture stand-in.
@@ -20,25 +25,28 @@
 class USolarOrbzTerrainLayerStack;
 
 /**
- * Baked simulation result: two equirectangular grids (temperature, moisture),
- * both 0..1, sampled with bilinear interpolation and longitude wraparound.
- * Uses the exact same UV convention as FSolarOrbzIcoSphereMeshData (U =
- * longitude/azimuth wrapping 0..1, V = polar angle 0 at north pole .. 1 at
- * south pole) so a grid cell's UnitDirection maps onto the same TerrainStack
- * evaluation a mesh vertex there would get.
+ * Baked simulation result: two equirectangular grids, sampled with bilinear
+ * interpolation and longitude wraparound. Uses the exact same UV convention
+ * as FSolarOrbzIcoSphereMeshData (U = longitude/azimuth wrapping 0..1, V =
+ * polar angle 0 at north pole .. 1 at south pole) so a grid cell's
+ * UnitDirection maps onto the same TerrainStack evaluation a mesh vertex
+ * there would get.
  */
 struct SOLARORBZ_API FSolarOrbzClimateGrid
 {
 	int32 Width = 0;
 	int32 Height = 0;
 
-	TArray<float> Temperature01;
+	/** Absolute temperature, Kelvin. Not normalized - can be anything from a few Kelvin to well over 1000K. */
+	TArray<float> TemperatureKelvin;
+
+	/** 0 = driest, 1 = wettest. Normalized across this grid (see USolarOrbzClimateSimulationAsset::Simulate). */
 	TArray<float> Moisture01;
 
 	bool IsValid() const
 	{
 		return Width > 0 && Height > 0
-			&& Temperature01.Num() == Width * Height
+			&& TemperatureKelvin.Num() == Width * Height
 			&& Moisture01.Num() == Width * Height;
 	}
 
@@ -46,12 +54,12 @@ struct SOLARORBZ_API FSolarOrbzClimateGrid
 	{
 		Width = 0;
 		Height = 0;
-		Temperature01.Reset();
+		TemperatureKelvin.Reset();
 		Moisture01.Reset();
 	}
 
 	/** Bilinear-samples both fields at a point on the unit sphere, wrapping across the longitude seam. */
-	void Sample(const FVector& UnitDirection, float& OutTemperature01, float& OutMoisture01) const;
+	void Sample(const FVector& UnitDirection, float& OutTemperatureKelvin, float& OutMoisture01) const;
 };
 
 /**
@@ -73,21 +81,33 @@ public:
 	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Climate|Grid", meta = (ClampMin = "4"))
 	int32 GridHeight = 128;
 
-	/** Normalized temperature (0..1) at the equator, at sea level. */
-	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Climate|Temperature", meta = (ClampMin = "0.0", ClampMax = "1.0"))
-	float EquatorTemperature = 1.0f;
+	/** Absolute temperature (Kelvin) at the equator, at sea level. Earth is ~288K. Tune freely - this is not clamped to any Earth-relative range, so lava worlds and ice moons are equally valid. */
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Climate|Temperature", meta = (ClampMin = "0.0", Units = "Kelvin"))
+	float EquatorTemperature = 288.0f;
 
-	/** Normalized temperature (0..1) at the poles, at sea level. */
-	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Climate|Temperature", meta = (ClampMin = "0.0", ClampMax = "1.0"))
-	float PoleTemperature = 0.0f;
+	/** Absolute temperature (Kelvin) at the poles, at sea level. Earth is ~255K. */
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Climate|Temperature", meta = (ClampMin = "0.0", Units = "Kelvin"))
+	float PoleTemperature = 255.0f;
 
-	/** How much normalized temperature drops per km of elevation above sea level. */
+	/** Kelvin dropped per km of elevation above sea level. Earth's environmental lapse rate is ~6.5 K/km. */
 	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Climate|Temperature", meta = (ClampMin = "0.0"))
-	float LapseRatePerKm = 0.15f;
+	float LapseRatePerKm = 6.5f;
 
 	/** Elevation (cm, relative to base radius) below which a cell counts as ocean - a moisture source and a warmth-moderated zone. */
-	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Climate")
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Climate", meta = (Units = "cm"))
 	float SeaLevel = 0.0f;
+
+	/**
+	 * Air density at sea level, kg/m^3. Earth is ~1.225; Mars is ~0.02 (thin); Venus is ~65 (thick).
+	 * Scales the effective Moisture Capacity and Evaporation Rate below relative to Earth's density
+	 * (square-rooted, so Venus's ~53x density doesn't turn into an unusably huge multiplier), so the
+	 * same wind-tuning numbers naturally produce a parched thin-atmosphere world or a saturated
+	 * thick-atmosphere one without re-tuning every wind parameter by hand. This is a deliberately
+	 * simplified stand-in for the real thermodynamics (vapor pressure, specific heat, etc.), not a
+	 * full atmospheric model.
+	 */
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Climate|Atmosphere", meta = (ClampMin = "0.0"))
+	float AtmosphereDensityAtSeaLevel = 1.225f;
 
 	/**
 	 * Simplified three-cell atmospheric circulation, mirrored across both hemispheres by absolute
@@ -119,11 +139,11 @@ public:
 	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Climate|Wind", meta = (ClampMin = "1"))
 	int32 WindLoops = 2;
 
-	/** Maximum moisture the simulated air can carry at once. */
+	/** Maximum moisture the simulated air can carry at once, before Atmosphere Density scaling. */
 	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Climate|Wind", meta = (ClampMin = "0.0"))
 	float MoistureCapacity = 1.0f;
 
-	/** Moisture gained per grid step while passing over an ocean cell. */
+	/** Moisture gained per grid step while passing over an ocean cell, before Atmosphere Density scaling. */
 	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Climate|Wind", meta = (ClampMin = "0.0"))
 	float EvaporationRate = 0.15f;
 

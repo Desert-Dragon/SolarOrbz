@@ -46,11 +46,13 @@ public:
 	FSolarOrbzMaskRange Latitude;
 
 	/**
-	 * 0 = coldest, 1 = hottest. Simulated (latitude baseline minus elevation lapse rate) when the
-	 * actor has a ClimateSimulation asset assigned; otherwise falls back to the same 0=equator/1=pole
-	 * proxy as Latitude above, inverted (1 - |Z|), so this axis still does something without a simulation.
+	 * Absolute temperature in Kelvin - not normalized. Simulated (latitude baseline minus elevation
+	 * lapse rate) when the actor has a ClimateSimulation asset assigned; otherwise falls back to a
+	 * generic Earth-like Lerp by latitude (288K equator .. 255K pole) so this axis is at least in the
+	 * right ballpark without a simulation. Author the Min/Max below in Kelvin to match whatever your
+	 * ClimateSimulation asset actually produces - this works equally for an icy moon or a Venus-hot world.
 	 */
-	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Climate")
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Climate", meta = (Units = "Kelvin"))
 	FSolarOrbzMaskRange Temperature;
 
 	/** 0 = flat ground, 1 = vertical cliff face. */

@@ -33,12 +33,12 @@ struct SOLARORBZ_API FSolarOrbzBiomeSampleContext
 	float Slope = 0.0f;
 
 	/**
-	 * 0 = coldest simulated temperature, 1 = hottest. Only meaningful when bHasClimateData is true -
+	 * Absolute temperature in Kelvin, not normalized. Only meaningful when bHasClimateData is true -
 	 * i.e. the actor has a ClimateSimulation asset assigned. Otherwise left at its default and masks
 	 * fall back to a plain latitude proxy.
 	 */
-	UPROPERTY(BlueprintReadOnly, Category = "SolarOrbz|Biome")
-	float Temperature = 0.5f;
+	UPROPERTY(BlueprintReadOnly, Category = "SolarOrbz|Biome", meta = (Units = "Kelvin"))
+	float Temperature = 288.0f;
 
 	/**
 	 * 0 = driest, 1 = wettest (oceans are always 1.0). Only meaningful when bHasClimateData is true;
