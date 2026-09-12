@@ -41,15 +41,37 @@ float USolarOrbzClimateBiomeMask::GetWeight(const FSolarOrbzBiomeSampleContext& 
 		return 0.0f;
 	}
 
+	if (Temperature.bEnabled)
+	{
+		// Simulated when available; otherwise the same latitude proxy Latitude above uses, inverted
+		// (equator = hottest = 1) so the axis is at least directionally correct without a simulation.
+		const float TemperatureValue = Context.bHasClimateData
+			? Context.Temperature
+			: (1.0f - FMath::Abs(Context.UnitDirection.Z));
+		Weight *= Temperature.Evaluate(TemperatureValue);
+		if (Weight <= KINDA_SMALL_NUMBER)
+		{
+			return 0.0f;
+		}
+	}
+
 	if (Moisture.bEnabled)
 	{
-		const FVector SeedOffset(
-			FMath::Frac(FMath::Sin((float)MoistureSeed * 91.345f) * 47453.7f) * 1000.0f,
-			FMath::Frac(FMath::Sin((float)MoistureSeed * 13.71f) * 47453.7f) * 1000.0f,
-			FMath::Frac(FMath::Sin((float)MoistureSeed * 58.92f) * 47453.7f) * 1000.0f);
+		float MoistureValue;
+		if (Context.bHasClimateData)
+		{
+			MoistureValue = Context.Moisture;
+		}
+		else
+		{
+			const FVector SeedOffset(
+				FMath::Frac(FMath::Sin((float)MoistureSeed * 91.345f) * 47453.7f) * 1000.0f,
+				FMath::Frac(FMath::Sin((float)MoistureSeed * 13.71f) * 47453.7f) * 1000.0f,
+				FMath::Frac(FMath::Sin((float)MoistureSeed * 58.92f) * 47453.7f) * 1000.0f);
 
-		const float MoistureNoise = FMath::PerlinNoise3D(Context.UnitDirection * MoistureFrequency + SeedOffset) * 0.5f + 0.5f; // 0..1
-		Weight *= Moisture.Evaluate(MoistureNoise);
+			MoistureValue = FMath::PerlinNoise3D(Context.UnitDirection * MoistureFrequency + SeedOffset) * 0.5f + 0.5f; // 0..1
+		}
+		Weight *= Moisture.Evaluate(MoistureValue);
 	}
 
 	return FMath::Clamp(Weight, 0.0f, 1.0f);

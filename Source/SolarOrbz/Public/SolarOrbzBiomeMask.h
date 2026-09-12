@@ -31,6 +31,26 @@ struct SOLARORBZ_API FSolarOrbzBiomeSampleContext
 	/** 0 = flat ground, 1 = vertical cliff face. Derived from how far the surface normal has tilted away from UnitDirection. */
 	UPROPERTY(BlueprintReadOnly, Category = "SolarOrbz|Biome")
 	float Slope = 0.0f;
+
+	/**
+	 * 0 = coldest simulated temperature, 1 = hottest. Only meaningful when bHasClimateData is true -
+	 * i.e. the actor has a ClimateSimulation asset assigned. Otherwise left at its default and masks
+	 * fall back to a plain latitude proxy.
+	 */
+	UPROPERTY(BlueprintReadOnly, Category = "SolarOrbz|Biome")
+	float Temperature = 0.5f;
+
+	/**
+	 * 0 = driest, 1 = wettest (oceans are always 1.0). Only meaningful when bHasClimateData is true;
+	 * comes from a whole-planet wind/orographic simulation rather than a per-point noise field, so
+	 * real rain shadows show up behind mountain ranges. Otherwise left at its default.
+	 */
+	UPROPERTY(BlueprintReadOnly, Category = "SolarOrbz|Biome")
+	float Moisture = 0.5f;
+
+	/** True once Temperature/Moisture above have been filled in by a ClimateSimulation asset. False = no simulation is assigned; masks should use their own fallback logic instead. */
+	UPROPERTY(BlueprintReadOnly, Category = "SolarOrbz|Biome")
+	bool bHasClimateData = false;
 };
 
 UCLASS(Abstract, EditInlineNew, DefaultToInstanced, BlueprintType)

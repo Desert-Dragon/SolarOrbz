@@ -8,6 +8,7 @@
 #include "GameFramework/Actor.h"
 #include "ProceduralMeshComponent.h"
 #include "SolarOrbzIcoSphereGenerator.h"
+#include "SolarOrbzClimateSimulation.h"
 #include "SolarOrbzIcoSphereActor.generated.h"
 
 UCLASS(BlueprintType, meta = (DisplayName = "SolarOrbz IcoSphere"))
@@ -37,6 +38,15 @@ public:
 	/** Optional biome stack - adds biome-specific terrain detail on top of TerrainStack, masked by climate/composite conditions. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "SolarOrbz|Biome")
 	TObjectPtr<class USolarOrbzBiomeStack> BiomeStack;
+
+	/**
+	 * Optional. Runs a whole-planet climate simulation once per regenerate, right after TerrainStack
+	 * displaces the mesh - a wind/orographic moisture pass plus a latitude+elevation temperature model,
+	 * both on an independent lat/long grid. Feeds real Temperature/Moisture values into every Climate
+	 * Biome Mask's sample context instead of their noise-based fallback.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "SolarOrbz|Climate")
+	TObjectPtr<class USolarOrbzClimateSimulationAsset> ClimateSimulation;
 
 	/** When enabled, colors each vertex by its dominant biome's Preview Color instead of the normal material, so you can see layer boundaries directly. Needs an unlit material that reads vertex color assigned to Debug Biome Material below. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "SolarOrbz|Biome|Debug")
@@ -85,6 +95,9 @@ public:
 	/** Triangle count of the last generated preview. */
 	int32 GetPreviewTriangleCount() const { return CachedMeshData.Triangles.Num() / 3; }
 
+	/** Climate grid from the last RegenerateMesh() call. Invalid (Width/Height 0) if no ClimateSimulation is assigned. */
+	const FSolarOrbzClimateGrid& GetCachedClimateGrid() const { return CachedClimateGrid; }
+
 protected:
 	virtual void OnConstruction(const FTransform& Transform) override;
 #if WITH_EDITOR
@@ -97,6 +110,7 @@ protected:
 private:
 	// Cached from the last RegenerateMesh() call so Bake doesn't need to redo the generation work.
 	FSolarOrbzIcoSphereMeshData CachedMeshData;
+	FSolarOrbzClimateGrid CachedClimateGrid;
 	int32 LastSubdivisionLevelUsed = 0;
 	int32 LastRequestedSubdivisionLevel = 0;
 };

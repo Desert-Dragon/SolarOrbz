@@ -41,21 +41,35 @@ public:
 	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Climate")
 	FSolarOrbzMaskRange Elevation;
 
-	/** 0 = equator, 1 = pole. A stand-in for temperature until axial tilt / actual thermal simulation exists. */
+	/** 0 = equator, 1 = pole. Purely geometric - doesn't account for elevation. Prefer Temperature below once a ClimateSimulation asset is assigned; keep using this one for simple cases or when no simulation exists. */
 	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Climate")
 	FSolarOrbzMaskRange Latitude;
+
+	/**
+	 * 0 = coldest, 1 = hottest. Simulated (latitude baseline minus elevation lapse rate) when the
+	 * actor has a ClimateSimulation asset assigned; otherwise falls back to the same 0=equator/1=pole
+	 * proxy as Latitude above, inverted (1 - |Z|), so this axis still does something without a simulation.
+	 */
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Climate")
+	FSolarOrbzMaskRange Temperature;
 
 	/** 0 = flat ground, 1 = vertical cliff face. */
 	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Climate")
 	FSolarOrbzMaskRange Slope;
 
-	/** 0..1, driven by a low-frequency noise field standing in for rainfall/humidity/volatile concentration. */
+	/**
+	 * 0 = driest, 1 = wettest. Comes from a wind/orographic simulation (real rain shadows behind
+	 * mountains) when the actor has a ClimateSimulation asset assigned; otherwise falls back to the
+	 * low-frequency noise field below, standing in for rainfall/humidity until a simulation exists.
+	 */
 	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Climate")
 	FSolarOrbzMaskRange Moisture;
 
+	/** Only used as the noise fallback when no ClimateSimulation asset is assigned upstream. */
 	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Climate", meta = (EditCondition = "Moisture.bEnabled"))
 	int32 MoistureSeed = 0;
 
+	/** Only used as the noise fallback when no ClimateSimulation asset is assigned upstream. */
 	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Climate", meta = (EditCondition = "Moisture.bEnabled", ClampMin = "0.01"))
 	float MoistureFrequency = 1.5f;
 

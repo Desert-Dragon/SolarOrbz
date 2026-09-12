@@ -4,6 +4,7 @@
 #include "SolarOrbzTerrainLayerStack.h"
 #include "SolarOrbzBiomeStack.h"
 #include "SolarOrbzBiome.h"
+#include "SolarOrbzClimateSimulation.h"
 #include "ProceduralMeshComponent.h"
 #include "Materials/MaterialInterface.h"
 #include "Engine/StaticMesh.h"
@@ -44,6 +45,7 @@ void ASolarOrbzIcoSphereActor::PostEditChangeProperty(FPropertyChangedEvent& Pro
 		GET_MEMBER_NAME_CHECKED(ASolarOrbzIcoSphereActor, bEnablePreviewCollision),
 		GET_MEMBER_NAME_CHECKED(ASolarOrbzIcoSphereActor, TerrainStack),
 		GET_MEMBER_NAME_CHECKED(ASolarOrbzIcoSphereActor, BiomeStack),
+		GET_MEMBER_NAME_CHECKED(ASolarOrbzIcoSphereActor, ClimateSimulation),
 		GET_MEMBER_NAME_CHECKED(ASolarOrbzIcoSphereActor, bShowBiomeDebugColors),
 		GET_MEMBER_NAME_CHECKED(ASolarOrbzIcoSphereActor, DebugBiomeMaterial),
 		GET_MEMBER_NAME_CHECKED(ASolarOrbzIcoSphereActor, DefaultMaterial),
@@ -95,6 +97,14 @@ void ASolarOrbzIcoSphereActor::RegenerateMesh()
 		FSolarOrbzIcoSphereGenerator::RecomputeSmoothNormals(CachedMeshData);
 	}
 
+	// --- Climate simulation: runs once on its own lat/long grid (not per-vertex), sampling elevation ---
+	// from TerrainStack the same way the mesh does. Feeds Pass B's sample context below.
+	CachedClimateGrid.Reset();
+	if (ClimateSimulation)
+	{
+		ClimateSimulation->Simulate(TerrainStack, RadiusCm, CachedClimateGrid);
+	}
+
 	// --- Pass B: biome-specific detail, masked by climate/composite conditions and blended on top. ---
 	TArray<FLinearColor> BiomeDebugColors;
 	if (BiomeStack)
@@ -113,6 +123,12 @@ void ASolarOrbzIcoSphereActor::RegenerateMesh()
 			Context.UV = CachedMeshData.UVs[i];
 			Context.Elevation = FVector::DotProduct(CachedMeshData.Vertices[i], UnitDirection) - RadiusCm;
 			Context.Slope = FMath::Clamp(1.0f - FVector::DotProduct(CachedMeshData.Normals[i], UnitDirection), 0.0f, 1.0f);
+
+			if (CachedClimateGrid.IsValid())
+			{
+				Context.bHasClimateData = true;
+				CachedClimateGrid.Sample(UnitDirection, Context.Temperature, Context.Moisture);
+			}
 
 			const float BiomeHeight = BiomeStack->EvaluateBiomeTerrainContribution(Context);
 			CachedMeshData.Vertices[i] += UnitDirection * BiomeHeight;
