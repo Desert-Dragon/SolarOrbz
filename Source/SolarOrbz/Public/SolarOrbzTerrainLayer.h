@@ -6,6 +6,7 @@
 
 #include "CoreMinimal.h"
 #include "UObject/Object.h"
+#include "Templates/Function.h"
 #include "SolarOrbzTerrainLayer.generated.h"
 
 UENUM(BlueprintType)
@@ -40,6 +41,25 @@ public:
 	/** Multiplies this layer's raw output before blending - the simplest way to fade a layer in/out. */
 	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Layer")
 	float Weight = 1.0f;
+
+	/**
+	 * Most layers (noise, heightmap, stamp) are pure functions of a single point - GetRawHeight
+	 * needs nothing but the point itself. Erosion is different: carving a valley requires knowing
+	 * about the terrain around a point, not just the point. Layers that need this override this to
+	 * return true and implement Bake(), which the stack calls once per regenerate, before any
+	 * per-vertex GetRawHeight calls, giving them a chance to build whatever whole-surface data they need.
+	 */
+	virtual bool RequiresWholeSurfaceBake() const { return false; }
+
+	/**
+	 * Called once per regenerate, before GetRawHeight is ever called for this layer, only when
+	 * RequiresWholeSurfaceBake() returns true. PriorLayersHeight evaluates every layer below this
+	 * one in the stack (not including this layer) at an arbitrary point - i.e. exactly the terrain
+	 * this layer should treat as its starting point to erode, stamp around, etc.
+	 * @param PriorLayersHeight  Callable: (UnitDirection, UV) -> combined height of layers below this one, in cm.
+	 * @param RadiusCm           The planet's base radius, for layers that need real physical distances (e.g. slope).
+	 */
+	virtual void Bake(const TFunctionRef<float(const FVector& UnitDirection, const FVector2D& UV)>& PriorLayersHeight, float RadiusCm) {}
 
 	/**
 	 * Returns this layer's height contribution, in UE units (cm), at a point on the unit sphere.

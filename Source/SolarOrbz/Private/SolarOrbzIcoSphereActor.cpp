@@ -86,6 +86,11 @@ void ASolarOrbzIcoSphereActor::RegenerateMesh()
 	// --- Pass A: base terrain (procedural noise and/or authored heightmap). ---
 	if (TerrainStack)
 	{
+		// Whole-surface bake first (e.g. erosion) - must happen before any per-point EvaluateHeight
+		// calls below, including the ones the Climate Simulation will make against this same stack,
+		// so rain shadows react to eroded terrain rather than the pre-erosion noise.
+		TerrainStack->PrepareLayers(RadiusCm);
+
 		for (int32 i = 0; i < CachedMeshData.Vertices.Num(); ++i)
 		{
 			const FVector& UnitDirection = OriginalUnitDirections[i];

@@ -22,6 +22,16 @@ public:
 	UPROPERTY(EditAnywhere, Instanced, Category = "SolarOrbz|Terrain")
 	TArray<TObjectPtr<USolarOrbzTerrainLayer>> Layers;
 
+	/**
+	 * Call once per regenerate, before any EvaluateHeight calls (including from a ClimateSimulation
+	 * sampling this same stack) - gives layers that need whole-surface data (e.g. erosion) a chance
+	 * to bake it. No-op for layers that don't override RequiresWholeSurfaceBake().
+	 */
+	void PrepareLayers(float RadiusCm) const;
+
 	/** Evaluates every enabled layer in order and returns the combined height, in UE units (cm). */
 	float EvaluateHeight(const FVector& UnitDirection, const FVector2D& UV) const;
+
+	/** Same as EvaluateHeight, but only accumulates layers with index < EndIndexExclusive - i.e. what a layer at that index would see as "everything below it". */
+	float EvaluateHeightUpTo(int32 EndIndexExclusive, const FVector& UnitDirection, const FVector2D& UV) const;
 };
