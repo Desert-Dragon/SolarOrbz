@@ -1,21 +1,103 @@
-// SolarOrbz - Main Slate panel implementation
+// SolarOrbz - Editor module & UI subsystem implementation.
 
-#include "SolarOrbzMainPanel.h"
-#include "SolarOrbzIcoSphereActor.h"
+#include "SolarOrbzEditor.h"
+
+#include "Styling/SlateStyleRegistry.h"
+#include "Framework/Application/SlateApplication.h"
+#include "Slate/SlateGameResources.h"
+#include "Interfaces/IPluginManager.h"
+#include "Styling/SlateStyleMacros.h"
+
+#include "SolarOrbzIcoSphere.h"
+
+#include "LevelEditor.h"
+#include "Widgets/Docking/SDockTab.h"
+#include "Widgets/Layout/SBox.h"
+#include "Widgets/Text/STextBlock.h"
+#include "ToolMenus.h"
 
 #include "Editor.h"
 #include "Engine/World.h"
-
 #include "Widgets/SBoxPanel.h"
-#include "Widgets/Layout/SBox.h"
 #include "Widgets/Layout/SSeparator.h"
 #include "Widgets/Layout/SUniformGridPanel.h"
-#include "Widgets/Text/STextBlock.h"
 #include "Widgets/Input/SSpinBox.h"
 #include "Widgets/Input/SCheckBox.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Input/SEditableTextBox.h"
 
+// ================================================================================================
+// FSolarOrbzStyle
+// ================================================================================================
+#define RootToContentDir Style->RootToContentDir
+
+TSharedPtr<FSlateStyleSet> FSolarOrbzStyle::StyleInstance = nullptr;
+
+void FSolarOrbzStyle::Initialize()
+{
+	if (!StyleInstance.IsValid())
+	{
+		StyleInstance = Create();
+		FSlateStyleRegistry::RegisterSlateStyle(*StyleInstance);
+	}
+}
+
+void FSolarOrbzStyle::Shutdown()
+{
+	FSlateStyleRegistry::UnRegisterSlateStyle(*StyleInstance);
+	ensure(StyleInstance.IsUnique());
+	StyleInstance.Reset();
+}
+
+FName FSolarOrbzStyle::GetStyleSetName()
+{
+	static FName StyleSetName(TEXT("SolarOrbzStyle"));
+	return StyleSetName;
+}
+
+const FVector2D Icon16x16(16.0f, 16.0f);
+const FVector2D Icon20x20(20.0f, 20.0f);
+
+TSharedRef< FSlateStyleSet > FSolarOrbzStyle::Create()
+{
+	TSharedRef< FSlateStyleSet > Style = MakeShareable(new FSlateStyleSet("SolarOrbzStyle"));
+	Style->SetContentRoot(IPluginManager::Get().FindPlugin("SolarOrbz")->GetBaseDir() / TEXT("Resources"));
+
+	Style->Set("SolarOrbz.OpenPluginWindow", new IMAGE_BRUSH_SVG(TEXT("PlaceholderButtonIcon"), Icon20x20));
+
+	return Style;
+}
+
+void FSolarOrbzStyle::ReloadTextures()
+{
+	if (FSlateApplication::IsInitialized())
+	{
+		FSlateApplication::Get().GetRenderer()->ReloadTextureResources();
+	}
+}
+
+const ISlateStyle& FSolarOrbzStyle::Get()
+{
+	return *StyleInstance;
+}
+
+#undef RootToContentDir
+
+// ================================================================================================
+// FSolarOrbzCommands
+// ================================================================================================
+#define LOCTEXT_NAMESPACE "FSolarOrbzModule"
+
+void FSolarOrbzCommands::RegisterCommands()
+{
+	UI_COMMAND(OpenPluginWindow, "SolarOrbz", "Bring up SolarOrbz window", EUserInterfaceActionType::Button, FInputChord());
+}
+
+#undef LOCTEXT_NAMESPACE
+
+// ================================================================================================
+// SSolarOrbzMainPanel
+// ================================================================================================
 #define LOCTEXT_NAMESPACE "SolarOrbzMainPanel"
 
 namespace SolarOrbzUI
@@ -260,7 +342,7 @@ FText SSolarOrbzMainPanel::GetStatsText() const
 		if (Actor->WasLastGenerationDensityLimited())
 		{
 			Stats = FText::Format(
-				LOCTEXT("StatsFormatDensityCapped", "{0}\n⚠ Vertices Per Meter would need level {1} here - Max Subdivisions is capping it. The density value is not being reached."),
+				LOCTEXT("StatsFormatDensityCapped", "{0}\n\u26A0 Vertices Per Meter would need level {1} here - Max Subdivisions is capping it. The density value is not being reached."),
 				Stats,
 				FText::AsNumber(Actor->GetLastRequestedSubdivisionLevel()));
 		}
@@ -276,3 +358,98 @@ bool SSolarOrbzMainPanel::IsPreviewValid() const
 }
 
 #undef LOCTEXT_NAMESPACE
+
+// ================================================================================================
+// FSolarOrbzModule
+// ================================================================================================
+static const FName SolarOrbzTabName("SolarOrbz");
+
+#define LOCTEXT_NAMESPACE "FSolarOrbzModule"
+
+void FSolarOrbzModule::StartupModule()
+{
+	// This code will execute after your module is loaded into memory; the exact timing is specified in the .uplugin file per-module
+
+	FSolarOrbzStyle::Initialize();
+	FSolarOrbzStyle::ReloadTextures();
+
+	FSolarOrbzCommands::Register();
+
+	PluginCommands = MakeShareable(new FUICommandList);
+
+	PluginCommands->MapAction(
+		FSolarOrbzCommands::Get().OpenPluginWindow,
+		FExecuteAction::CreateRaw(this, &FSolarOrbzModule::PluginButtonClicked),
+		FCanExecuteAction());
+
+	UToolMenus::RegisterStartupCallback(FSimpleMulticastDelegate::FDelegate::CreateRaw(this, &FSolarOrbzModule::RegisterMenus));
+
+	FGlobalTabmanager::Get()->RegisterNomadTabSpawner(SolarOrbzTabName, FOnSpawnTab::CreateRaw(this, &FSolarOrbzModule::OnSpawnPluginTab))
+		.SetDisplayName(LOCTEXT("FSolarOrbzTabTitle", "SolarOrbz"))
+		.SetMenuType(ETabSpawnerMenuType::Hidden);
+}
+
+void FSolarOrbzModule::ShutdownModule()
+{
+	// This function may be called during shutdown to clean up your module.  For modules that support dynamic reloading,
+	// we call this function before unloading the module.
+
+	UToolMenus::UnRegisterStartupCallback(this);
+
+	UToolMenus::UnregisterOwner(this);
+
+	FSolarOrbzStyle::Shutdown();
+
+	FSolarOrbzCommands::Unregister();
+
+	FGlobalTabmanager::Get()->UnregisterNomadTabSpawner(SolarOrbzTabName);
+}
+
+TSharedRef<SDockTab> FSolarOrbzModule::OnSpawnPluginTab(const FSpawnTabArgs& SpawnTabArgs)
+{
+	FText WidgetText = FText::Format(
+		LOCTEXT("WindowWidgetText", "Add code to {0} in {1} to override this window's contents"),
+		FText::FromString(TEXT("FSolarOrbzModule::OnSpawnPluginTab")),
+		FText::FromString(TEXT("SolarOrbzEditor.cpp"))
+		);
+
+	return SNew(SDockTab)
+		.TabRole(ETabRole::NomadTab)
+		[
+			SNew(SSolarOrbzMainPanel)
+		];
+}
+
+void FSolarOrbzModule::PluginButtonClicked()
+{
+	FGlobalTabmanager::Get()->TryInvokeTab(SolarOrbzTabName);
+}
+
+void FSolarOrbzModule::RegisterMenus()
+{
+	// Owner will be used for cleanup in call to UToolMenus::UnregisterOwner
+	FToolMenuOwnerScoped OwnerScoped(this);
+
+	{
+		UToolMenu* Menu = UToolMenus::Get()->ExtendMenu("LevelEditor.MainMenu.Window");
+		{
+			FToolMenuSection& Section = Menu->FindOrAddSection("WindowLayout");
+			Section.AddMenuEntryWithCommandList(FSolarOrbzCommands::Get().OpenPluginWindow, PluginCommands);
+		}
+	}
+
+	{
+		UToolMenu* ToolbarMenu = UToolMenus::Get()->ExtendMenu("LevelEditor.LevelEditorToolBar.PlayToolBar");
+		{
+			FToolMenuSection& Section = ToolbarMenu->FindOrAddSection("PluginTools");
+			{
+				FToolMenuEntry& Entry = Section.AddEntry(FToolMenuEntry::InitToolBarButton(FSolarOrbzCommands::Get().OpenPluginWindow));
+				Entry.SetCommandList(PluginCommands);
+			}
+		}
+	}
+}
+
+#undef LOCTEXT_NAMESPACE
+
+IMPLEMENT_MODULE(FSolarOrbzModule, SolarOrbz)

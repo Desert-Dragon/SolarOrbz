@@ -1,7 +1,7 @@
 // SolarOrbz - Climate simulation implementation.
 
 #include "SolarOrbzClimateSimulation.h"
-#include "SolarOrbzTerrainLayerStack.h"
+#include "SolarOrbzTerrainLayers.h"
 
 namespace SolarOrbzClimate
 {
