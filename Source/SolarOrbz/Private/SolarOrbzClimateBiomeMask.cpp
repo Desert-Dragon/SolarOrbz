@@ -23,7 +23,7 @@ float USolarOrbzClimateBiomeMask::GetWeight(const FSolarOrbzBiomeSampleContext& 
 {
 	float Weight = 1.0f;
 
-	Weight *= Elevation.Evaluate(Context.Elevation);
+	Weight *= Elevation.Evaluate(Context.Elevation / 100.0f); // cm -> meters, to match the now-meters-authored Elevation range
 	if (Weight <= KINDA_SMALL_NUMBER)
 	{
 		return 0.0f;

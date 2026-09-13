@@ -23,14 +23,14 @@ public:
 	 * point ClimateSimulation's Sea Level measures from: the planet's base radius. Reference: Earth's
 	 * Everest is ~8,850m.
 	 */
-	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Noise", meta = (ClampMin = "0.0", Units = "m"))
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Noise", meta = (ClampMin = "0.0", ClampMax = "200000.0", Units = "m"))
 	float MaxElevationMeters = 8000.0f;
 
 	/**
 	 * How far below sea level (meters, entered as a positive depth) this layer's lowest points should
 	 * reach. Reference: Earth's Mariana Trench is ~10,900m deep; average ocean depth is closer to 3,700m.
 	 */
-	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Noise", meta = (ClampMin = "0.0", Units = "m"))
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Noise", meta = (ClampMin = "0.0", ClampMax = "200000.0", Units = "m"))
 	float MaxDepthMeters = 4000.0f;
 
 	virtual float GetRawHeight(const FVector& UnitDirection, const FVector2D& UV) const override;

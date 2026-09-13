@@ -26,13 +26,13 @@ public:
 	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Heightmap")
 	TObjectPtr<UTexture2D> HeightmapTexture;
 
-	/** World-space height (cm) that black (0.0) in the heightmap maps to. */
-	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Heightmap")
-	float MinHeight = -1100000.0f; // ~ -11,000 m (Mariana Trench), in cm
+	/** World-space height (meters) that black (0.0) in the heightmap maps to. */
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Heightmap", meta = (ClampMin = "-200000.0", ClampMax = "200000.0", Units = "m"))
+	float MinHeightMeters = -11000.0f; // Mariana Trench
 
-	/** World-space height (cm) that white (1.0) in the heightmap maps to. */
-	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Heightmap")
-	float MaxHeight = 884800.0f; // ~ 8,848 m (Everest), in cm
+	/** World-space height (meters) that white (1.0) in the heightmap maps to. */
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Heightmap", meta = (ClampMin = "-200000.0", ClampMax = "200000.0", Units = "m"))
+	float MaxHeightMeters = 8848.0f; // Everest
 
 	virtual float GetRawHeight(const FVector& UnitDirection, const FVector2D& UV) const override;
 

@@ -14,6 +14,8 @@ FVector USolarOrbzStampTerrainLayer::GetStampDirection() const
 
 float USolarOrbzStampTerrainLayer::GetRawHeight(const FVector& UnitDirection, const FVector2D& UV) const
 {
+	const float AmplitudeCm = AmplitudeMeters * 100.0f; // meters -> UE units (cm)
+
 	const FVector StampDirection = GetStampDirection();
 	const float CosAngle = FVector::DotProduct(UnitDirection, StampDirection);
 	const float AngleDeg = FMath::RadiansToDegrees(FMath::Acos(FMath::Clamp(CosAngle, -1.0f, 1.0f)));
@@ -59,7 +61,7 @@ float USolarOrbzStampTerrainLayer::GetRawHeight(const FVector& UnitDirection, co
 		const float HeightmapV = 0.5f + 0.5f * RY;
 
 		const float Height01 = Sampler.SampleBilinear01(HeightmapU, HeightmapV);
-		return Height01 * Amplitude * EdgeWeight;
+		return Height01 * AmplitudeCm * EdgeWeight;
 	}
 
 	// No heightmap - procedural dome (or crater) using a smooth cosine profile so the peak is C1-continuous.
@@ -68,11 +70,11 @@ float USolarOrbzStampTerrainLayer::GetRawHeight(const FVector& UnitDirection, co
 	float HeightValue;
 	if (!bCrater)
 	{
-		HeightValue = Shape * Amplitude;
+		HeightValue = Shape * AmplitudeCm;
 	}
 	else
 	{
-		const float CraterDepth = -Shape * Amplitude;
+		const float CraterDepth = -Shape * AmplitudeCm;
 
 		float RimShape = 0.0f;
 		if (CraterRimHeight > 0.0f)
@@ -83,7 +85,7 @@ float USolarOrbzStampTerrainLayer::GetRawHeight(const FVector& UnitDirection, co
 			RimShape = RimT * RimT * (3.0f - 2.0f * RimT); // smoothstep-shaped bump
 		}
 
-		HeightValue = CraterDepth + RimShape * CraterRimHeight * Amplitude;
+		HeightValue = CraterDepth + RimShape * CraterRimHeight * AmplitudeCm;
 	}
 
 	return HeightValue * EdgeWeight;

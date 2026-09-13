@@ -93,8 +93,8 @@ public:
 	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Climate|Temperature", meta = (ClampMin = "0.0"))
 	float LapseRatePerKm = 6.5f;
 
-	/** Elevation (cm, relative to base radius) below which a cell counts as ocean - a moisture source and a warmth-moderated zone. */
-	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Climate", meta = (Units = "cm"))
+	/** Elevation (meters, relative to base radius) below which a cell counts as ocean - a moisture source and a warmth-moderated zone. */
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Climate", meta = (ClampMin = "-200000.0", ClampMax = "200000.0", Units = "m"))
 	float SeaLevel = 0.0f;
 
 	/**

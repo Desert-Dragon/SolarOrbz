@@ -73,6 +73,8 @@ void USolarOrbzClimateSimulationAsset::Simulate(const USolarOrbzTerrainLayerStac
 	const float EffectiveMoistureCapacity = MoistureCapacity * AtmosphereDensityFactor;
 	const float EffectiveEvaporationRate = EvaporationRate * AtmosphereDensityFactor;
 
+	const float SeaLevelCm = SeaLevel * 100.0f; // meters -> UE units (cm), to compare against Elevation which stays in cm internally
+
 	// --- Pass 1: sample elevation (via the same TerrainStack the mesh uses) and derive temperature for every cell. ---
 	TArray<float> ElevationCm;
 	ElevationCm.SetNumUninitialized(W * H);
@@ -100,7 +102,7 @@ void USolarOrbzClimateSimulationAsset::Simulate(const USolarOrbzTerrainLayerStac
 			ElevationCm[Idx] = Elevation;
 
 			const float LatitudeAbs = FMath::Abs((float)Z); // 0 equator .. 1 pole
-			const float ElevationAboveSeaKm = FMath::Max(Elevation - SeaLevel, 0.0f) / 100000.0f; // cm -> km
+			const float ElevationAboveSeaKm = FMath::Max(Elevation - SeaLevelCm, 0.0f) / 100000.0f; // cm -> km
 			const float BaseTemp = FMath::Lerp(EquatorTemperature, PoleTemperature, LatitudeAbs);
 			// Floored at absolute zero only - deliberately not clamped to any Earth-relative range,
 			// so a lava world or a cryogenic moon are both representable.
@@ -141,7 +143,7 @@ void USolarOrbzClimateSimulationAsset::Simulate(const USolarOrbzTerrainLayerStac
 			const int32 Idx = Y * W + RawX;
 			const float Elevation = ElevationCm[Idx];
 
-			if (Elevation <= SeaLevel)
+			if (Elevation <= SeaLevelCm)
 			{
 				Carried = FMath::Min(EffectiveMoistureCapacity, Carried + EffectiveEvaporationRate);
 			}
@@ -178,7 +180,7 @@ void USolarOrbzClimateSimulationAsset::Simulate(const USolarOrbzTerrainLayerStac
 	// so coastlines read as wet even though they never "receive" precipitation in the sim above.
 	for (int32 Idx = 0; Idx < ElevationCm.Num(); ++Idx)
 	{
-		if (ElevationCm[Idx] <= SeaLevel)
+		if (ElevationCm[Idx] <= SeaLevelCm)
 		{
 			OutGrid.Moisture01[Idx] = 1.0f;
 		}

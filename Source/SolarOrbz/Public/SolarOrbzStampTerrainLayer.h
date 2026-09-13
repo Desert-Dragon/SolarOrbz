@@ -42,15 +42,15 @@ public:
 	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Stamp")
 	TObjectPtr<UTexture2D> StampHeightmap;
 
-	/** Peak height (cm) - the dome/crater's extremum, or the heightmap's white value. */
-	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Stamp")
-	float Amplitude = 1000.0f;
+	/** Peak height (meters) - the dome/crater's extremum, or the heightmap's white value. */
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Stamp", meta = (ClampMin = "0.0", ClampMax = "1000000.0", Units = "m"))
+	float AmplitudeMeters = 10.0f;
 
 	/** Only used without a heightmap: carves a crater (dips down at the center, optionally with a rim) instead of a dome. */
 	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Stamp", meta = (EditCondition = "StampHeightmap == nullptr"))
 	bool bCrater = false;
 
-	/** Only used with bCrater: adds a raised rim at the crater's edge, as a fraction of Amplitude. 0 disables the rim. */
+	/** Only used with bCrater: adds a raised rim at the crater's edge, as a fraction of Amplitude Meters. 0 disables the rim. */
 	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Stamp", meta = (EditCondition = "bCrater && StampHeightmap == nullptr", ClampMin = "0.0"))
 	float CraterRimHeight = 0.3f;
 

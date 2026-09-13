@@ -4,5 +4,5 @@
 
 float USolarOrbzNoiseTerrainLayer::GetRawHeight(const FVector& UnitDirection, const FVector2D& UV) const
 {
-	return ComputeNormalizedNoise(UnitDirection) * Amplitude;
+	return ComputeNormalizedNoise(UnitDirection) * AmplitudeMeters * 100.0f; // meters -> UE units (cm)
 }

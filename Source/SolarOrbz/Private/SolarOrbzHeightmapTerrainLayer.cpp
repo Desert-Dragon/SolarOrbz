@@ -11,5 +11,5 @@ float USolarOrbzHeightmapTerrainLayer::GetRawHeight(const FVector& UnitDirection
 	}
 
 	const float Height01 = Sampler.SampleBilinear01(UV.X, UV.Y);
-	return FMath::Lerp(MinHeight, MaxHeight, Height01);
+	return FMath::Lerp(MinHeightMeters, MaxHeightMeters, Height01) * 100.0f; // meters -> UE units (cm)
 }

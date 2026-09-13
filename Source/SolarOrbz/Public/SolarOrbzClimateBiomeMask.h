@@ -37,7 +37,7 @@ class SOLARORBZ_API USolarOrbzClimateBiomeMask : public USolarOrbzBiomeMask
 	GENERATED_BODY()
 
 public:
-	/** Elevation range, UE units (cm), relative to the planet's base radius. */
+	/** Elevation range, meters, relative to the planet's base radius. */
 	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Climate")
 	FSolarOrbzMaskRange Elevation;
 

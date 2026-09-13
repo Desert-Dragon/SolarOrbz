@@ -91,15 +91,44 @@ void ASolarOrbzIcoSphereActor::RegenerateMesh()
 		// so rain shadows react to eroded terrain rather than the pre-erosion noise.
 		TerrainStack->PrepareLayers(RadiusCm);
 
+		float MinHeight = TNumericLimits<float>::Max(), MaxHeight = TNumericLimits<float>::Lowest(), SumHeight = 0.0f;
+
 		for (int32 i = 0; i < CachedMeshData.Vertices.Num(); ++i)
 		{
 			const FVector& UnitDirection = OriginalUnitDirections[i];
 			const float Height = TerrainStack->EvaluateHeight(UnitDirection, CachedMeshData.UVs[i]);
 			CachedMeshData.Vertices[i] += UnitDirection * Height;
+
+			MinHeight = FMath::Min(MinHeight, Height);
+			MaxHeight = FMath::Max(MaxHeight, Height);
+			SumHeight += Height;
+		}
+
+		const float AvgHeight = CachedMeshData.Vertices.Num() > 0 ? SumHeight / CachedMeshData.Vertices.Num() : 0.0f;
+		const float PeakToPeakCm = MaxHeight - MinHeight;
+		UE_LOG(LogSolarOrbz, Log,
+			TEXT("SolarOrbz Terrain: %d enabled layer(s), height range %.1fcm..%.1fcm (avg %.1fcm), peak-to-peak %.1fcm = %.4f%% of radius (%.1fcm)"),
+			TerrainStack->Layers.Num(), MinHeight, MaxHeight, AvgHeight, PeakToPeakCm,
+			RadiusCm > KINDA_SMALL_NUMBER ? (PeakToPeakCm / RadiusCm) * 100.0f : 0.0f, RadiusCm);
+
+		if (PeakToPeakCm < KINDA_SMALL_NUMBER)
+		{
+			UE_LOG(LogSolarOrbz, Warning,
+				TEXT("SolarOrbz Terrain: peak-to-peak height is ~0 - either every layer is disabled/has 0 Weight, or the stack has no layers at all. Check the Layers array on your TerrainLayerStack asset."));
+		}
+		else if (PeakToPeakCm / RadiusCm < 0.001f) // under 0.1% of radius
+		{
+			UE_LOG(LogSolarOrbz, Warning,
+				TEXT("SolarOrbz Terrain: peak-to-peak height is only %.4f%% of the planet's radius - this is real terrain, not a bug, but at that scale it will look essentially flat when viewing the whole planet (this is also true of real Earth - Everest is only ~0.14%% of Earth's radius). Zoom the camera in close to the surface to confirm the bumps are really there, or temporarily raise elevation values well past realistic for an at-a-glance test."),
+				(PeakToPeakCm / RadiusCm) * 100.0f);
 		}
 
 		// Recompute now so Pass B has real slope data to mask against, not the pristine sphere's.
 		FSolarOrbzIcoSphereGenerator::RecomputeSmoothNormals(CachedMeshData);
+	}
+	else
+	{
+		UE_LOG(LogSolarOrbz, Warning, TEXT("SolarOrbz Terrain: no TerrainStack assigned on the actor - the mesh is a perfect sphere."));
 	}
 
 	// --- Climate simulation: runs once on its own lat/long grid (not per-vertex), sampling elevation ---
