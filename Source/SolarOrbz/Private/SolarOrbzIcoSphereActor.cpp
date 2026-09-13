@@ -103,6 +103,38 @@ void ASolarOrbzIcoSphereActor::RegenerateMesh()
 	if (ClimateSimulation)
 	{
 		ClimateSimulation->Simulate(TerrainStack, RadiusCm, CachedClimateGrid);
+
+		if (CachedClimateGrid.IsValid())
+		{
+			float MinTemp = TNumericLimits<float>::Max(), MaxTemp = TNumericLimits<float>::Lowest(), SumTemp = 0.0f;
+			float MinMoist = TNumericLimits<float>::Max(), MaxMoist = TNumericLimits<float>::Lowest(), SumMoist = 0.0f;
+			for (int32 Idx = 0; Idx < CachedClimateGrid.TemperatureKelvin.Num(); ++Idx)
+			{
+				const float T = CachedClimateGrid.TemperatureKelvin[Idx];
+				const float M = CachedClimateGrid.Moisture01[Idx];
+				MinTemp = FMath::Min(MinTemp, T); MaxTemp = FMath::Max(MaxTemp, T); SumTemp += T;
+				MinMoist = FMath::Min(MinMoist, M); MaxMoist = FMath::Max(MaxMoist, M); SumMoist += M;
+			}
+			const int32 CellCount = CachedClimateGrid.TemperatureKelvin.Num();
+			UE_LOG(LogSolarOrbz, Log,
+				TEXT("SolarOrbz Climate: grid %dx%d - Temperature %.1fK..%.1fK (avg %.1fK), Moisture %.3f..%.3f (avg %.3f)"),
+				CachedClimateGrid.Width, CachedClimateGrid.Height, MinTemp, MaxTemp, SumTemp / CellCount, MinMoist, MaxMoist, SumMoist / CellCount);
+
+			if (MaxMoist - MinMoist < KINDA_SMALL_NUMBER)
+			{
+				UE_LOG(LogSolarOrbz, Warning,
+					TEXT("SolarOrbz Climate: Moisture is completely flat (%.3f everywhere) - either every cell is below Sea Level (all ocean) or TerrainStack has no real elevation variation, so wind/atmosphere settings have nothing to act on."),
+					MinMoist);
+			}
+		}
+		else
+		{
+			UE_LOG(LogSolarOrbz, Warning, TEXT("SolarOrbz Climate: ClimateSimulation is assigned but produced an invalid grid (check Grid Width/Height)."));
+		}
+	}
+	else if (bShowBiomeDebugColors)
+	{
+		UE_LOG(LogSolarOrbz, Warning, TEXT("SolarOrbz Climate: no ClimateSimulation assigned on the actor - any Climate Biome Mask using Moisture/Temperature is running on its no-simulation fallback, not real simulated data."));
 	}
 
 	// --- Pass B: biome-specific detail, masked by climate/composite conditions and blended on top. ---
@@ -113,6 +145,9 @@ void ASolarOrbzIcoSphereActor::RegenerateMesh()
 		{
 			BiomeDebugColors.SetNum(CachedMeshData.Vertices.Num());
 		}
+
+		int32 NumWithClimateData = 0;
+		int32 NumDominantBiomeHits = 0;
 
 		for (int32 i = 0; i < CachedMeshData.Vertices.Num(); ++i)
 		{
@@ -128,6 +163,7 @@ void ASolarOrbzIcoSphereActor::RegenerateMesh()
 			{
 				Context.bHasClimateData = true;
 				CachedClimateGrid.Sample(UnitDirection, Context.Temperature, Context.Moisture);
+				++NumWithClimateData;
 			}
 
 			const float BiomeHeight = BiomeStack->EvaluateBiomeTerrainContribution(Context);
@@ -138,6 +174,7 @@ void ASolarOrbzIcoSphereActor::RegenerateMesh()
 				if (const USolarOrbzBiome* Dominant = BiomeStack->GetDominantBiome(Context))
 				{
 					BiomeDebugColors[i] = Dominant->PreviewColor;
+					++NumDominantBiomeHits;
 				}
 				else
 				{
@@ -147,9 +184,33 @@ void ASolarOrbzIcoSphereActor::RegenerateMesh()
 		}
 
 		FSolarOrbzIcoSphereGenerator::RecomputeSmoothNormals(CachedMeshData);
+
+		if (bShowBiomeDebugColors)
+		{
+			UE_LOG(LogSolarOrbz, Log,
+				TEXT("SolarOrbz Biome Debug: %d/%d verts had climate data, %d/%d verts matched a biome layer (rest rendered black = no layer applies there)."),
+				NumWithClimateData, CachedMeshData.Vertices.Num(), NumDominantBiomeHits, CachedMeshData.Vertices.Num());
+
+			if (NumDominantBiomeHits == 0)
+			{
+				UE_LOG(LogSolarOrbz, Warning, TEXT("SolarOrbz Biome Debug: not a single vertex matched any biome layer's mask - check each layer's Mask Preset ranges (Min/Max/Falloff) against the Moisture/Temperature/Elevation stats logged above."));
+			}
+		}
+	}
+	else if (bShowBiomeDebugColors)
+	{
+		UE_LOG(LogSolarOrbz, Warning, TEXT("SolarOrbz Biome Debug: Show Biome Debug Colors is on but no BiomeStack is assigned - there's nothing to color, the mesh will render fully black (or white, if the material has no vertex colors at all)."));
+	}
+
+	if (bShowBiomeDebugColors && !DebugBiomeMaterial)
+	{
+		UE_LOG(LogSolarOrbz, Warning, TEXT("SolarOrbz Biome Debug: Show Biome Debug Colors is on but Debug Biome Material is not assigned - slot 0 will get a null material (default checker/gray) regardless of the vertex colors computed above."));
 	}
 
 	ProcMesh->SetMaterial(0, bShowBiomeDebugColors ? DebugBiomeMaterial : DefaultMaterial);
+	UE_LOG(LogSolarOrbz, Log, TEXT("SolarOrbz: material slot 0 set to '%s' (bShowBiomeDebugColors=%s)"),
+		*GetNameSafe(bShowBiomeDebugColors ? DebugBiomeMaterial : DefaultMaterial),
+		bShowBiomeDebugColors ? TEXT("true") : TEXT("false"));
 
 	TArray<FProcMeshTangent> ProcTangents;
 	ProcTangents.Reserve(CachedMeshData.Tangents.Num());
