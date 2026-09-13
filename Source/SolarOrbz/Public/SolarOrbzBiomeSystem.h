@@ -1,9 +1,17 @@
 // SolarOrbz - Biome System subsystem. Combines the mask base class/sample context, the Climate
-// and Composite mask types, the standalone Mask Preset asset, the Biome asset, and the ordered
-// Biome Stack into one file. Grouped together because they form one tightly-coupled system: masks
-// answer "how strongly does a biome apply here" (0..1) given a point's climate/shape inputs, biomes
-// bundle what to actually paint when a mask matches, and the stack combines many (Biome, Mask)
-// pairs Photoshop-style across a whole planet.
+// and Composite mask types, the Biome asset (which now owns its own mask directly - see below),
+// and the ordered Biome Stack into one file. Grouped together because they form one tightly-
+// coupled system: masks answer "how strongly does a biome apply here" (0..1) given a point's
+// climate/shape inputs, biomes bundle what to actually paint when their mask matches, and the
+// stack combines many biomes Photoshop-style across a whole planet.
+//
+// A biome's mask is now embedded directly on the Biome asset (Instanced, same pattern as Terrain
+// Layers on a Terrain Layer Stack) instead of living in a separate standalone Mask Preset asset -
+// one asset to author per biome instead of two. Reuse of a mask condition across multiple biomes
+// still works, just differently: a Composite Mask now references other Biome assets directly and
+// combines their embedded masks, rather than referencing separate preset files. So "Icy Chemical
+// Mountain" is built by creating a Biome whose own Mask is a Composite Mask listing your existing
+// "Icy" and "Mountain" biomes - reusing their conditions without redefining them.
 
 #pragma once
 
@@ -13,6 +21,7 @@
 #include "SolarOrbzBiomeSystem.generated.h"
 
 class USolarOrbzTerrainLayerStack;
+class USolarOrbzBiome;
 
 // ================================================================================================
 // FSolarOrbzBiomeSampleContext / USolarOrbzBiomeMask - everything a mask (or a biome's terrain
@@ -163,33 +172,11 @@ public:
 };
 
 // ================================================================================================
-// USolarOrbzBiomeMaskPreset - a reusable, standalone asset holding one mask (Climate, Composite,
-// etc). Create these directly in the Content Browser (right-click -> Miscellaneous -> Data Asset
-// -> SolarOrbzBiomeMaskPreset), then reference the same preset from as many biome layers or
-// composite masks as you like - e.g. author "Near Poles" once, reuse it everywhere.
-// ================================================================================================
-UCLASS(BlueprintType)
-class SOLARORBZ_API USolarOrbzBiomeMaskPreset : public UPrimaryDataAsset
-{
-	GENERATED_BODY()
-
-public:
-	/** Pick a mask type from the dropdown (Climate Mask, Composite Mask, ...) - this is where the actual condition lives. */
-	UPROPERTY(EditAnywhere, Instanced, Category = "SolarOrbz|Mask")
-	TObjectPtr<USolarOrbzBiomeMask> RootMask;
-
-	float GetWeight(const FSolarOrbzBiomeSampleContext& Context) const
-	{
-		return RootMask ? RootMask->GetWeight(Context) : 1.0f;
-	}
-};
-
-// ================================================================================================
-// USolarOrbzCompositeBiomeMask - combines other mask presets so compound biome variants ("Icy
-// Chemical" + "Mountain") are built by stacking simple, reusable masks rather than needing a
-// dedicated class or enum entry per combination. Children are Mask Preset asset references (not
-// embedded masks) so the same building-block mask (e.g. "Near Poles") can be reused across many
-// composites.
+// USolarOrbzCompositeBiomeMask - combines other biomes' masks so compound biome variants ("Icy
+// Chemical" + "Mountain") are built by stacking simple, reusable conditions rather than needing a
+// dedicated class or enum entry per combination. Children are Biome asset references, so the same
+// building-block biome (e.g. "Icy") can be reused as an input condition across many composites
+// without redefining its mask.
 // ================================================================================================
 UENUM(BlueprintType)
 enum class ESolarOrbzMaskCombineMode : uint8
@@ -206,8 +193,9 @@ class SOLARORBZ_API USolarOrbzCompositeBiomeMask : public USolarOrbzBiomeMask
 	GENERATED_BODY()
 
 public:
+	/** Other biomes whose masks combine to form this condition. Each one's own Mask is what's actually evaluated - this just reuses it, it doesn't duplicate it. */
 	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Composite")
-	TArray<TObjectPtr<USolarOrbzBiomeMaskPreset>> Masks;
+	TArray<TObjectPtr<USolarOrbzBiome>> Biomes;
 
 	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Composite")
 	ESolarOrbzMaskCombineMode CombineMode = ESolarOrbzMaskCombineMode::Multiply;
@@ -216,10 +204,10 @@ public:
 };
 
 // ================================================================================================
-// FSolarOrbzBiomeScatterEntry / USolarOrbzBiome - a reusable bundle: optional extra terrain detail
-// (blended in wherever this biome's mask is active) and scatter definitions that will feed a
-// future PCG/PCGEx hookup. Store these as assets and reuse them across planets, the same way World
-// Creator's biome presets work.
+// FSolarOrbzBiomeScatterEntry / USolarOrbzBiome - a reusable bundle: the mask deciding where it
+// applies, optional extra terrain detail (blended in wherever that mask is active), and scatter
+// definitions that will feed a future PCG/PCGEx hookup. Store these as assets and reuse them
+// across planets, the same way World Creator's biome presets work.
 // ================================================================================================
 
 /**
@@ -251,6 +239,10 @@ class SOLARORBZ_API USolarOrbzBiome : public UPrimaryDataAsset
 	GENERATED_BODY()
 
 public:
+	/** Where this biome applies. Pick a mask type from the dropdown (Climate Mask, Composite Mask, ...) - this is where the actual condition lives. Leave unset for "always applies". */
+	UPROPERTY(EditAnywhere, Instanced, Category = "SolarOrbz|Biome")
+	TObjectPtr<USolarOrbzBiomeMask> Mask;
+
 	/** Identifier color for this biome in editor visualizations (mask previews, debug views, etc). */
 	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Biome")
 	FLinearColor PreviewColor = FLinearColor::White;
@@ -262,24 +254,29 @@ public:
 	/** Placeholder for the future PCG/PCGEx hookup - what this biome scatters, and how densely. */
 	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Biome")
 	TArray<FSolarOrbzBiomeScatterEntry> ScatterEntries;
+
+	/**
+	 * How strongly this biome applies at the given point, 0..1. Guards against a Composite Mask
+	 * accidentally forming a reference cycle (Biome A's mask includes Biome B, whose mask includes
+	 * Biome A) by capping recursion depth and logging a warning rather than hanging or crashing.
+	 */
+	float GetWeight(const FSolarOrbzBiomeSampleContext& Context) const;
 };
 
 // ================================================================================================
-// FSolarOrbzBiomeLayerEntry / USolarOrbzBiomeStack - an ordered list of (Biome, MaskPreset,
-// Opacity) layers, painted onto the planet Photoshop-style. Layers[0] is the bottom of the stack;
-// the last entry is the topmost / highest priority.
+// FSolarOrbzBiomeLayerEntry / USolarOrbzBiomeStack - an ordered list of (Biome, Opacity) layers,
+// painted onto the planet Photoshop-style. Layers[0] is the bottom of the stack; the last entry is
+// the topmost / highest priority. Where each biome applies comes from that Biome's own Mask now,
+// not a separate reference here.
 // ================================================================================================
 USTRUCT(BlueprintType)
 struct SOLARORBZ_API FSolarOrbzBiomeLayerEntry
 {
 	GENERATED_BODY()
 
+	/** Which biome this layer paints - where it applies comes from this Biome's own Mask. */
 	UPROPERTY(EditAnywhere, Category = "SolarOrbz|BiomeLayer")
 	TObjectPtr<USolarOrbzBiome> Biome;
-
-	/** Where this biome applies. Reference a Mask Preset asset - create one via right-click -> Miscellaneous -> Data Asset -> SolarOrbzBiomeMaskPreset. Leave unset for "always applies". */
-	UPROPERTY(EditAnywhere, Category = "SolarOrbz|BiomeLayer")
-	TObjectPtr<USolarOrbzBiomeMaskPreset> Mask;
 
 	/** Overall strength multiplier for this layer, independent of the mask. */
 	UPROPERTY(EditAnywhere, Category = "SolarOrbz|BiomeLayer", meta = (ClampMin = "0.0", ClampMax = "1.0"))

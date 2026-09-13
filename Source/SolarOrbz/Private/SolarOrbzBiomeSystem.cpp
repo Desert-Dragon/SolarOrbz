@@ -86,15 +86,11 @@ float USolarOrbzClimateBiomeMask::GetWeight(const FSolarOrbzBiomeSampleContext& 
 }
 
 // ================================================================================================
-// USolarOrbzBiomeMaskPreset - GetWeight is inline; nothing else to implement here.
-// ================================================================================================
-
-// ================================================================================================
 // USolarOrbzCompositeBiomeMask
 // ================================================================================================
 float USolarOrbzCompositeBiomeMask::GetWeight(const FSolarOrbzBiomeSampleContext& Context) const
 {
-	if (Masks.Num() == 0)
+	if (Biomes.Num() == 0)
 	{
 		return 1.0f; // no children = no restriction, matching an "empty AND is true" convention
 	}
@@ -104,11 +100,11 @@ float USolarOrbzCompositeBiomeMask::GetWeight(const FSolarOrbzBiomeSampleContext
 	case ESolarOrbzMaskCombineMode::Multiply:
 	{
 		float Result = 1.0f;
-		for (const TObjectPtr<USolarOrbzBiomeMaskPreset>& MaskPreset : Masks)
+		for (const TObjectPtr<USolarOrbzBiome>& Biome : Biomes)
 		{
-			if (MaskPreset)
+			if (Biome)
 			{
-				Result *= MaskPreset->GetWeight(Context);
+				Result *= Biome->GetWeight(Context);
 				if (Result <= KINDA_SMALL_NUMBER)
 				{
 					return 0.0f;
@@ -120,11 +116,11 @@ float USolarOrbzCompositeBiomeMask::GetWeight(const FSolarOrbzBiomeSampleContext
 	case ESolarOrbzMaskCombineMode::Min:
 	{
 		float Result = 1.0f;
-		for (const TObjectPtr<USolarOrbzBiomeMaskPreset>& MaskPreset : Masks)
+		for (const TObjectPtr<USolarOrbzBiome>& Biome : Biomes)
 		{
-			if (MaskPreset)
+			if (Biome)
 			{
-				Result = FMath::Min(Result, MaskPreset->GetWeight(Context));
+				Result = FMath::Min(Result, Biome->GetWeight(Context));
 			}
 		}
 		return Result;
@@ -132,11 +128,11 @@ float USolarOrbzCompositeBiomeMask::GetWeight(const FSolarOrbzBiomeSampleContext
 	case ESolarOrbzMaskCombineMode::Max:
 	{
 		float Result = 0.0f;
-		for (const TObjectPtr<USolarOrbzBiomeMaskPreset>& MaskPreset : Masks)
+		for (const TObjectPtr<USolarOrbzBiome>& Biome : Biomes)
 		{
-			if (MaskPreset)
+			if (Biome)
 			{
-				Result = FMath::Max(Result, MaskPreset->GetWeight(Context));
+				Result = FMath::Max(Result, Biome->GetWeight(Context));
 			}
 		}
 		return Result;
@@ -145,11 +141,11 @@ float USolarOrbzCompositeBiomeMask::GetWeight(const FSolarOrbzBiomeSampleContext
 	{
 		float Sum = 0.0f;
 		int32 Count = 0;
-		for (const TObjectPtr<USolarOrbzBiomeMaskPreset>& MaskPreset : Masks)
+		for (const TObjectPtr<USolarOrbzBiome>& Biome : Biomes)
 		{
-			if (MaskPreset)
+			if (Biome)
 			{
-				Sum += MaskPreset->GetWeight(Context);
+				Sum += Biome->GetWeight(Context);
 				++Count;
 			}
 		}
@@ -161,8 +157,34 @@ float USolarOrbzCompositeBiomeMask::GetWeight(const FSolarOrbzBiomeSampleContext
 }
 
 // ================================================================================================
-// USolarOrbzBiome - no logic, just data; nothing to implement here.
+// USolarOrbzBiome
 // ================================================================================================
+float USolarOrbzBiome::GetWeight(const FSolarOrbzBiomeSampleContext& Context) const
+{
+	if (!Mask)
+	{
+		return 1.0f;
+	}
+
+	// A Composite Mask can reference other Biomes, whose own Mask can itself be a Composite Mask
+	// referencing back - an accidental cycle here would recurse forever and hang/crash the editor.
+	// This depth cap turns that into a loud, recoverable warning instead. thread_local so this is
+	// safe even if biome evaluation is ever parallelized across vertices later.
+	static thread_local int32 RecursionDepth = 0;
+	constexpr int32 MaxRecursionDepth = 16;
+
+	if (RecursionDepth >= MaxRecursionDepth)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("SolarOrbz Biome: '%s' hit max mask recursion depth (%d) - you likely have a Composite Mask reference cycle (Biome A's mask includes Biome B, whose mask includes Biome A, directly or through more steps). Returning 0 for this branch."), *GetName(), MaxRecursionDepth);
+		return 0.0f;
+	}
+
+	++RecursionDepth;
+	const float Weight = Mask->GetWeight(Context);
+	--RecursionDepth;
+
+	return Weight;
+}
 
 // ================================================================================================
 // USolarOrbzBiomeStack
@@ -172,7 +194,7 @@ void USolarOrbzBiomeStack::EvaluateLayerWeights(const FSolarOrbzBiomeSampleConte
 	OutWeights.Reset(Layers.Num());
 	for (const FSolarOrbzBiomeLayerEntry& Entry : Layers)
 	{
-		const float MaskWeight = Entry.Mask ? Entry.Mask->GetWeight(Context) : 1.0f;
+		const float MaskWeight = Entry.Biome ? Entry.Biome->GetWeight(Context) : 0.0f;
 		OutWeights.Add(FMath::Clamp(MaskWeight * Entry.Opacity, 0.0f, 1.0f));
 	}
 }
@@ -190,7 +212,7 @@ USolarOrbzBiome* USolarOrbzBiomeStack::GetDominantBiome(const FSolarOrbzBiomeSam
 			continue;
 		}
 
-		const float MaskWeight = (Entry.Mask ? Entry.Mask->GetWeight(Context) : 1.0f) * Entry.Opacity;
+		const float MaskWeight = Entry.Biome->GetWeight(Context) * Entry.Opacity;
 		if (MaskWeight >= BestWeight)
 		{
 			BestWeight = MaskWeight;
@@ -212,7 +234,7 @@ float USolarOrbzBiomeStack::EvaluateBiomeTerrainContribution(const FSolarOrbzBio
 			continue;
 		}
 
-		const float Weight = (Entry.Mask ? Entry.Mask->GetWeight(Context) : 1.0f) * Entry.Opacity;
+		const float Weight = Entry.Biome->GetWeight(Context) * Entry.Opacity;
 		if (Weight <= KINDA_SMALL_NUMBER)
 		{
 			continue;
