@@ -98,18 +98,6 @@ public:
 	float SeaLevel = 0.0f;
 
 	/**
-	 * Air density at sea level, kg/m^3. Earth is ~1.225; Mars is ~0.02 (thin); Venus is ~65 (thick).
-	 * Scales the effective Moisture Capacity and Evaporation Rate below relative to Earth's density
-	 * (square-rooted, so Venus's ~53x density doesn't turn into an unusably huge multiplier), so the
-	 * same wind-tuning numbers naturally produce a parched thin-atmosphere world or a saturated
-	 * thick-atmosphere one without re-tuning every wind parameter by hand. This is a deliberately
-	 * simplified stand-in for the real thermodynamics (vapor pressure, specific heat, etc.), not a
-	 * full atmospheric model.
-	 */
-	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Climate|Atmosphere", meta = (ClampMin = "0.0"))
-	float AtmosphereDensityAtSeaLevel = 1.225f;
-
-	/**
 	 * Simplified three-cell atmospheric circulation, mirrored across both hemispheres by absolute
 	 * latitude: tropical easterlies (0..TradeWindEdgeDegrees) blow east-to-west, mid-latitude
 	 * westerlies (TradeWindEdgeDegrees..WesterliesEdgeDegrees) blow west-to-east, and polar
@@ -155,6 +143,14 @@ public:
 	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Climate|Wind", meta = (ClampMin = "0.0"))
 	float OrographicRainfallFactor = 2.0f;
 
-	/** Runs the simulation and fills OutGrid. TerrainStack may be null (flat sea-level planet - useful for testing wind/temperature settings in isolation). */
-	void Simulate(const USolarOrbzTerrainLayerStack* TerrainStack, float RadiusCm, FSolarOrbzClimateGrid& OutGrid) const;
+	/** Runs the simulation and fills OutGrid. TerrainStack may be null (flat sea-level planet - useful for testing wind/temperature settings in isolation).
+	 * @param AtmosphereDensityAtSeaLevel  kg/m^3. Earth ~1.225; Mars ~0.02 (thin); Venus ~65 (thick); 0 for airless.
+	 *        Typically read from the actor's assigned Planet Profile (USolarOrbzPlanetProfile::GetAtmosphereDensityAtSeaLevel)
+	 *        rather than authored here, so a Climate Simulation asset can be shared across planets with different
+	 *        atmospheres. Scales the effective Moisture Capacity and Evaporation Rate below relative to Earth's
+	 *        density (square-rooted, so Venus's ~53x density doesn't turn into an unusably huge multiplier) - a
+	 *        deliberately simplified stand-in for real thermodynamics (vapor pressure, specific heat, etc.), not a
+	 *        full atmospheric model.
+	 */
+	void Simulate(const USolarOrbzTerrainLayerStack* TerrainStack, float RadiusCm, float AtmosphereDensityAtSeaLevel, FSolarOrbzClimateGrid& OutGrid) const;
 };

@@ -179,6 +179,21 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "SolarOrbz|Climate")
 	TObjectPtr<class USolarOrbzClimateSimulationAsset> ClimateSimulation;
 
+	/**
+	 * Optional. This body's physical identity - gravity, atmosphere, landmass counts for a planet;
+	 * different data entirely for a star or asteroid. Assign a Planet/Star/Asteroid Profile asset
+	 * here. When a Planet Profile is assigned, its Atmosphere Density At Sea Level feeds the Climate
+	 * Simulation above automatically - Climate Simulation no longer authors its own copy, so this is
+	 * the one place that number lives. Leave unset to fall back to Earth's atmosphere density (1.225
+	 * kg/m^3) for Climate Simulation, and 9.81 m/s^2 gravity if you read GetResolvedSurfaceGravity().
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "SolarOrbz|Profile")
+	TObjectPtr<class USolarOrbzCelestialBodyProfile> Profile;
+
+	/** This body's gravity, m/s^2 - resolved from Profile if it's a Planet Profile, otherwise Earth's 9.81 as a sane fallback. Read this for player physics so gravity is correct without a separate volume to keep in sync. */
+	UFUNCTION(BlueprintCallable, Category = "SolarOrbz|Profile")
+	float GetResolvedSurfaceGravity() const;
+
 	/** When enabled, colors each vertex by its dominant biome's Preview Color instead of the normal material, so you can see layer boundaries directly. Needs an unlit material that reads vertex color assigned to Debug Biome Material below. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "SolarOrbz|Biome|Debug")
 	bool bShowBiomeDebugColors = false;

@@ -51,7 +51,7 @@ void FSolarOrbzClimateGrid::Sample(const FVector& UnitDirection, float& OutTempe
 	OutMoisture01 = SampleBilinear(Moisture01);
 }
 
-void USolarOrbzClimateSimulationAsset::Simulate(const USolarOrbzTerrainLayerStack* TerrainStack, float RadiusCm, FSolarOrbzClimateGrid& OutGrid) const
+void USolarOrbzClimateSimulationAsset::Simulate(const USolarOrbzTerrainLayerStack* TerrainStack, float RadiusCm, float AtmosphereDensityAtSeaLevel, FSolarOrbzClimateGrid& OutGrid) const
 {
 	using namespace SolarOrbzClimate;
 

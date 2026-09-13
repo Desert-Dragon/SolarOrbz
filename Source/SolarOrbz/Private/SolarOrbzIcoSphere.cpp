@@ -6,6 +6,7 @@
 
 #include "SolarOrbzTerrainLayers.h"
 #include "SolarOrbzBiomeSystem.h"
+#include "SolarOrbzProfiles.h"
 
 #include "Materials/MaterialInterface.h"
 #include "Engine/StaticMesh.h"
@@ -502,6 +503,15 @@ ASolarOrbzIcoSphereActor::ASolarOrbzIcoSphereActor()
 	ProcMesh->bUseAsyncCooking = true;
 }
 
+float ASolarOrbzIcoSphereActor::GetResolvedSurfaceGravity() const
+{
+	if (const USolarOrbzPlanetProfile* PlanetProfile = Cast<USolarOrbzPlanetProfile>(Profile))
+	{
+		return PlanetProfile->GetSurfaceGravity();
+	}
+	return 9.81f; // Earth fallback - matches the same fallback Climate Simulation uses for atmosphere density when no Profile is assigned.
+}
+
 void ASolarOrbzIcoSphereActor::OnConstruction(const FTransform& Transform)
 {
 	Super::OnConstruction(Transform);
@@ -522,6 +532,7 @@ void ASolarOrbzIcoSphereActor::PostEditChangeProperty(FPropertyChangedEvent& Pro
 		GET_MEMBER_NAME_CHECKED(ASolarOrbzIcoSphereActor, TerrainStack),
 		GET_MEMBER_NAME_CHECKED(ASolarOrbzIcoSphereActor, BiomeStack),
 		GET_MEMBER_NAME_CHECKED(ASolarOrbzIcoSphereActor, ClimateSimulation),
+		GET_MEMBER_NAME_CHECKED(ASolarOrbzIcoSphereActor, Profile),
 		GET_MEMBER_NAME_CHECKED(ASolarOrbzIcoSphereActor, bShowBiomeDebugColors),
 		GET_MEMBER_NAME_CHECKED(ASolarOrbzIcoSphereActor, DebugBiomeMaterial),
 		GET_MEMBER_NAME_CHECKED(ASolarOrbzIcoSphereActor, DefaultMaterial),
@@ -612,7 +623,19 @@ void ASolarOrbzIcoSphereActor::RegenerateMesh()
 	CachedClimateGrid.Reset();
 	if (ClimateSimulation)
 	{
-		ClimateSimulation->Simulate(TerrainStack, RadiusCm, CachedClimateGrid);
+		// Atmosphere density is Profile's data now, not Climate Simulation's own - falls back to
+		// Earth's 1.225 kg/m^3 if no Planet Profile is assigned, matching the old hardcoded default.
+		float AtmosphereDensityAtSeaLevel = 1.225f;
+		if (const USolarOrbzPlanetProfile* PlanetProfile = Cast<USolarOrbzPlanetProfile>(Profile))
+		{
+			AtmosphereDensityAtSeaLevel = PlanetProfile->GetAtmosphereDensityAtSeaLevel();
+		}
+		else if (Profile)
+		{
+			UE_LOG(LogSolarOrbz, Warning, TEXT("SolarOrbz Climate: Profile is assigned but isn't a Planet Profile (e.g. it's a Star or Asteroid Profile) - falling back to Earth's atmosphere density (1.225 kg/m^3) for Climate Simulation."));
+		}
+
+		ClimateSimulation->Simulate(TerrainStack, RadiusCm, AtmosphereDensityAtSeaLevel, CachedClimateGrid);
 
 		if (CachedClimateGrid.IsValid())
 		{
@@ -668,6 +691,7 @@ void ASolarOrbzIcoSphereActor::RegenerateMesh()
 			Context.UV = CachedMeshData.UVs[i];
 			Context.Elevation = FVector::DotProduct(CachedMeshData.Vertices[i], UnitDirection) - RadiusCm;
 			Context.Slope = FMath::Clamp(1.0f - FVector::DotProduct(CachedMeshData.Normals[i], UnitDirection), 0.0f, 1.0f);
+			Context.SeaLevel = ClimateSimulation ? ClimateSimulation->SeaLevel : 0.0f; // authored value, valid even if the simulation itself hasn't produced a grid
 
 			if (CachedClimateGrid.IsValid())
 			{

@@ -63,6 +63,17 @@ struct SOLARORBZ_API FSolarOrbzBiomeSampleContext
 	/** True once Temperature/Moisture above have been filled in by a ClimateSimulation asset. False = no simulation is assigned; masks should use their own fallback logic instead. */
 	UPROPERTY(BlueprintReadOnly, Category = "SolarOrbz|Biome")
 	bool bHasClimateData = false;
+
+	/**
+	 * Sea level, meters, same zero point Elevation is measured from (the planet's base radius).
+	 * Comes straight from a ClimateSimulation asset's Sea Level when one is assigned - independent
+	 * of bHasClimateData, since Sea Level is just an authored value, not something the simulation
+	 * has to actually run to know. 0 (the default, matching ClimateSimulation's own default) when no
+	 * ClimateSimulation asset is assigned. Elevation-based masks subtract this automatically, so
+	 * moving Sea Level moves biome bands with it instead of leaving them anchored to the old coastline.
+	 */
+	UPROPERTY(BlueprintReadOnly, Category = "SolarOrbz|Biome", meta = (Units = "m"))
+	float SeaLevel = 0.0f;
 };
 
 UCLASS(Abstract, EditInlineNew, DefaultToInstanced, BlueprintType)
@@ -110,7 +121,7 @@ class SOLARORBZ_API USolarOrbzClimateBiomeMask : public USolarOrbzBiomeMask
 	GENERATED_BODY()
 
 public:
-	/** Elevation range, meters, relative to the planet's base radius. */
+	/** Elevation range, meters, relative to Sea Level (not the raw base radius) - moves with Sea Level if you change it on your ClimateSimulation asset. */
 	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Climate")
 	FSolarOrbzMaskRange Elevation;
 
