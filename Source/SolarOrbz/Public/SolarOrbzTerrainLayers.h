@@ -14,6 +14,7 @@
 #include "SolarOrbzTerrainLayers.generated.h"
 
 class UTexture2D;
+class USolarOrbzPlanetProfile;
 
 // ================================================================================================
 // ESolarOrbzTerrainBlendMode / USolarOrbzTerrainLayer - the base class every layer below derives
@@ -68,6 +69,20 @@ public:
 	virtual void Bake(const TFunctionRef<float(const FVector& UnitDirection, const FVector2D& UV)>& PriorLayersHeight, float RadiusCm) {}
 
 	/**
+	 * Some layers (e.g. Continent) read part of a planet's physical identity (continent count, etc.)
+	 * from an assigned Planet Profile rather than being hardcoded per-instance. Called once per
+	 * regenerate, before PrepareLayers()/Bake(), with whatever Profile the actor has assigned - may
+	 * be null (no Profile assigned), or not a Planet Profile at all (a Star/Asteroid Profile
+	 * instead - always check for null before dereferencing). No-op by default; only layers that
+	 * actually care about Profile data override this. Implementations should NOT write the result
+	 * into their own UPROPERTY fields - this layer asset may be shared/reused across many planets
+	 * with different Profiles, so mutating a UPROPERTY here would corrupt that shared asset's saved
+	 * data the next time it's edited or the project is saved. Cache the resolved values in a
+	 * private, non-UPROPERTY member instead (see USolarOrbzContinentTerrainLayer for the pattern).
+	 */
+	virtual void ApplyProfile(const USolarOrbzPlanetProfile* Profile) {}
+
+	/**
 	 * Returns this layer's height contribution, in UE units (cm), at a point on the unit sphere.
 	 * @param UnitDirection  Normalized direction from the planet center (position on a unit sphere).
 	 * @param UV             The mesh's spherical UV at this point (matches FSolarOrbzIcoSphereMeshData::UVs).
@@ -92,6 +107,12 @@ class SOLARORBZ_API USolarOrbzTerrainLayerStack : public UPrimaryDataAsset
 public:
 	UPROPERTY(EditAnywhere, Instanced, Category = "SolarOrbz|Terrain")
 	TArray<TObjectPtr<USolarOrbzTerrainLayer>> Layers;
+
+	/**
+	 * Call once per regenerate, before PrepareLayers() - forwards Profile to every layer's own
+	 * ApplyProfile(). No-op for layers that don't override it.
+	 */
+	void ApplyProfile(const USolarOrbzPlanetProfile* Profile) const;
 
 	/**
 	 * Call once per regenerate, before any EvaluateHeight calls (including from a ClimateSimulation
@@ -593,13 +614,31 @@ public:
 	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Continent|Height", meta = (ClampMin = "0.0", Units = "m"))
 	float LandPlateauHeightMeters = 200.0f;
 
+	/**
+	 * When true (default), Num Continents / Num Islands / the pole flags above are overridden each
+	 * regenerate by the actor's assigned Planet Profile - IF one is actually assigned AND
+	 * ApplyProfile() was actually called (the actor's RegenerateMesh does this automatically; a
+	 * standalone/test use of this layer outside that flow won't). The properties above stay as the
+	 * fallback used whenever no override is in effect, and are never overwritten by the override -
+	 * this layer asset may be shared across many planets with different Profiles, so mutating its
+	 * own saved data here would corrupt that sharing. Turn this off to always use this layer's own
+	 * values regardless of any assigned Profile - useful for a secondary/detail continent layer that
+	 * shouldn't track the planet's "official" landmass count.
+	 */
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Continent")
+	bool bOverrideFromProfile = true;
+
 	//~ Begin USolarOrbzTerrainLayer interface
+	virtual void ApplyProfile(const USolarOrbzPlanetProfile* Profile) override;
 	virtual bool RequiresWholeSurfaceBake() const override { return true; }
 	virtual void Bake(const TFunctionRef<float(const FVector& UnitDirection, const FVector2D& UV)>& PriorLayersHeight, float RadiusCm) override;
 	virtual float GetRawHeight(const FVector& UnitDirection, const FVector2D& UV) const override;
 	//~ End USolarOrbzTerrainLayer interface
 
 private:
+	/** Set by ApplyProfile() each regenerate - null if no Profile was assigned, it wasn't a Planet Profile, ApplyProfile() was never called, or bOverrideFromProfile is false. Bake() reads Num Continents/etc through this when valid, falling back to this layer's own authored properties otherwise. Weak, not a hard reference - a Profile's lifetime isn't tied to this layer's. */
+	TWeakObjectPtr<const USolarOrbzPlanetProfile> ProfileOverride;
+
 	/** Regenerated each Bake() from Seed/NumContinents/NumIslands/poles - GetRawHeight only ever reads this, never regenerates it, so per-vertex cost stays a cheap linear scan. */
 	TArray<FSolarOrbzContinentSeedData> CachedSeeds;
 };

@@ -27,11 +27,17 @@ commitment or a schedule - just a place these don't get lost between sessions.
   plus optional landmasses pinned exactly to either pole. Islands are just smaller-radius versions
   of the same seed mechanism as continents (`Min/MaxContinentRadiusDegrees` vs `Min/MaxIslandRadiusDegrees`
   independently authored), not a post-hoc size classification.
-  - Still NOT wired to `USolarOrbzPlanetProfile::GetNumContinents()` etc - this layer has its own
-    authored Seed/NumContinents/NumIslands/pole flags, matching every other layer's self-contained
-    pattern, rather than reading from Profile automatically. A convenience "populate this layer's
-    fields from the assigned Profile" button/function would be a reasonable follow-up if that
-    disconnect becomes annoying in practice.
+  - **Now wired to `USolarOrbzPlanetProfile`.** New `bOverrideFromProfile` toggle (default true) -
+    when a Planet Profile is assigned to the actor, `NumContinents`/`NumIslands`/pole flags resolve
+    from `GetNumContinents()`/etc each regenerate instead of this layer's own authored values, which
+    become the fallback (used whenever no override is in effect - Profile unset, not a Planet
+    Profile, `ApplyProfile()` never called, or the toggle is off).
+  - This introduced a new `ApplyProfile()` virtual on the `USolarOrbzTerrainLayer` base class and a
+    matching forwarder on `USolarOrbzTerrainLayerStack`, called by the actor once per regenerate,
+    before `PrepareLayers()`/`Bake()` - any future layer that wants Profile data can hook into this
+    the same way. Deliberately does NOT mutate the layer's own UPROPERTY fields when overriding
+    (would corrupt a shared/reused-across-planets asset's saved data) - the resolved values are
+    cached in a private `TWeakObjectPtr`, resolved fresh inside `Bake()` each time.
   - Known simplification: seed placement is pure uniform-random on the sphere, not blue-noise/
     Poisson-disc, so seeds can occasionally cluster closer together than a hand-placed layout would.
 

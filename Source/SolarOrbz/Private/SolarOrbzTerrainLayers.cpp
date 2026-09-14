@@ -3,6 +3,7 @@
 #include "SolarOrbzTerrainLayers.h"
 #include "Engine/Texture2D.h"
 #include "Math/RandomStream.h"
+#include "SolarOrbzProfiles.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogSolarOrbzErosion, Log, All);
 DEFINE_LOG_CATEGORY_STATIC(LogSolarOrbzTerrace, Log, All);
@@ -15,6 +16,17 @@ DEFINE_LOG_CATEGORY_STATIC(LogSolarOrbzContinent, Log, All);
 // ================================================================================================
 // USolarOrbzTerrainLayerStack
 // ================================================================================================
+void USolarOrbzTerrainLayerStack::ApplyProfile(const USolarOrbzPlanetProfile* Profile) const
+{
+	for (const TObjectPtr<USolarOrbzTerrainLayer>& Layer : Layers)
+	{
+		if (Layer)
+		{
+			Layer->ApplyProfile(Profile);
+		}
+	}
+}
+
 void USolarOrbzTerrainLayerStack::PrepareLayers(float RadiusCm) const
 {
 	for (int32 i = 0; i < Layers.Num(); ++i)
@@ -787,12 +799,30 @@ namespace SolarOrbzContinent
 	}
 }
 
+void USolarOrbzContinentTerrainLayer::ApplyProfile(const USolarOrbzPlanetProfile* Profile)
+{
+	// Deliberately not written into this layer's own NumContinents/etc UPROPERTY fields - see the
+	// warning in the class comment about why (shared-asset corruption). Bake() below resolves the
+	// effective values from this cached pointer each regenerate instead.
+	ProfileOverride = (bOverrideFromProfile && Profile) ? Profile : nullptr;
+}
+
 void USolarOrbzContinentTerrainLayer::Bake(const TFunctionRef<float(const FVector& UnitDirection, const FVector2D& UV)>& PriorLayersHeight, float RadiusCm)
 {
 	// PriorLayersHeight is deliberately unused - seed positions/radii don't depend on anything
 	// below this layer in the stack. Bake() is only used here as a "once per regenerate" hook to
 	// regenerate the seed list deterministically, not for whole-surface height sampling.
 	using namespace SolarOrbzContinent;
+
+	const USolarOrbzPlanetProfile* EffectiveProfile = ProfileOverride.Get();
+
+	// Resolve once, here, rather than reading the authored properties directly below - this is the
+	// one and only place Profile overriding actually happens; everything past this point behaves
+	// identically whether these came from a Profile or from this layer's own fields.
+	const int32 EffectiveNumContinents = EffectiveProfile ? EffectiveProfile->GetNumContinents() : NumContinents;
+	const int32 EffectiveNumIslands = EffectiveProfile ? EffectiveProfile->GetNumIslands() : NumIslands;
+	const bool bEffectiveNorthPolar = EffectiveProfile ? EffectiveProfile->HasNorthPolarContinent() : bHasNorthPolarContinent;
+	const bool bEffectiveSouthPolar = EffectiveProfile ? EffectiveProfile->HasSouthPolarContinent() : bHasSouthPolarContinent;
 
 	CachedSeeds.Reset();
 	FRandomStream Stream(Seed);
@@ -810,19 +840,19 @@ void USolarOrbzContinentTerrainLayer::Bake(const TFunctionRef<float(const FVecto
 		++SeedIndex;
 	};
 
-	for (int32 i = 0; i < NumContinents; ++i)
+	for (int32 i = 0; i < EffectiveNumContinents; ++i)
 	{
 		AddSeed(RandomPointOnUnitSphere(Stream), MinContinentRadiusDegrees, MaxContinentRadiusDegrees);
 	}
-	for (int32 i = 0; i < NumIslands; ++i)
+	for (int32 i = 0; i < EffectiveNumIslands; ++i)
 	{
 		AddSeed(RandomPointOnUnitSphere(Stream), MinIslandRadiusDegrees, MaxIslandRadiusDegrees);
 	}
-	if (bHasNorthPolarContinent)
+	if (bEffectiveNorthPolar)
 	{
 		AddSeed(FVector(0.0f, 0.0f, 1.0f), PolarContinentRadiusDegrees, PolarContinentRadiusDegrees);
 	}
-	if (bHasSouthPolarContinent)
+	if (bEffectiveSouthPolar)
 	{
 		AddSeed(FVector(0.0f, 0.0f, -1.0f), PolarContinentRadiusDegrees, PolarContinentRadiusDegrees);
 	}
@@ -852,12 +882,13 @@ void USolarOrbzContinentTerrainLayer::Bake(const TFunctionRef<float(const FVecto
 	const float LandCoveragePercent = 100.0f * LandSamples / (float)(CoverageSamplesW * CoverageSamplesH);
 
 	UE_LOG(LogSolarOrbzContinent, Log,
-		TEXT("SolarOrbz Continent: placed %d continent(s), %d island(s), %s%s%s - approx %.1f%% land coverage"),
-		NumContinents, NumIslands,
-		bHasNorthPolarContinent ? TEXT("north polar continent") : TEXT("no north polar continent"),
-		(bHasNorthPolarContinent && bHasSouthPolarContinent) ? TEXT(", ") : TEXT(""),
-		bHasSouthPolarContinent ? TEXT("south polar continent") : TEXT(""),
-		LandCoveragePercent);
+		TEXT("SolarOrbz Continent: placed %d continent(s), %d island(s), %s%s%s - approx %.1f%% land coverage (values from %s)"),
+		EffectiveNumContinents, EffectiveNumIslands,
+		bEffectiveNorthPolar ? TEXT("north polar continent") : TEXT("no north polar continent"),
+		(bEffectiveNorthPolar && bEffectiveSouthPolar) ? TEXT(", ") : TEXT(""),
+		bEffectiveSouthPolar ? TEXT("south polar continent") : TEXT(""),
+		LandCoveragePercent,
+		EffectiveProfile ? TEXT("Planet Profile") : TEXT("this layer's own authored properties"));
 
 	if (CachedSeeds.Num() == 0)
 	{

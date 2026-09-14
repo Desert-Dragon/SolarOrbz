@@ -572,9 +572,18 @@ void ASolarOrbzIcoSphereActor::RegenerateMesh()
 	// along this, not along the (changing) recomputed normal, so height stays purely radial.
 	TArray<FVector> OriginalUnitDirections = CachedMeshData.Normals;
 
+	// Resolved once, reused below both for Continent-style layers reading landmass counts and for
+	// Climate Simulation's atmosphere density - null if no Profile is assigned, or it's a Star/
+	// Asteroid Profile instead of a Planet Profile (both valid, just nothing to read here for them).
+	const USolarOrbzPlanetProfile* PlanetProfile = Cast<USolarOrbzPlanetProfile>(Profile);
+
 	// --- Pass A: base terrain (procedural noise and/or authored heightmap). ---
 	if (TerrainStack)
 	{
+		// Profile data (e.g. Continent's landmass counts) must reach layers before PrepareLayers()
+		// bakes them - Bake() only runs once per regenerate, so this has to happen first, not after.
+		TerrainStack->ApplyProfile(PlanetProfile);
+
 		// Whole-surface bake first (e.g. erosion) - must happen before any per-point EvaluateHeight
 		// calls below, including the ones the Climate Simulation will make against this same stack,
 		// so rain shadows react to eroded terrain rather than the pre-erosion noise.
@@ -628,7 +637,7 @@ void ASolarOrbzIcoSphereActor::RegenerateMesh()
 		// Atmosphere density is Profile's data now, not Climate Simulation's own - falls back to
 		// Earth's 1.225 kg/m^3 if no Planet Profile is assigned, matching the old hardcoded default.
 		float AtmosphereDensityAtSeaLevel = 1.225f;
-		if (const USolarOrbzPlanetProfile* PlanetProfile = Cast<USolarOrbzPlanetProfile>(Profile))
+		if (PlanetProfile)
 		{
 			AtmosphereDensityAtSeaLevel = PlanetProfile->GetAtmosphereDensityAtSeaLevel();
 		}
