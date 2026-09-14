@@ -8,6 +8,7 @@
 DEFINE_LOG_CATEGORY_STATIC(LogSolarOrbzErosion, Log, All);
 DEFINE_LOG_CATEGORY_STATIC(LogSolarOrbzTerrace, Log, All);
 DEFINE_LOG_CATEGORY_STATIC(LogSolarOrbzContinent, Log, All);
+DEFINE_LOG_CATEGORY_STATIC(LogSolarOrbzNoise, Log, All);
 
 // ================================================================================================
 // USolarOrbzTerrainLayer - GetRawHeight has an inline default; nothing else to implement here.
@@ -196,7 +197,71 @@ namespace SolarOrbzNoiseBasis
 	}
 }
 
+void USolarOrbzFractalNoiseTerrainLayerBase::Bake(const TFunctionRef<float(const FVector& UnitDirection, const FVector2D& UV)>& PriorLayersHeight, float RadiusCm)
+{
+	// PriorLayersHeight is deliberately unused - this Bake() exists purely as a "once per
+	// regenerate" hook to calibrate amplitude compensation via Monte Carlo sampling of this
+	// layer's OWN noise, not for whole-surface height data the way Erosion/Terrace use it.
+	if (!bCompensateAmplitude)
+	{
+		CachedAmplitudeScale = 1.0f;
+		return;
+	}
+
+	// Target: the standard deviation (typical variation around the mean, decoupled from any
+	// constant offset a basis like Ridged/Billow naturally has) of the raw fractal sum should land
+	// on this fixed, octave-independent constant, so Amplitude/MaxElevationMeters means "this much
+	// typical variation" regardless of how many octaves are stacked. Chosen to closely match plain
+	// single-octave Perlin's natural standard deviation (~0.29-0.30 empirically), so a simple,
+	// few-octave layer is barely touched by this at all - only heavier octave stacks (which
+	// naturally shrink toward the center the more octaves you sum) get meaningfully boosted back up.
+	constexpr float TargetStdDev = 0.3f;
+	constexpr int32 CalibrationSamples = 256;
+
+	FRandomStream Stream(Seed ^ 0x5A17); // decorrelated from the noise field's own seed offset, still fully deterministic
+
+	TArray<float, TInlineAllocator<CalibrationSamples>> Samples;
+	Samples.Reserve(CalibrationSamples);
+	double Sum = 0.0;
+
+	for (int32 i = 0; i < CalibrationSamples; ++i)
+	{
+		const FVector RandomDir = FVector(
+			Stream.FRandRange(-1.0f, 1.0f),
+			Stream.FRandRange(-1.0f, 1.0f),
+			Stream.FRandRange(-1.0f, 1.0f)).GetSafeNormal();
+
+		const float RawSample = ComputeNormalizedNoiseUncompensated(RandomDir);
+		Samples.Add(RawSample);
+		Sum += RawSample;
+	}
+
+	const float Mean = (float)(Sum / CalibrationSamples);
+	double SumSquaredDeviation = 0.0;
+	for (const float S : Samples)
+	{
+		const float Deviation = S - Mean;
+		SumSquaredDeviation += (double)Deviation * Deviation;
+	}
+	const float MeasuredStdDev = FMath::Sqrt((float)(SumSquaredDeviation / CalibrationSamples));
+
+	// Clamped to [1, 10] - compensation only ever boosts, never reduces below the noise's natural
+	// range, and no sane Octaves/Persistence combination should need anywhere close to a 10x boost;
+	// this is a defensive ceiling, not a value expected to actually bind in practice.
+	CachedAmplitudeScale = MeasuredStdDev > KINDA_SMALL_NUMBER ? FMath::Clamp(TargetStdDev / MeasuredStdDev, 1.0f, 10.0f) : 1.0f;
+
+	UE_LOG(LogSolarOrbzNoise, Log,
+		TEXT("SolarOrbz Noise (%s): amplitude compensation calibrated - measured std dev %.3f, applying %.2fx scale (Octaves=%d, Persistence=%.2f, NoiseType=%d)"),
+		*GetName(), MeasuredStdDev, CachedAmplitudeScale, Octaves, Persistence, (int32)NoiseType);
+}
+
 float USolarOrbzFractalNoiseTerrainLayerBase::ComputeNormalizedNoise(const FVector& UnitDirection) const
+{
+	const float Raw = ComputeNormalizedNoiseUncompensated(UnitDirection);
+	return bCompensateAmplitude ? FMath::Clamp(Raw * CachedAmplitudeScale, -1.0f, 1.0f) : Raw;
+}
+
+float USolarOrbzFractalNoiseTerrainLayerBase::ComputeNormalizedNoiseUncompensated(const FVector& UnitDirection) const
 {
 	// Cheap deterministic hash so different seeds don't just look like the same
 	// field shifted by a fixed, obvious amount.

@@ -191,13 +191,38 @@ public:
 	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Noise|Warp", meta = (ClampMin = "0.01", EditCondition = "WarpStrength > 0.0"))
 	float WarpFrequency = 1.0f;
 
+	/**
+	 * When true (default), rescales the fractal sum so its TYPICAL variation matches what you'd
+	 * expect from Amplitude/MaxElevationMeters at Weight 1.0. Without this, multi-octave fractal
+	 * noise's typical output is naturally much smaller than its nominal peak - a well-known property
+	 * of summing octaves with decreasing amplitude - and it gets worse the more Octaves you use.
+	 * That's why Weight often needed cranking to 10-15+ to see appreciable terrain before this
+	 * existed. Calibrated once per regenerate via Monte Carlo sampling of this exact Seed/Octaves/
+	 * Persistence/Lacunarity/NoiseType combination (not a fixed formula), so it stays accurate no
+	 * matter how you tune them. Turn off to get the old, uncompensated behavior.
+	 */
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Noise")
+	bool bCompensateAmplitude = true;
+
+	//~ Begin USolarOrbzTerrainLayer interface
+	virtual bool RequiresWholeSurfaceBake() const override { return true; }
+	virtual void Bake(const TFunctionRef<float(const FVector& UnitDirection, const FVector2D& UV)>& PriorLayersHeight, float RadiusCm) override;
+	//~ End USolarOrbzTerrainLayer interface
+
 protected:
 	/**
-	 * Fractal Perlin sum with seeding and optional domain warp applied, normalized to roughly -1..1.
-	 * Subclasses scale this into an actual height however makes sense for them (raw amplitude,
-	 * sea-level-relative meters, etc).
+	 * Fractal sum with seeding, optional domain warp, and (if enabled) amplitude compensation
+	 * applied, normalized so its typical range is roughly -1..1. Subclasses scale this into an
+	 * actual height however makes sense for them (raw amplitude, sea-level-relative meters, etc).
 	 */
 	float ComputeNormalizedNoise(const FVector& UnitDirection) const;
+
+private:
+	/** The raw fractal sum before amplitude compensation - what ComputeNormalizedNoise used to return outright. Also what Bake()'s calibration pass samples to measure the compensation this specific Seed/Octaves/Persistence/Lacunarity/NoiseType combination actually needs. */
+	float ComputeNormalizedNoiseUncompensated(const FVector& UnitDirection) const;
+
+	/** Set by Bake() each regenerate - 1.0 (no change) when bCompensateAmplitude is false. */
+	mutable float CachedAmplitudeScale = 1.0f;
 };
 
 // ================================================================================================

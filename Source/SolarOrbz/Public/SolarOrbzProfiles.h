@@ -26,8 +26,11 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Engine/AssetUserData.h"
 #include "Engine/DataAsset.h"
 #include "SolarOrbzProfiles.generated.h"
+
+class UStaticMesh;
 
 // ================================================================================================
 // USolarOrbzCelestialBodyProfile - abstract base for every body type (planet, star, asteroid).
@@ -310,4 +313,136 @@ public:
 	 */
 	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Asteroid", meta = (ClampMin = "0.0", ClampMax = "1.0"))
 	float Irregularity = 0.5f;
+};
+
+// ================================================================================================
+// USolarOrbzCelestialBodyMeshUserData family - baking a body's Profile into its actor is only
+// half the story: once RegenerateMesh's preview gets baked out via BakeToStaticMeshAsset, the
+// resulting UStaticMesh has no actor, no Profile reference, nothing - just geometry and a
+// material. UAssetUserData is Unreal's built-in mechanism for attaching arbitrary metadata to an
+// asset permanently (saved as part of the asset itself), which is exactly what's needed here.
+//
+// Two layers of fidelity, matching different failure modes:
+//   - SourceProfile (a soft reference) gives full fidelity - every field the Profile has, not just
+//     the ones copied below - as long as that Profile asset still exists in the project.
+//   - The scalar fields below are copied in directly at bake time, so gravity/atmosphere/etc are
+//     still readable even if the source Profile later gets deleted, renamed, or the shipped game
+//     doesn't package editor-only Profile assets at all.
+//
+// One MeshUserData subclass per body type (Planet/Star/Asteroid) rather than one class with every
+// possible field, mirroring how the Profile classes themselves are split - BodyType is on the
+// shared base purely so a caller holding a bare UStaticMesh* can tell which concrete type (if any)
+// is attached without trying each GetAssetUserData<T>() in turn itself.
+// ================================================================================================
+
+UENUM(BlueprintType)
+enum class ESolarOrbzCelestialBodyType : uint8
+{
+	None,
+	Planet,
+	Star,
+	Asteroid,
+};
+
+UCLASS(Abstract)
+class SOLARORBZ_API USolarOrbzCelestialBodyMeshUserData : public UAssetUserData
+{
+	GENERATED_BODY()
+
+public:
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "SolarOrbz|Baked")
+	ESolarOrbzCelestialBodyType BodyType = ESolarOrbzCelestialBodyType::None;
+
+	/** Radius at bake time, meters - matches the actor's Radius Meters, regardless of body type. */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "SolarOrbz|Baked")
+	float RadiusMeters = 0.0f;
+
+	/** Returns None if Mesh is null or has no SolarOrbz body metadata attached (e.g. it was baked with no Profile assigned, or wasn't baked by SolarOrbz at all). Cheap - doesn't load anything, just checks which MeshUserData class (if any) is attached. */
+	UFUNCTION(BlueprintCallable, Category = "SolarOrbz|Baked")
+	static ESolarOrbzCelestialBodyType GetCelestialBodyType(const UStaticMesh* Mesh);
+};
+
+UCLASS(meta = (DisplayName = "SolarOrbz Planet Data"))
+class SOLARORBZ_API USolarOrbzPlanetMeshUserData : public USolarOrbzCelestialBodyMeshUserData
+{
+	GENERATED_BODY()
+
+public:
+	USolarOrbzPlanetMeshUserData() { BodyType = ESolarOrbzCelestialBodyType::Planet; }
+
+	/** The Profile this was baked from - full fidelity (atmosphere composition, landmass counts, etc) as long as this asset still exists. Null if the mesh was baked with no Profile assigned. */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "SolarOrbz|Baked")
+	TSoftObjectPtr<USolarOrbzPlanetProfile> SourceProfile;
+
+	/** m/s^2 */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "SolarOrbz|Baked")
+	float SurfaceGravity = 9.81f;
+
+	/** kg/m^3 - bulk planetary density, not atmosphere. */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "SolarOrbz|Baked")
+	float Density = 5514.0f;
+
+	/** kg/m^3 */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "SolarOrbz|Baked")
+	float AtmosphereDensityAtSeaLevel = 1.225f;
+
+	/** kPa */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "SolarOrbz|Baked")
+	float AtmospherePressureKPa = 101.325f;
+
+	/** Returns null if Mesh has no planet data attached (not baked, baked with no Profile, or baked as a Star/Asteroid instead). */
+	UFUNCTION(BlueprintCallable, Category = "SolarOrbz|Baked")
+	static USolarOrbzPlanetMeshUserData* GetPlanetData(const UStaticMesh* Mesh);
+};
+
+UCLASS(meta = (DisplayName = "SolarOrbz Star Data"))
+class SOLARORBZ_API USolarOrbzStarMeshUserData : public USolarOrbzCelestialBodyMeshUserData
+{
+	GENERATED_BODY()
+
+public:
+	USolarOrbzStarMeshUserData() { BodyType = ESolarOrbzCelestialBodyType::Star; }
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "SolarOrbz|Baked")
+	TSoftObjectPtr<USolarOrbzStarProfile> SourceProfile;
+
+	/** Relative to the Sun (Sol = 1.0). */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "SolarOrbz|Baked")
+	float Luminosity = 1.0f;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "SolarOrbz|Baked", meta = (Units = "Kelvin"))
+	float SurfaceTemperature = 5778.0f;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "SolarOrbz|Baked")
+	ESolarOrbzStarSpectralClass SpectralClass = ESolarOrbzStarSpectralClass::G;
+
+	/** Returns null if Mesh has no star data attached (not baked, baked with no Profile, or baked as a Planet/Asteroid instead). */
+	UFUNCTION(BlueprintCallable, Category = "SolarOrbz|Baked")
+	static USolarOrbzStarMeshUserData* GetStarData(const UStaticMesh* Mesh);
+};
+
+UCLASS(meta = (DisplayName = "SolarOrbz Asteroid Data"))
+class SOLARORBZ_API USolarOrbzAsteroidMeshUserData : public USolarOrbzCelestialBodyMeshUserData
+{
+	GENERATED_BODY()
+
+public:
+	USolarOrbzAsteroidMeshUserData() { BodyType = ESolarOrbzCelestialBodyType::Asteroid; }
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "SolarOrbz|Baked")
+	TSoftObjectPtr<USolarOrbzAsteroidProfile> SourceProfile;
+
+	/** kg/m^3 */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "SolarOrbz|Baked")
+	float Density = 2000.0f;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "SolarOrbz|Baked")
+	ESolarOrbzAsteroidComposition Composition = ESolarOrbzAsteroidComposition::Rocky;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "SolarOrbz|Baked", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	float Irregularity = 0.5f;
+
+	/** Returns null if Mesh has no asteroid data attached (not baked, baked with no Profile, or baked as a Planet/Star instead). */
+	UFUNCTION(BlueprintCallable, Category = "SolarOrbz|Baked")
+	static USolarOrbzAsteroidMeshUserData* GetAsteroidData(const UStaticMesh* Mesh);
 };

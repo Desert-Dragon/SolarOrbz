@@ -5,6 +5,23 @@ commitment or a schedule - just a place these don't get lost between sessions.
 
 ## Terrain
 
+- **Noise amplitude compensation.** **Done.** `bCompensateAmplitude` (default true) on
+  `FractalNoiseTerrainLayerBase` - affects Noise/Planetary Noise/Canyon Layer alike. Root cause:
+  multi-octave fractal noise's typical output is naturally much smaller than its nominal peak
+  (confirmed empirically - at the default 5 octaves, Perlin's typical variation is only ~17% of its
+  theoretical max), which is why `Weight` often needed cranking to 10-15+ to see appreciable
+  terrain. Now calibrated once per regenerate via Monte Carlo sampling (256 random points) of each
+  layer's own exact Seed/Octaves/Persistence/Lacunarity/NoiseType combination, rescaling so the
+  standard deviation lands on a fixed target regardless of octave count - not a fixed formula, so it
+  stays accurate no matter how those are tuned. Logged under `LogSolarOrbzNoise`.
+  - This also turned out to explain the "Continent Layer covers the entire planet" report from the
+    same session: Continent's own influence/falloff math checked out fine on its own (verified
+    numerically - default parameters land around ~4% coverage), but a Noise/Planetary Noise layer
+    stacked on top with Weight cranked to 10-15 (the workaround for the amplitude issue above) was
+    swinging large enough to push ocean floor back above sea level almost everywhere once combined.
+    No separate Continent-specific fix needed - retest with Weight back at 1 now that amplitude
+    compensation exists.
+
 - ~~More noise generation variety for better mountains, plains, and ravines.~~ **Done.**
   - `Noise Type` (Perlin / Ridged / Billow / Value / Voronoi) on `Noise Layer` and `Planetary Noise
     Layer` - a selectable basis function per octave, not just a scale change.

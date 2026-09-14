@@ -979,6 +979,57 @@ void ASolarOrbzIcoSphereActor::BakeToStaticMeshAsset()
 	NewStaticMesh->GetStaticMaterials().Empty();
 	NewStaticMesh->GetStaticMaterials().Add(FStaticMaterial());
 
+	// --- Attach celestial body metadata so it survives the bake - a plain UStaticMesh otherwise ---
+	// has no actor, no Profile reference, nothing at all once this function returns. One
+	// UAssetUserData subclass per body type; whichever matches Profile's actual class gets attached.
+	// Nothing is attached if Profile is unassigned - there's no meaningful body type to record.
+	// NOTE: intentionally non-const locals below - TSoftObjectPtr<T>::operator=(T*) wants an exact,
+	// non-const T* match; a const T* here previously triggered UE 5.8's deprecated "incompatible
+	// pointer type" implicit-conversion path (a real compiler warning, not a false alarm - that
+	// path is slated for removal in a future engine version).
+	if (USolarOrbzPlanetProfile* PlanetProfileForBake = Cast<USolarOrbzPlanetProfile>(Profile))
+	{
+		USolarOrbzPlanetMeshUserData* BodyData = NewObject<USolarOrbzPlanetMeshUserData>(NewStaticMesh);
+		BodyData->RadiusMeters = RadiusMeters;
+		BodyData->SourceProfile = PlanetProfileForBake;
+		BodyData->SurfaceGravity = PlanetProfileForBake->GetSurfaceGravity();
+		BodyData->Density = PlanetProfileForBake->GetDensity();
+		BodyData->AtmosphereDensityAtSeaLevel = PlanetProfileForBake->GetAtmosphereDensityAtSeaLevel();
+		BodyData->AtmospherePressureKPa = PlanetProfileForBake->GetAtmospherePressureKPa();
+		NewStaticMesh->AddAssetUserData(BodyData);
+		UE_LOG(LogSolarOrbz, Log, TEXT("SolarOrbz: baked Planet metadata (gravity %.2f m/s^2, atmosphere %.3f kg/m^3) into the static mesh."), BodyData->SurfaceGravity, BodyData->AtmosphereDensityAtSeaLevel);
+	}
+	else if (USolarOrbzStarProfile* StarProfileForBake = Cast<USolarOrbzStarProfile>(Profile))
+	{
+		USolarOrbzStarMeshUserData* BodyData = NewObject<USolarOrbzStarMeshUserData>(NewStaticMesh);
+		BodyData->RadiusMeters = RadiusMeters;
+		BodyData->SourceProfile = StarProfileForBake;
+		BodyData->Luminosity = StarProfileForBake->Luminosity;
+		BodyData->SurfaceTemperature = StarProfileForBake->SurfaceTemperature;
+		BodyData->SpectralClass = StarProfileForBake->SpectralClass;
+		NewStaticMesh->AddAssetUserData(BodyData);
+		UE_LOG(LogSolarOrbz, Log, TEXT("SolarOrbz: baked Star metadata (luminosity %.2f, %.0fK) into the static mesh."), BodyData->Luminosity, BodyData->SurfaceTemperature);
+	}
+	else if (USolarOrbzAsteroidProfile* AsteroidProfileForBake = Cast<USolarOrbzAsteroidProfile>(Profile))
+	{
+		USolarOrbzAsteroidMeshUserData* BodyData = NewObject<USolarOrbzAsteroidMeshUserData>(NewStaticMesh);
+		BodyData->RadiusMeters = RadiusMeters;
+		BodyData->SourceProfile = AsteroidProfileForBake;
+		BodyData->Density = AsteroidProfileForBake->Density;
+		BodyData->Composition = AsteroidProfileForBake->Composition;
+		BodyData->Irregularity = AsteroidProfileForBake->Irregularity;
+		NewStaticMesh->AddAssetUserData(BodyData);
+		UE_LOG(LogSolarOrbz, Log, TEXT("SolarOrbz: baked Asteroid metadata (density %.0f kg/m^3) into the static mesh."), BodyData->Density);
+	}
+	else if (Profile)
+	{
+		UE_LOG(LogSolarOrbz, Warning, TEXT("SolarOrbz: Profile is assigned but isn't a recognized Planet/Star/Asteroid Profile subclass - no metadata baked into the static mesh."));
+	}
+	else
+	{
+		UE_LOG(LogSolarOrbz, Log, TEXT("SolarOrbz: no Profile assigned - baking geometry only, no celestial body metadata."));
+	}
+
 	NewStaticMesh->MarkPackageDirty();
 	FAssetRegistryModule::AssetCreated(NewStaticMesh);
 	Package->SetDirtyFlag(true);
