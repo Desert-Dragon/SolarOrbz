@@ -3,7 +3,40 @@
 A running backlog of pending work, surfaced during design discussion but not yet built. Not a
 commitment or a schedule - just a place these don't get lost between sessions.
 
+## Design Principles
+
+- **This project is planet-focused.** Star and Asteroid Profiles exist as data (from the earlier
+  "modular across body types" work) but terrain generation itself - Noise, Planetary Noise,
+  Continent, Canyon, Erosion, Terrace - is designed and tuned for planets. No layer carries special-
+  cased logic to also suit asteroids or stars; that scope was deliberately dropped.
+- **Radius Meters is an average/reference radius, not a floor.** `Elevation = 0` means "exactly at
+  the actor's Radius Meters" - it is not a minimum. Every terrain layer must be able to produce
+  both positive (above) and negative (below) elevation with no artificial floor or ceiling beyond
+  whatever that specific layer's own authored parameters impose (e.g. Continent's Ocean Floor
+  Depth is an intentional authored limit, not a hidden engine clamp). Verified with a full audit of
+  every `Clamp` call in the terrain pipeline - none restrict height magnitude, only array indices,
+  `Acos` domain safety, and 0-1 shape/falloff parameters.
+- **Sea Level is the real reference point for "above/below water," not raw Elevation 0.** Any layer
+  that defines an absolute "this many meters above/below X" position - `Noise Layer`, `Planetary
+  Noise Layer`, `Continent Layer` - measures from Sea Level (`ClimateSimulation.SeaLevel`), not the
+  raw base radius, so moving Sea Level moves all of their output with it, the same principle already
+  applied to Climate Masks' Elevation range. `Canyon Layer` is the one exception, and it's by
+  design, not oversight - it carves relative to whatever terrain is already there, not an absolute
+  reference, so Sea Level doesn't apply to it.
+  - Mechanism: `USolarOrbzTerrainLayer::ApplyPlanetaryContext(Profile, SeaLevelCm)`, called once per
+    regenerate by the actor before `PrepareLayers()`/`Bake()`, forwarded through
+    `USolarOrbzTerrainLayerStack`. Supersedes the old `ApplyProfile()` (Profile-only) - same
+    non-mutating-the-shared-asset pattern, just carrying Sea Level alongside Profile now.
+
 ## Terrain
+
+- **Sea Level wiring for Noise, Planetary Noise, and Continent.** **Done.** Fixed a real gap:
+  Planetary Noise Layer's doc comments already claimed to be sea-level-relative, but the code never
+  actually read `ClimateSimulation.SeaLevel` - it only ever measured from the raw base radius,
+  silently wrong whenever Sea Level was non-zero. Continent Layer's Ocean Floor Depth/Land Plateau
+  Height had the same gap. All three (plus `Noise Layer`, brought in line with the other two once
+  the asteroid-specific exemption was dropped - see Design Principles) now genuinely offset by Sea
+  Level via `ApplyPlanetaryContext`.
 
 - **Noise amplitude compensation.** **Done.** `bCompensateAmplitude` (default true) on
   `FractalNoiseTerrainLayerBase` - affects Noise/Planetary Noise/Canyon Layer alike. Root cause:

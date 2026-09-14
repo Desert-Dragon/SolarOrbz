@@ -69,18 +69,21 @@ public:
 	virtual void Bake(const TFunctionRef<float(const FVector& UnitDirection, const FVector2D& UV)>& PriorLayersHeight, float RadiusCm) {}
 
 	/**
-	 * Some layers (e.g. Continent) read part of a planet's physical identity (continent count, etc.)
-	 * from an assigned Planet Profile rather than being hardcoded per-instance. Called once per
-	 * regenerate, before PrepareLayers()/Bake(), with whatever Profile the actor has assigned - may
-	 * be null (no Profile assigned), or not a Planet Profile at all (a Star/Asteroid Profile
-	 * instead - always check for null before dereferencing). No-op by default; only layers that
-	 * actually care about Profile data override this. Implementations should NOT write the result
-	 * into their own UPROPERTY fields - this layer asset may be shared/reused across many planets
-	 * with different Profiles, so mutating a UPROPERTY here would corrupt that shared asset's saved
-	 * data the next time it's edited or the project is saved. Cache the resolved values in a
-	 * private, non-UPROPERTY member instead (see USolarOrbzContinentTerrainLayer for the pattern).
+	 * Some layers read part of a planet's physical identity from outside their own asset rather than
+	 * being hardcoded per-instance - e.g. Continent reading Profile's continent count, or Planetary
+	 * Noise/Continent needing Sea Level so "meters above/below sea level" means the same thing
+	 * regardless of where Sea Level actually sits. Called once per regenerate, before
+	 * PrepareLayers()/Bake(), with whatever the actor currently has. Profile may be null (none
+	 * assigned) or not a Planet Profile at all (Star/Asteroid instead - always check for null before
+	 * dereferencing). SeaLevelCm is 0 if no ClimateSimulation is assigned, matching its own default.
+	 * No-op by default; only layers that actually care override this. Implementations should NOT
+	 * write the result into their own UPROPERTY fields - this layer asset may be shared/reused
+	 * across many planets with different Profiles/Sea Levels, so mutating a UPROPERTY here would
+	 * corrupt that shared asset's saved data the next time it's edited or the project is saved.
+	 * Cache resolved values in a private, non-UPROPERTY member instead (see
+	 * USolarOrbzContinentTerrainLayer for the pattern).
 	 */
-	virtual void ApplyProfile(const USolarOrbzPlanetProfile* Profile) {}
+	virtual void ApplyPlanetaryContext(const USolarOrbzPlanetProfile* Profile, float SeaLevelCm) {}
 
 	/**
 	 * Returns this layer's height contribution, in UE units (cm), at a point on the unit sphere.
@@ -109,10 +112,10 @@ public:
 	TArray<TObjectPtr<USolarOrbzTerrainLayer>> Layers;
 
 	/**
-	 * Call once per regenerate, before PrepareLayers() - forwards Profile to every layer's own
-	 * ApplyProfile(). No-op for layers that don't override it.
+	 * Call once per regenerate, before PrepareLayers() - forwards Profile and Sea Level to every
+	 * layer's own ApplyPlanetaryContext(). No-op for layers that don't override it.
 	 */
-	void ApplyProfile(const USolarOrbzPlanetProfile* Profile) const;
+	void ApplyPlanetaryContext(const USolarOrbzPlanetProfile* Profile, float SeaLevelCm) const;
 
 	/**
 	 * Call once per regenerate, before any EvaluateHeight calls (including from a ClimateSimulation
@@ -207,6 +210,7 @@ public:
 	//~ Begin USolarOrbzTerrainLayer interface
 	virtual bool RequiresWholeSurfaceBake() const override { return true; }
 	virtual void Bake(const TFunctionRef<float(const FVector& UnitDirection, const FVector2D& UV)>& PriorLayersHeight, float RadiusCm) override;
+	virtual void ApplyPlanetaryContext(const USolarOrbzPlanetProfile* Profile, float SeaLevelCm) override { CachedSeaLevelCm = SeaLevelCm; }
 	//~ End USolarOrbzTerrainLayer interface
 
 protected:
@@ -217,6 +221,17 @@ protected:
 	 */
 	float ComputeNormalizedNoise(const FVector& UnitDirection) const;
 
+	/**
+	 * Sea Level, UE units (cm), cached from the last ApplyPlanetaryContext() call - 0 if never
+	 * called or no ClimateSimulation is assigned. Every concrete layer built on this base (Noise,
+	 * Planetary Noise) offsets its own output by this so "meters above/below sea level" means the
+	 * same thing regardless of where Sea Level actually sits - the whole system is planet-focused,
+	 * so there's no exempt/scale-agnostic layer anymore. Canyon Layer is the one exception: it
+	 * carves relative to whatever terrain is already there, not an absolute position, so it doesn't
+	 * read this even though it shares this same base class.
+	 */
+	mutable float CachedSeaLevelCm = 0.0f;
+
 private:
 	/** The raw fractal sum before amplitude compensation - what ComputeNormalizedNoise used to return outright. Also what Bake()'s calibration pass samples to measure the compensation this specific Seed/Octaves/Persistence/Lacunarity/NoiseType combination actually needs. */
 	float ComputeNormalizedNoiseUncompensated(const FVector& UnitDirection) const;
@@ -226,10 +241,10 @@ private:
 };
 
 // ================================================================================================
-// USolarOrbzNoiseTerrainLayer - scaled by a raw amplitude in meters. Good for small or irregular
-// bodies (asteroids, tiny moons) where "meters above sea level" isn't a meaningful concept - just
-// dial in a height range directly. For planet-scale terrain where you want elevation to mean the
-// same thing regardless of Radius, use Planetary Noise Layer instead.
+// USolarOrbzNoiseTerrainLayer - scaled by a raw, symmetric amplitude in meters (peaks and troughs
+// go equally far), rather than Planetary Noise Layer's separate Max Elevation/Max Depth. Genuinely
+// offset by Sea Level like Planetary Noise Layer - the system is planet-focused, so there's no
+// separate scale-agnostic variant to reach for here.
 // ================================================================================================
 UCLASS(EditInlineNew, meta = (DisplayName = "Noise Layer"))
 class SOLARORBZ_API USolarOrbzNoiseTerrainLayer : public USolarOrbzFractalNoiseTerrainLayerBase
@@ -237,7 +252,7 @@ class SOLARORBZ_API USolarOrbzNoiseTerrainLayer : public USolarOrbzFractalNoiseT
 	GENERATED_BODY()
 
 public:
-	/** Final height scale, in meters - the peak-to-peak range the fractal sum is mapped onto. */
+	/** Final height scale, in meters - the peak-to-peak range the fractal sum is mapped onto, symmetric above and below Sea Level. */
 	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Noise", meta = (ClampMin = "0.0", ClampMax = "1000000.0", Units = "m"))
 	float AmplitudeMeters = 5.0f;
 
@@ -246,9 +261,11 @@ public:
 
 // ================================================================================================
 // USolarOrbzPlanetaryNoiseTerrainLayer - scaled by real-world meters above/below sea level rather
-// than a raw amplitude - the same value means the same thing whether your planet is Earth-scale or
-// a 50m test sphere, so changing Radius never requires re-tuning this layer. For small or irregular
-// bodies where "sea level" isn't a meaningful concept (asteroids, tiny moons), use Noise Layer instead.
+// than a raw symmetric amplitude, with independent Max Elevation/Max Depth so peaks and trenches
+// can go different distances - the same value means the same thing whether your planet is
+// Earth-scale or a 50m test sphere, so changing Radius never requires re-tuning this layer.
+// Genuinely offset by Sea Level (see ApplyPlanetaryContext on the base class) - moving Sea Level
+// shifts this layer's whole output with it.
 // ================================================================================================
 UCLASS(EditInlineNew, meta = (DisplayName = "Planetary Noise Layer"))
 class SOLARORBZ_API USolarOrbzPlanetaryNoiseTerrainLayer : public USolarOrbzFractalNoiseTerrainLayerBase
@@ -258,9 +275,10 @@ class SOLARORBZ_API USolarOrbzPlanetaryNoiseTerrainLayer : public USolarOrbzFrac
 public:
 	/**
 	 * How high above sea level (meters) this layer's tallest peaks should reach - authored in real,
-	 * planet-scale-independent meters rather than a raw amplitude. "Sea level" here is the same zero
-	 * point ClimateSimulation's Sea Level measures from: the planet's base radius. Reference: Earth's
-	 * Everest is ~8,850m.
+	 * planet-scale-independent meters rather than a raw amplitude. Genuinely relative to Sea Level
+	 * now (via ApplyPlanetaryContext, called once per regenerate) - not just the base radius - so
+	 * moving Sea Level on your ClimateSimulation asset shifts this layer's whole output with it.
+	 * Reference: Earth's Everest is ~8,850m.
 	 */
 	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Noise", meta = (ClampMin = "0.0", ClampMax = "200000.0", Units = "m"))
 	float MaxElevationMeters = 8000.0f;
@@ -631,7 +649,7 @@ public:
 	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Continent|Coastline", meta = (ClampMin = "0.1"))
 	float CoastlineSharpness = 1.5f;
 
-	/** How deep the ocean floor sits, meters, relative to sea level - the height this layer outputs everywhere no landmass reaches. */
+	/** How deep the ocean floor sits, meters, relative to sea level - the height this layer outputs everywhere no landmass reaches. Genuinely offset by Sea Level now (via ApplyPlanetaryContext) - moving Sea Level shifts the whole ocean floor/land plateau with it. */
 	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Continent|Height", meta = (ClampMax = "0.0", Units = "m"))
 	float OceanFloorDepthMeters = -4000.0f;
 
@@ -642,27 +660,32 @@ public:
 	/**
 	 * When true (default), Num Continents / Num Islands / the pole flags above are overridden each
 	 * regenerate by the actor's assigned Planet Profile - IF one is actually assigned AND
-	 * ApplyProfile() was actually called (the actor's RegenerateMesh does this automatically; a
-	 * standalone/test use of this layer outside that flow won't). The properties above stay as the
-	 * fallback used whenever no override is in effect, and are never overwritten by the override -
-	 * this layer asset may be shared across many planets with different Profiles, so mutating its
-	 * own saved data here would corrupt that sharing. Turn this off to always use this layer's own
-	 * values regardless of any assigned Profile - useful for a secondary/detail continent layer that
-	 * shouldn't track the planet's "official" landmass count.
+	 * ApplyPlanetaryContext() was actually called (the actor's RegenerateMesh does this
+	 * automatically; a standalone/test use of this layer outside that flow won't). The properties
+	 * above stay as the fallback used whenever no override is in effect, and are never overwritten
+	 * by the override - this layer asset may be shared across many planets with different Profiles,
+	 * so mutating its own saved data here would corrupt that sharing. Turn this off to always use
+	 * this layer's own values regardless of any assigned Profile - useful for a secondary/detail
+	 * continent layer that shouldn't track the planet's "official" landmass count. Note this only
+	 * covers Num Continents/Islands/poles - Sea Level offsetting (below) always applies regardless
+	 * of this toggle, since it's a units/reference-point correction, not a per-planet override.
 	 */
 	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Continent")
 	bool bOverrideFromProfile = true;
 
 	//~ Begin USolarOrbzTerrainLayer interface
-	virtual void ApplyProfile(const USolarOrbzPlanetProfile* Profile) override;
+	virtual void ApplyPlanetaryContext(const USolarOrbzPlanetProfile* Profile, float SeaLevelCm) override;
 	virtual bool RequiresWholeSurfaceBake() const override { return true; }
 	virtual void Bake(const TFunctionRef<float(const FVector& UnitDirection, const FVector2D& UV)>& PriorLayersHeight, float RadiusCm) override;
 	virtual float GetRawHeight(const FVector& UnitDirection, const FVector2D& UV) const override;
 	//~ End USolarOrbzTerrainLayer interface
 
 private:
-	/** Set by ApplyProfile() each regenerate - null if no Profile was assigned, it wasn't a Planet Profile, ApplyProfile() was never called, or bOverrideFromProfile is false. Bake() reads Num Continents/etc through this when valid, falling back to this layer's own authored properties otherwise. Weak, not a hard reference - a Profile's lifetime isn't tied to this layer's. */
+	/** Set by ApplyPlanetaryContext() each regenerate - null if no Profile was assigned, it wasn't a Planet Profile, ApplyPlanetaryContext() was never called, or bOverrideFromProfile is false. Bake() reads Num Continents/etc through this when valid, falling back to this layer's own authored properties otherwise. Weak, not a hard reference - a Profile's lifetime isn't tied to this layer's. */
 	TWeakObjectPtr<const USolarOrbzPlanetProfile> ProfileOverride;
+
+	/** Sea Level, UE units (cm), cached from the last ApplyPlanetaryContext() call - 0 if never called or no ClimateSimulation is assigned. GetRawHeight adds this to the Ocean Floor Depth/Land Plateau Height result, so both are genuinely relative to Sea Level, not just the raw base radius. */
+	float CachedSeaLevelCm = 0.0f;
 
 	/** Regenerated each Bake() from Seed/NumContinents/NumIslands/poles - GetRawHeight only ever reads this, never regenerates it, so per-vertex cost stays a cheap linear scan. */
 	TArray<FSolarOrbzContinentSeedData> CachedSeeds;

@@ -17,13 +17,13 @@ DEFINE_LOG_CATEGORY_STATIC(LogSolarOrbzNoise, Log, All);
 // ================================================================================================
 // USolarOrbzTerrainLayerStack
 // ================================================================================================
-void USolarOrbzTerrainLayerStack::ApplyProfile(const USolarOrbzPlanetProfile* Profile) const
+void USolarOrbzTerrainLayerStack::ApplyPlanetaryContext(const USolarOrbzPlanetProfile* Profile, float SeaLevelCm) const
 {
 	for (const TObjectPtr<USolarOrbzTerrainLayer>& Layer : Layers)
 	{
 		if (Layer)
 		{
-			Layer->ApplyProfile(Profile);
+			Layer->ApplyPlanetaryContext(Profile, SeaLevelCm);
 		}
 	}
 }
@@ -305,7 +305,10 @@ float USolarOrbzFractalNoiseTerrainLayerBase::ComputeNormalizedNoiseUncompensate
 // ================================================================================================
 float USolarOrbzNoiseTerrainLayer::GetRawHeight(const FVector& UnitDirection, const FVector2D& UV) const
 {
-	return ComputeNormalizedNoise(UnitDirection) * AmplitudeMeters * 100.0f; // meters -> UE units (cm)
+	// Genuinely offset by Sea Level (cached via ApplyPlanetaryContext), not just the raw base
+	// radius - the system is planet-focused, so Amplitude Meters means "this much above/below sea
+	// level", symmetric, same as every other layer with an absolute reference point.
+	return ComputeNormalizedNoise(UnitDirection) * AmplitudeMeters * 100.0f + CachedSeaLevelCm; // meters -> UE units (cm), then shift by Sea Level
 }
 
 // ================================================================================================
@@ -313,15 +316,17 @@ float USolarOrbzNoiseTerrainLayer::GetRawHeight(const FVector& UnitDirection, co
 // ================================================================================================
 float USolarOrbzPlanetaryNoiseTerrainLayer::GetRawHeight(const FVector& UnitDirection, const FVector2D& UV) const
 {
-	const float Normalized = ComputeNormalizedNoise(UnitDirection); // -1..1, relative to sea level (0 = base radius)
+	const float Normalized = ComputeNormalizedNoise(UnitDirection); // -1..1, zero-centered
 
-	// Above sea level scales toward MaxElevationMeters; below scales toward MaxDepthMeters (entered
-	// as a positive depth, so this stays negative here since Normalized is negative below sea level).
-	const float HeightMeters = Normalized >= 0.0f
+	// Above the midpoint scales toward MaxElevationMeters; below scales toward MaxDepthMeters
+	// (entered as a positive depth, so this stays negative here since Normalized is negative below).
+	const float HeightMetersAboveSeaLevel = Normalized >= 0.0f
 		? Normalized * MaxElevationMeters
 		: Normalized * MaxDepthMeters;
 
-	return HeightMeters * 100.0f; // meters -> UE units (cm)
+	// Genuinely offset by Sea Level (cached via ApplyPlanetaryContext), not just the raw base
+	// radius - so "8,850m peaks" means 8,850m above wherever Sea Level actually is.
+	return HeightMetersAboveSeaLevel * 100.0f + CachedSeaLevelCm; // meters -> UE units (cm), then shift by Sea Level
 }
 
 // ================================================================================================
@@ -864,12 +869,17 @@ namespace SolarOrbzContinent
 	}
 }
 
-void USolarOrbzContinentTerrainLayer::ApplyProfile(const USolarOrbzPlanetProfile* Profile)
+void USolarOrbzContinentTerrainLayer::ApplyPlanetaryContext(const USolarOrbzPlanetProfile* Profile, float SeaLevelCm)
 {
 	// Deliberately not written into this layer's own NumContinents/etc UPROPERTY fields - see the
 	// warning in the class comment about why (shared-asset corruption). Bake() below resolves the
 	// effective values from this cached pointer each regenerate instead.
 	ProfileOverride = (bOverrideFromProfile && Profile) ? Profile : nullptr;
+
+	// Sea Level offsetting always applies regardless of bOverrideFromProfile - it's a units/
+	// reference-point correction (what "0" means), not a per-planet data override the way the
+	// landmass counts above are.
+	CachedSeaLevelCm = SeaLevelCm;
 }
 
 void USolarOrbzContinentTerrainLayer::Bake(const TFunctionRef<float(const FVector& UnitDirection, const FVector2D& UV)>& PriorLayersHeight, float RadiusCm)
@@ -965,7 +975,7 @@ float USolarOrbzContinentTerrainLayer::GetRawHeight(const FVector& UnitDirection
 {
 	if (CachedSeeds.Num() == 0)
 	{
-		return OceanFloorDepthMeters * 100.0f; // no landmasses configured - the whole planet is ocean floor
+		return OceanFloorDepthMeters * 100.0f + CachedSeaLevelCm; // no landmasses configured - the whole planet is ocean floor
 	}
 
 	float MaxInfluence = 0.0f;
@@ -984,6 +994,9 @@ float USolarOrbzContinentTerrainLayer::GetRawHeight(const FVector& UnitDirection
 
 	MaxInfluence = FMath::Pow(FMath::Clamp(MaxInfluence, 0.0f, 1.0f), FMath::Max(CoastlineSharpness, 0.01f));
 
-	const float HeightMeters = FMath::Lerp(OceanFloorDepthMeters, LandPlateauHeightMeters, MaxInfluence);
-	return HeightMeters * 100.0f; // meters -> UE units (cm)
+	const float HeightMetersAboveSeaLevel = FMath::Lerp(OceanFloorDepthMeters, LandPlateauHeightMeters, MaxInfluence);
+	// Genuinely offset by Sea Level (cached via ApplyPlanetaryContext), not just the raw base
+	// radius - so Ocean Floor Depth/Land Plateau Height mean "relative to wherever Sea Level is",
+	// exactly matching the doc comments on those two properties.
+	return HeightMetersAboveSeaLevel * 100.0f + CachedSeaLevelCm; // meters -> UE units (cm), then shift by Sea Level
 }

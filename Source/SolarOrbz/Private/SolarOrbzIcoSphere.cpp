@@ -577,12 +577,18 @@ void ASolarOrbzIcoSphereActor::RegenerateMesh()
 	// Asteroid Profile instead of a Planet Profile (both valid, just nothing to read here for them).
 	const USolarOrbzPlanetProfile* PlanetProfile = Cast<USolarOrbzPlanetProfile>(Profile);
 
+	// Also resolved once, reused both for terrain layers that need an absolute "above/below sea
+	// level" reference (Noise, Planetary Noise, Continent) and for Climate Simulation's ocean
+	// threshold below - a plain property read, doesn't require the simulation to have actually run.
+	const float SeaLevelCm = ClimateSimulation ? ClimateSimulation->SeaLevel * 100.0f : 0.0f;
+
 	// --- Pass A: base terrain (procedural noise and/or authored heightmap). ---
 	if (TerrainStack)
 	{
-		// Profile data (e.g. Continent's landmass counts) must reach layers before PrepareLayers()
-		// bakes them - Bake() only runs once per regenerate, so this has to happen first, not after.
-		TerrainStack->ApplyProfile(PlanetProfile);
+		// Profile/Sea Level data (e.g. Continent's landmass counts, Noise/Planetary Noise's
+		// sea-level offset) must reach layers before PrepareLayers() bakes them - Bake() only runs
+		// once per regenerate, so this has to happen first, not after.
+		TerrainStack->ApplyPlanetaryContext(PlanetProfile, SeaLevelCm);
 
 		// Whole-surface bake first (e.g. erosion) - must happen before any per-point EvaluateHeight
 		// calls below, including the ones the Climate Simulation will make against this same stack,
