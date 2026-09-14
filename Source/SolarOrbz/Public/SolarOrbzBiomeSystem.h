@@ -93,6 +93,18 @@ class SOLARORBZ_API USolarOrbzBiomeMask : public UObject
 public:
 	/** Returns how strongly this mask applies at the given point, 0 (not at all) .. 1 (fully). */
 	virtual float GetWeight(const FSolarOrbzBiomeSampleContext& Context) const { return 1.0f; }
+
+	/**
+	 * True if GetWeight ever reads Context.Temperature/Context.Moisture for this specific instance's
+	 * authored settings - i.e. needs a Climate Simulation grid to be meaningful. Lets a caller cheaply
+	 * tell, once per regenerate rather than by probing every point, whether it's worth paying for
+	 * climate data before evaluating this mask (see USolarOrbzTerrainLayerStack::AnyLayerNeedsClimateData).
+	 * Default false - most masks don't touch these axes.
+	 */
+	virtual bool NeedsClimateData() const { return false; }
+
+	/** Same idea as NeedsClimateData, for Context.Slope - which (unlike Elevation) isn't cheap to know mid-Pass-A, since it needs a finite-difference estimate rather than a real mesh normal. Default false. */
+	virtual bool NeedsSlope() const { return false; }
 };
 
 // ================================================================================================
@@ -169,6 +181,8 @@ public:
 	float MoistureFrequency = 1.5f;
 
 	virtual float GetWeight(const FSolarOrbzBiomeSampleContext& Context) const override;
+	virtual bool NeedsClimateData() const override { return Temperature.bEnabled || Moisture.bEnabled; }
+	virtual bool NeedsSlope() const override { return Slope.bEnabled; }
 };
 
 // ================================================================================================
@@ -201,6 +215,8 @@ public:
 	ESolarOrbzMaskCombineMode CombineMode = ESolarOrbzMaskCombineMode::Multiply;
 
 	virtual float GetWeight(const FSolarOrbzBiomeSampleContext& Context) const override;
+	virtual bool NeedsClimateData() const override;
+	virtual bool NeedsSlope() const override;
 };
 
 // ================================================================================================
@@ -247,7 +263,19 @@ public:
 	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Biome")
 	FLinearColor PreviewColor = FLinearColor::White;
 
-	/** Extra terrain layers specific to this biome - e.g. a "Mountain" biome's own ruggedness noise. Blended in wherever this biome's mask is active, on top of the planet's base terrain stack. */
+	/**
+	 * Extra terrain layers specific to this biome - e.g. a "Mountain" biome's own ruggedness noise.
+	 * Blended in wherever this biome's mask is active, on top of the planet's base terrain stack.
+	 *
+	 * Kept fully functional for existing planets, but no longer the first reach for NEW biome-scoped
+	 * terrain shaping: any USolarOrbzTerrainLayer now has its own optional Mask field, so the same
+	 * effect (e.g. this biome's own noise, only where this biome applies) can be authored as a masked
+	 * layer directly in the planet's main Terrain Layer Stack instead - with real blend-mode control
+	 * and explicit ordering relative to every other layer, rather than being lumped into one additive
+	 * pass after the whole base stack runs. A Composite Mask on that layer can reference this Biome
+	 * asset directly to reuse its condition without redefining it. Still the right tool when a
+	 * self-contained, always-additive biome-only detail pass genuinely is what you want.
+	 */
 	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Biome")
 	TObjectPtr<USolarOrbzTerrainLayerStack> TerrainDetail;
 
@@ -316,14 +344,20 @@ public:
 	UPROPERTY(VisibleAnywhere, Category = "SolarOrbz|Biome|Material")
 	TObjectPtr<class UTexture2DArray> BiomeTextureArray;
 
-	/** Per-layer weight (mask weight * opacity) at this point, same order as Layers - useful for baking vertex colors or per-point PCG attributes later. */
+	/** Per-layer weight (mask weight * opacity) at this point, same order as Layers - useful for baking vertex colors or per-point PCG attributes later. Also the precomputed input GetDominantBiome/EvaluateBiomeTerrainContribution/EvaluateTopWeightedBiomes' overloads below expect, so a caller needing more than one of them at the same point only evaluates every layer's mask once. */
 	void EvaluateLayerWeights(const FSolarOrbzBiomeSampleContext& Context, TArray<float>& OutWeights) const;
 
 	/** The single strongest biome at this point, ties broken in favor of the topmost layer. Returns nullptr if no layer applies. */
 	USolarOrbzBiome* GetDominantBiome(const FSolarOrbzBiomeSampleContext& Context) const;
 
+	/** Same result as above, but reuses LayerWeights (as produced by EvaluateLayerWeights for this same Context) instead of re-evaluating every layer's mask from scratch - use this when you're also calling EvaluateBiomeTerrainContribution/EvaluateTopWeightedBiomes at the same point, so each mask is only evaluated once. */
+	USolarOrbzBiome* GetDominantBiome(const FSolarOrbzBiomeSampleContext& Context, const TArray<float>& LayerWeights) const;
+
 	/** Extra terrain height from every biome's TerrainDetail stack, blended by that layer's weight. Call this after the base terrain stack has already displaced the vertex. */
 	float EvaluateBiomeTerrainContribution(const FSolarOrbzBiomeSampleContext& Context) const;
+
+	/** Same as above, but reuses precomputed LayerWeights instead of re-evaluating every layer's mask - see GetDominantBiome's precomputed overload above. */
+	float EvaluateBiomeTerrainContribution(const FSolarOrbzBiomeSampleContext& Context, const TArray<float>& LayerWeights) const;
 
 	/** Every distinct Biome referenced anywhere in Layers, in first-appearance order - this order defines each biome's texture array index. Duplicate references to the same Biome across multiple layer entries only appear once. */
 	void GetUniqueBiomes(TArray<USolarOrbzBiome*>& OutBiomes) const;
@@ -336,6 +370,9 @@ public:
 	 * when fewer than MaxBiomes biomes have any weight here at all.
 	 */
 	void EvaluateTopWeightedBiomes(const FSolarOrbzBiomeSampleContext& Context, int32 MaxBiomes, TArray<int32>& OutBiomeIndices, TArray<float>& OutWeights) const;
+
+	/** Same as above, but reuses precomputed LayerWeights and a precomputed UniqueBiomes list (as produced by GetUniqueBiomes - invariant for the whole regenerate, so callers evaluating this per-vertex should compute it once beforehand rather than every call) instead of rebuilding/re-evaluating either from scratch. */
+	void EvaluateTopWeightedBiomes(const FSolarOrbzBiomeSampleContext& Context, const TArray<float>& LayerWeights, const TArray<USolarOrbzBiome*>& UniqueBiomes, int32 MaxBiomes, TArray<int32>& OutBiomeIndices, TArray<float>& OutWeights) const;
 
 	/**
 	 * Rebuilds BiomeTextureArray from every unique biome's Base Color Texture, in GetUniqueBiomes()

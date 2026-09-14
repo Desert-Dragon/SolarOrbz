@@ -3,6 +3,8 @@
 #include "SolarOrbzTerrainLayers.h"
 #include "Engine/Texture2D.h"
 #include "Math/RandomStream.h"
+#include "SolarOrbzBiomeSystem.h"
+#include "SolarOrbzLatLongGrid.h"
 #include "SolarOrbzProfiles.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogSolarOrbzErosion, Log, All);
@@ -19,6 +21,8 @@ DEFINE_LOG_CATEGORY_STATIC(LogSolarOrbzNoise, Log, All);
 // ================================================================================================
 void USolarOrbzTerrainLayerStack::ApplyPlanetaryContext(const USolarOrbzPlanetProfile* Profile, float SeaLevelCm) const
 {
+	CachedSeaLevelCmForMasking = SeaLevelCm;
+
 	for (const TObjectPtr<USolarOrbzTerrainLayer>& Layer : Layers)
 	{
 		if (Layer)
@@ -28,8 +32,20 @@ void USolarOrbzTerrainLayerStack::ApplyPlanetaryContext(const USolarOrbzPlanetPr
 	}
 }
 
-void USolarOrbzTerrainLayerStack::PrepareLayers(float RadiusCm) const
+void USolarOrbzTerrainLayerStack::PrepareLayers(double RadiusCm) const
 {
+	CachedRadiusCmForMasking = RadiusCm;
+
+	// Populated fully before the Bake() loop below, since Bake() can call back into
+	// EvaluateHeightUpTo (via PriorLayersHeight) for any earlier layer, which needs this already
+	// filled in for the indices it touches.
+	CachedLayerNeedsSlope.SetNum(Layers.Num());
+	for (int32 i = 0; i < Layers.Num(); ++i)
+	{
+		const USolarOrbzTerrainLayer* Layer = Layers[i];
+		CachedLayerNeedsSlope[i] = Layer && Layer->Mask && Layer->Mask->NeedsSlope();
+	}
+
 	for (int32 i = 0; i < Layers.Num(); ++i)
 	{
 		USolarOrbzTerrainLayer* Layer = Layers[i];
@@ -40,6 +56,10 @@ void USolarOrbzTerrainLayerStack::PrepareLayers(float RadiusCm) const
 
 		// Capture by value (this, i) - safe to call from Bake() as many times as it likes, since it
 		// only ever reaches back into layers strictly below index i, never itself or anything above it.
+		// Deliberately no ClimateGrid - Bake() runs once per regenerate, before Climate Simulation has
+		// produced one, so a whole-surface-baked layer's view of any masked layer below it is always
+		// the seed-pass (climate-neutral) result, never the final climate-aware one. Accepted limitation
+		// of the existing one-bake-per-regenerate design (see RegenerateMesh), not a new correctness gap.
 		auto PriorLayersHeight = [this, i](const FVector& UnitDirection, const FVector2D& UV) -> float
 		{
 			return EvaluateHeightUpTo(i, UnitDirection, UV);
@@ -49,14 +69,29 @@ void USolarOrbzTerrainLayerStack::PrepareLayers(float RadiusCm) const
 	}
 }
 
-float USolarOrbzTerrainLayerStack::EvaluateHeight(const FVector& UnitDirection, const FVector2D& UV) const
+float USolarOrbzTerrainLayerStack::EvaluateHeight(const FVector& UnitDirection, const FVector2D& UV, const FSolarOrbzClimateGrid* ClimateGrid) const
 {
-	return EvaluateHeightUpTo(Layers.Num(), UnitDirection, UV);
+	return EvaluateHeightUpTo(Layers.Num(), UnitDirection, UV, ClimateGrid);
 }
 
-float USolarOrbzTerrainLayerStack::EvaluateHeightUpTo(int32 EndIndexExclusive, const FVector& UnitDirection, const FVector2D& UV) const
+float USolarOrbzTerrainLayerStack::EvaluateHeightUpTo(int32 EndIndexExclusive, const FVector& UnitDirection, const FVector2D& UV, const FSolarOrbzClimateGrid* ClimateGrid) const
 {
+	auto ApplyBlendMode = [](float Base, float LayerHeight, ESolarOrbzTerrainBlendMode Mode) -> float
+	{
+		switch (Mode)
+		{
+		case ESolarOrbzTerrainBlendMode::Add:      return Base + LayerHeight;
+		case ESolarOrbzTerrainBlendMode::Subtract: return Base - LayerHeight;
+		case ESolarOrbzTerrainBlendMode::Multiply: return Base * LayerHeight;
+		case ESolarOrbzTerrainBlendMode::Max:      return FMath::Max(Base, LayerHeight);
+		case ESolarOrbzTerrainBlendMode::Min:      return FMath::Min(Base, LayerHeight);
+		case ESolarOrbzTerrainBlendMode::Replace:  return LayerHeight;
+		}
+		return Base;
+	};
+
 	float Accum = 0.0f;
+	bool bHasAccumulated = false;
 
 	const int32 Count = FMath::Min(EndIndexExclusive, Layers.Num());
 	for (int32 i = 0; i < Count; ++i)
@@ -69,18 +104,137 @@ float USolarOrbzTerrainLayerStack::EvaluateHeightUpTo(int32 EndIndexExclusive, c
 
 		const float LayerHeight = Layer->GetRawHeight(UnitDirection, UV) * Layer->Weight;
 
-		switch (Layer->BlendMode)
+		// A stack's first enabled layer has nothing to blend against yet - treat it as an implicit
+		// Replace regardless of its own BlendMode, the same way a bottom-of-stack layer works in
+		// every other layer-stack tool (World Creator included): "blend mode" is only meaningful
+		// once there's a real prior value to blend against. Without this, a first layer set to
+		// Multiply against an uninitialized Accum of 0.0 would always yield 0; Min/Max would
+		// silently floor/clip all terrain to 0; Subtract would silently negate the layer's own
+		// output instead of just being it. This is a deliberate, intentional behavior change from
+		// the old "Accum starts at 0.0, every BlendMode applies from the first layer onward" logic -
+		// any existing planet whose first enabled layer relied on that old Subtract-from-zero
+		// behavior for a negative base terrain will now see it inverted; author that with a Weight
+		// of -1 (applied before blending) on an Add/Replace layer instead.
+		const float FullyAppliedAccum = bHasAccumulated ? ApplyBlendMode(Accum, LayerHeight, Layer->BlendMode) : LayerHeight;
+
+		if (Layer->Mask)
 		{
-		case ESolarOrbzTerrainBlendMode::Add:      Accum += LayerHeight; break;
-		case ESolarOrbzTerrainBlendMode::Subtract: Accum -= LayerHeight; break;
-		case ESolarOrbzTerrainBlendMode::Multiply: Accum *= LayerHeight; break;
-		case ESolarOrbzTerrainBlendMode::Max:      Accum = FMath::Max(Accum, LayerHeight); break;
-		case ESolarOrbzTerrainBlendMode::Min:      Accum = FMath::Min(Accum, LayerHeight); break;
-		case ESolarOrbzTerrainBlendMode::Replace:  Accum = LayerHeight; break;
+			FSolarOrbzBiomeSampleContext Context;
+			Context.UnitDirection = UnitDirection;
+			Context.UV = UV;
+			Context.Elevation = Accum; // exactly the layers-so-far height - what this layer should treat as "the terrain here" for masking purposes
+			Context.SeaLevel = CachedSeaLevelCmForMasking / 100.0f; // cm -> meters, matching FSolarOrbzBiomeSampleContext's documented convention
+
+			// Reads the cache PrepareLayers() populated rather than calling Layer->Mask->NeedsSlope()
+			// here directly - for a Composite Mask that walks a whole tree of referenced Biomes, the
+			// answer is invariant for the whole regenerate, so it shouldn't be recomputed every vertex.
+			if (CachedLayerNeedsSlope.IsValidIndex(i) && CachedLayerNeedsSlope[i])
+			{
+				Context.Slope = EstimateSlopeUpTo(i, UnitDirection, UV, ClimateGrid);
+			}
+
+			if (ClimateGrid && ClimateGrid->IsValid())
+			{
+				Context.bHasClimateData = true;
+				ClimateGrid->Sample(UnitDirection, Context.Temperature, Context.Moisture);
+			}
+
+			const float MaskWeight = Layer->Mask->GetWeight(Context);
+			// Lerp the RESULT toward FullyAppliedAccum, not the layer's raw height before blending -
+			// pre-multiplying LayerHeight by MaskWeight only gives the right "this layer had no effect
+			// here" behavior for Add/Subtract; at MaskWeight 0, Replace would still snap to a
+			// pre-multiplied 0, and Min/Max would still clip/floor against it. Lerping the already-
+			// blended result handles all six blend modes uniformly and correctly.
+			Accum = FMath::Lerp(Accum, FullyAppliedAccum, MaskWeight);
 		}
+		else
+		{
+			Accum = FullyAppliedAccum;
+		}
+
+		bHasAccumulated = true;
 	}
 
 	return Accum;
+}
+
+bool USolarOrbzTerrainLayerStack::AnyLayerNeedsClimateData() const
+{
+	for (const TObjectPtr<USolarOrbzTerrainLayer>& Layer : Layers)
+	{
+		if (Layer && Layer->Mask && Layer->Mask->NeedsClimateData())
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
+bool USolarOrbzTerrainLayerStack::AnyLayerNeedsSlope() const
+{
+	for (const TObjectPtr<USolarOrbzTerrainLayer>& Layer : Layers)
+	{
+		if (Layer && Layer->Mask && Layer->Mask->NeedsSlope())
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
+float USolarOrbzTerrainLayerStack::EstimateSlopeUpTo(int32 EndIndexExclusive, const FVector& UnitDirection, const FVector2D& UV, const FSolarOrbzClimateGrid* ClimateGrid) const
+{
+	// A slope-masked layer earlier in the stack can itself trigger another EstimateSlopeUpTo call
+	// (recursively, for a strictly smaller EndIndexExclusive), and each level does 2 EvaluateHeightUpTo
+	// calls - so K stacked slope-masked layers cost up to 2^K per vertex without a bound. Cap it the
+	// same way USolarOrbzBiome::GetWeight caps Composite Mask cycles: beyond this depth, report flat
+	// (0) rather than recursing further - keeps the worst case bounded and just slightly under-masks
+	// in the (already exotic) case of many stacked slope-gated layers, instead of hanging.
+	static thread_local int32 RecursionDepth = 0;
+	constexpr int32 MaxRecursionDepth = 4;
+	if (RecursionDepth >= MaxRecursionDepth)
+	{
+		return 0.0f;
+	}
+
+	// Known simplification: a single-tangent-direction finite difference, not a true 2-axis
+	// gradient - same spirit as Erosion's own equatorial-only cell spacing approximation. Good
+	// enough to distinguish "flat" from "steep" for masking purposes without needing a real mesh
+	// normal, which doesn't exist yet mid-Pass-A (RecomputeSmoothNormals only runs after the whole
+	// pass finishes).
+	FVector Tangent = FVector::CrossProduct(FVector::UpVector, UnitDirection);
+	if (!Tangent.Normalize())
+	{
+		Tangent = FVector::ForwardVector; // degenerate at the poles - arbitrary but deterministic
+	}
+
+	constexpr double AngularEpsilonRadians = 0.001; // ~0.057 degrees - small enough to be local, large enough to avoid float noise
+	const double RadiusCm = FMath::Max(CachedRadiusCmForMasking, 1.0);
+	const FVector PerturbedDirection = (UnitDirection + Tangent * (float)AngularEpsilonRadians).GetSafeNormal();
+
+	// Recomputed for the perturbed point rather than reusing UV verbatim - UnitDirection and UV can
+	// disagree here (a real mesh vertex's UV is seam-fixed and may not match the raw spherical
+	// formula exactly), but a perturbed point isn't a real vertex at all, so its UV has to be derived
+	// from its own direction. Without this, a UV-driven layer (Heightmap Layer, which samples via UV
+	// rather than UnitDirection) would see identical UV before/after perturbation and contribute
+	// nothing to the slope estimate even on genuinely steep authored terrain.
+	const double Azimuth = FMath::Atan2((double)PerturbedDirection.Y, (double)PerturbedDirection.X);
+	const double PerturbedU = 0.5 + Azimuth / (2.0 * FSolarOrbzLatLongGrid::PI_D);
+	const double PerturbedPolar = FMath::Acos(FMath::Clamp((double)PerturbedDirection.Z, -1.0, 1.0));
+	const double PerturbedV = PerturbedPolar / FSolarOrbzLatLongGrid::PI_D;
+	const FVector2D PerturbedUV((float)PerturbedU, (float)PerturbedV);
+
+	++RecursionDepth;
+	const float HeightHere = EvaluateHeightUpTo(EndIndexExclusive, UnitDirection, UV, ClimateGrid);
+	const float HeightPerturbed = EvaluateHeightUpTo(EndIndexExclusive, PerturbedDirection, PerturbedUV, ClimateGrid);
+	--RecursionDepth;
+
+	const double ArcLengthCm = RadiusCm * AngularEpsilonRadians;
+	const double SlopeRatio = ArcLengthCm > KINDA_SMALL_NUMBER ? FMath::Abs(HeightPerturbed - HeightHere) / ArcLengthCm : 0.0;
+
+	// atan of the rise/run ratio, normalized so a vertical cliff (90 degrees) reads as 1.0 - matches
+	// FSolarOrbzBiomeSampleContext::Slope's documented 0 (flat) .. 1 (vertical) convention.
+	return FMath::Clamp((float)(FMath::Atan(SlopeRatio) / (PI * 0.5)), 0.0f, 1.0f);
 }
 
 // ================================================================================================
@@ -169,6 +323,20 @@ namespace SolarOrbzNoiseBasis
 		return FMath::Clamp(Dist * 1.2f, 0.0f, 1.0f) * 2.0f - 1.0f; // normalize to roughly -1..1
 	}
 
+	/**
+	 * Cheap deterministic hash from an integer seed to a 3D offset, so different seeds don't just
+	 * look like the same field shifted by a fixed, obvious amount. Shared by the fractal noise base
+	 * (its own field seeding) and Terrace Layer (its coastline-style irregularity jitter) - same
+	 * formula, same "seed -> offset" need, previously duplicated verbatim in both places.
+	 */
+	static FVector ComputeSeedOffset(int32 Seed)
+	{
+		return FVector(
+			FMath::Frac(FMath::Sin((float)Seed * 12.9898f) * 43758.5453f) * 1000.0f,
+			FMath::Frac(FMath::Sin((float)Seed * 78.233f) * 43758.5453f) * 1000.0f,
+			FMath::Frac(FMath::Sin((float)Seed * 37.719f) * 43758.5453f) * 1000.0f);
+	}
+
 	/** Samples one octave using the given basis type. All five return roughly -1..1, so they combine identically in the fractal sum regardless of which is chosen. */
 	static float SampleBasis(ESolarOrbzNoiseType Type, const FVector& Pos, int32 Seed)
 	{
@@ -197,11 +365,16 @@ namespace SolarOrbzNoiseBasis
 	}
 }
 
-void USolarOrbzFractalNoiseTerrainLayerBase::Bake(const TFunctionRef<float(const FVector& UnitDirection, const FVector2D& UV)>& PriorLayersHeight, float RadiusCm)
+void USolarOrbzFractalNoiseTerrainLayerBase::Bake(const TFunctionRef<float(const FVector& UnitDirection, const FVector2D& UV)>& PriorLayersHeight, double RadiusCm)
 {
 	// PriorLayersHeight is deliberately unused - this Bake() exists purely as a "once per
 	// regenerate" hook to calibrate amplitude compensation via Monte Carlo sampling of this
 	// layer's OWN noise, not for whole-surface height data the way Erosion/Terrace use it.
+
+	// Depends only on Seed, constant for the whole bake - compute once here rather than
+	// recomputing it on every single ComputeNormalizedNoiseUncompensated call (i.e. every vertex).
+	CachedSeedOffset = SolarOrbzNoiseBasis::ComputeSeedOffset(Seed);
+
 	if (!bCompensateAmplitude)
 	{
 		CachedAmplitudeScale = 1.0f;
@@ -263,12 +436,9 @@ float USolarOrbzFractalNoiseTerrainLayerBase::ComputeNormalizedNoise(const FVect
 
 float USolarOrbzFractalNoiseTerrainLayerBase::ComputeNormalizedNoiseUncompensated(const FVector& UnitDirection) const
 {
-	// Cheap deterministic hash so different seeds don't just look like the same
-	// field shifted by a fixed, obvious amount.
-	const FVector SeedOffset(
-		FMath::Frac(FMath::Sin((float)Seed * 12.9898f) * 43758.5453f) * 1000.0f,
-		FMath::Frac(FMath::Sin((float)Seed * 78.233f) * 43758.5453f) * 1000.0f,
-		FMath::Frac(FMath::Sin((float)Seed * 37.719f) * 43758.5453f) * 1000.0f);
+	// CachedSeedOffset is computed once per regenerate in Bake() - depends only on Seed, so
+	// recomputing it per vertex (the old behavior) was pure wasted sin/Frac work in the hot loop.
+	const FVector& SeedOffset = CachedSeedOffset;
 
 	FVector SamplePos = UnitDirection * Frequency + SeedOffset;
 
@@ -439,9 +609,10 @@ float USolarOrbzStampTerrainLayer::GetRawHeight(const FVector& UnitDirection, co
 // ================================================================================================
 namespace SolarOrbzErosion
 {
-	// Same rationale as SolarOrbzIcoSphere.cpp / SolarOrbzClimateSimulation.cpp: an explicit
-	// double constant rather than the engine's PI macro, since FVector components are double (LWC).
-	static constexpr double PI_D = 3.14159265358979323846;
+	// Single canonical copy now lives on FSolarOrbzLatLongGrid - aliased here so the many other
+	// SolarOrbzErosion::PI_D call sites throughout this file (Terrace, Continent, Erosion alike)
+	// don't all need renaming.
+	static constexpr double PI_D = FSolarOrbzLatLongGrid::PI_D;
 
 	// 8-neighbor (D8) offsets on the (X = longitude, Y = latitude) grid.
 	static constexpr int32 NeighborOffsetX[8] = { -1, 0, 1, -1, 1, -1, 0, 1 };
@@ -478,7 +649,7 @@ namespace SolarOrbzErosion
 	}
 }
 
-void USolarOrbzErosionTerrainLayer::Bake(const TFunctionRef<float(const FVector& UnitDirection, const FVector2D& UV)>& PriorLayersHeight, float RadiusCm)
+void USolarOrbzErosionTerrainLayer::Bake(const TFunctionRef<float(const FVector& UnitDirection, const FVector2D& UV)>& PriorLayersHeight, double RadiusCm)
 {
 	using namespace SolarOrbzErosion;
 
@@ -494,39 +665,21 @@ void USolarOrbzErosionTerrainLayer::Bake(const TFunctionRef<float(const FVector&
 	OriginalHeight.SetNumUninitialized(W * H);
 
 	// --- Seed the bake grid from every layer below this one in the stack (see USolarOrbzTerrainLayerStack::PrepareLayers). ---
-	for (int32 Y = 0; Y < H; ++Y)
+	FSolarOrbzLatLongGrid(W, H).ForEachCell([&](int32 Idx, const FVector& UnitDirection, const FVector2D& UV)
 	{
-		const double V = (double)Y / (double)FMath::Max(H - 1, 1); // 0 north pole .. 1 south pole
-		const double Polar = V * PI_D;
-		const double Z = FMath::Cos(Polar);
-		const double SinPolar = FMath::Sin(Polar);
-
-		for (int32 X = 0; X < W; ++X)
-		{
-			const double U = (double)X / (double)W; // wraps - no -1, W steps tile exactly around
-			const double Azimuth = (U - 0.5) * 2.0 * PI_D;
-
-			const FVector UnitDirection(
-				(float)(SinPolar * FMath::Cos(Azimuth)),
-				(float)(SinPolar * FMath::Sin(Azimuth)),
-				(float)Z);
-			const FVector2D UV((float)U, (float)V);
-
-			const int32 Idx = Y * W + X;
-			const float H0 = PriorLayersHeight(UnitDirection, UV);
-			Height[Idx] = H0;
-			OriginalHeight[Idx] = H0;
-		}
-	}
+		const float H0 = PriorLayersHeight(UnitDirection, UV);
+		Height[Idx] = H0;
+		OriginalHeight[Idx] = H0;
+	});
 
 	// Approximate physical spacing between adjacent grid cells at the equator - a uniform stand-in
 	// for talus/slope thresholds everywhere on the grid (see the pole-accuracy note at the top of the header).
-	const float CellSpacingCm = (float)((2.0 * PI_D * (double)FMath::Max(RadiusCm, 1.0f)) / (double)W);
+	const double CellSpacingCm = (2.0 * PI_D * FMath::Max(RadiusCm, 1.0)) / (double)W;
 
 	// --- Thermal erosion: material above the talus angle slides toward its lowest neighbor. ---
 	if (bEnableThermalErosion && ThermalIterations > 0)
 	{
-		const float TalusHeightPerCell = FMath::Tan(FMath::DegreesToRadians(TalusAngleDegrees)) * CellSpacingCm;
+		const float TalusHeightPerCell = FMath::Tan(FMath::DegreesToRadians(TalusAngleDegrees)) * (float)CellSpacingCm;
 
 		TArray<float> Delta;
 		for (int32 Iter = 0; Iter < ThermalIterations; ++Iter)
@@ -605,7 +758,7 @@ void USolarOrbzErosionTerrainLayer::Bake(const TFunctionRef<float(const FVector&
 					continue;
 				}
 
-				const float Slope = FMath::Max((SelfHeight - Height[LowestIdx]) / CellSpacingCm, 0.0f);
+				const float Slope = FMath::Max((SelfHeight - Height[LowestIdx]) / (float)CellSpacingCm, 0.0f);
 				const float Capacity = FlowWater * Slope * ErosionRate;
 
 				if (FlowSediment < Capacity)
@@ -659,35 +812,14 @@ void USolarOrbzErosionTerrainLayer::Bake(const TFunctionRef<float(const FVector&
 
 float USolarOrbzErosionTerrainLayer::GetRawHeight(const FVector& UnitDirection, const FVector2D& UV) const
 {
-	using namespace SolarOrbzErosion;
-
 	if (BakedWidth <= 0 || BakedHeight <= 0 || BakedDeltaHeightCm.Num() != BakedWidth * BakedHeight)
 	{
 		return 0.0f; // Not baked yet (e.g. layer just added and RegenerateMesh hasn't run) - contribute nothing rather than garbage.
 	}
 
-	// Same convention as FSolarOrbzIcoSphereGenerator::ComputeUV / FSolarOrbzClimateGrid::Sample -
-	// derived directly from UnitDirection rather than trusting the caller's UV, so this is robust to
-	// any seam-fixing quirks the mesh's own UVs might have near the poles/seam.
-	const double Azimuth = FMath::Atan2((double)UnitDirection.Y, (double)UnitDirection.X);
-	const double U = 0.5 + Azimuth / (2.0 * PI_D);
-	const double Polar = FMath::Acos(FMath::Clamp((double)UnitDirection.Z, -1.0, 1.0));
-	const double V = Polar / PI_D;
-
-	const double Fx = FMath::Frac(U) * (double)BakedWidth;
-	const double Fy = FMath::Clamp(V, 0.0, 1.0) * (double)(BakedHeight - 1);
-
-	const int32 X0 = FMath::FloorToInt(Fx) % BakedWidth;
-	const int32 X1 = (X0 + 1) % BakedWidth;
-	const int32 Y0 = FMath::Clamp(FMath::FloorToInt(Fy), 0, BakedHeight - 1);
-	const int32 Y1 = FMath::Clamp(Y0 + 1, 0, BakedHeight - 1);
-
-	const float Tx = (float)(Fx - FMath::FloorToDouble(Fx));
-	const float Ty = (float)(Fy - FMath::FloorToDouble(Fy));
-
-	const float A = FMath::Lerp(BakedDeltaHeightCm[Y0 * BakedWidth + X0], BakedDeltaHeightCm[Y0 * BakedWidth + X1], Tx);
-	const float B = FMath::Lerp(BakedDeltaHeightCm[Y1 * BakedWidth + X0], BakedDeltaHeightCm[Y1 * BakedWidth + X1], Tx);
-	return FMath::Lerp(A, B, Ty);
+	// Derived directly from UnitDirection rather than trusting the caller's UV, so this is robust
+	// to any seam-fixing quirks the mesh's own UVs might have near the poles/seam.
+	return FSolarOrbzLatLongGrid(BakedWidth, BakedHeight).SampleBilinear(BakedDeltaHeightCm, UnitDirection);
 }
 
 // ================================================================================================
@@ -728,7 +860,7 @@ namespace SolarOrbzTerrace
 	}
 }
 
-void USolarOrbzTerraceTerrainLayer::Bake(const TFunctionRef<float(const FVector& UnitDirection, const FVector2D& UV)>& PriorLayersHeight, float RadiusCm)
+void USolarOrbzTerraceTerrainLayer::Bake(const TFunctionRef<float(const FVector& UnitDirection, const FVector2D& UV)>& PriorLayersHeight, double RadiusCm)
 {
 	using namespace SolarOrbzTerrace;
 
@@ -740,50 +872,29 @@ void USolarOrbzTerraceTerrainLayer::Bake(const TFunctionRef<float(const FVector&
 	BakedDeltaHeightCm.SetNumUninitialized(W * H);
 
 	const float StepHeightCm = StepHeightMeters * 100.0f; // meters -> UE units (cm)
-	const FVector IrregularitySeedOffset(
-		FMath::Frac(FMath::Sin((float)IrregularitySeed * 12.9898f) * 43758.5453f) * 1000.0f,
-		FMath::Frac(FMath::Sin((float)IrregularitySeed * 78.233f) * 43758.5453f) * 1000.0f,
-		FMath::Frac(FMath::Sin((float)IrregularitySeed * 37.719f) * 43758.5453f) * 1000.0f);
+	const FVector IrregularitySeedOffset = SolarOrbzNoiseBasis::ComputeSeedOffset(IrregularitySeed);
 
 	float MinDelta = TNumericLimits<float>::Max(), MaxDelta = TNumericLimits<float>::Lowest();
 
-	for (int32 Y = 0; Y < H; ++Y)
+	FSolarOrbzLatLongGrid(W, H).ForEachCell([&](int32 Idx, const FVector& UnitDirection, const FVector2D& UV)
 	{
-		const double V = (double)Y / (double)FMath::Max(H - 1, 1); // 0 north pole .. 1 south pole
-		const double Polar = V * SolarOrbzErosion::PI_D;
-		const double Z = FMath::Cos(Polar);
-		const double SinPolar = FMath::Sin(Polar);
+		const float H0 = PriorLayersHeight(UnitDirection, UV);
 
-		for (int32 X = 0; X < W; ++X)
+		float HeightForTerracing = H0;
+		if (IrregularityStrength > 0.0f)
 		{
-			const double U = (double)X / (double)W;
-			const double Azimuth = (U - 0.5) * 2.0 * SolarOrbzErosion::PI_D;
-
-			const FVector UnitDirection(
-				(float)(SinPolar * FMath::Cos(Azimuth)),
-				(float)(SinPolar * FMath::Sin(Azimuth)),
-				(float)Z);
-			const FVector2D UV((float)U, (float)V);
-
-			const int32 Idx = Y * W + X;
-			const float H0 = PriorLayersHeight(UnitDirection, UV);
-
-			float HeightForTerracing = H0;
-			if (IrregularityStrength > 0.0f)
-			{
-				const float Jitter = FMath::PerlinNoise3D(UnitDirection * IrregularityFrequency + IrregularitySeedOffset);
-				HeightForTerracing += Jitter * IrregularityStrength * StepHeightCm;
-			}
-
-			const float Terraced = ApplyTerrace(HeightForTerracing, StepHeightCm, EdgeSoftness);
-			const float Final = FMath::Lerp(H0, Terraced, TerraceStrength);
-			const float Delta = Final - H0;
-
-			BakedDeltaHeightCm[Idx] = Delta;
-			MinDelta = FMath::Min(MinDelta, Delta);
-			MaxDelta = FMath::Max(MaxDelta, Delta);
+			const float Jitter = FMath::PerlinNoise3D(UnitDirection * IrregularityFrequency + IrregularitySeedOffset);
+			HeightForTerracing += Jitter * IrregularityStrength * StepHeightCm;
 		}
-	}
+
+		const float Terraced = ApplyTerrace(HeightForTerracing, StepHeightCm, EdgeSoftness);
+		const float Final = FMath::Lerp(H0, Terraced, TerraceStrength);
+		const float Delta = Final - H0;
+
+		BakedDeltaHeightCm[Idx] = Delta;
+		MinDelta = FMath::Min(MinDelta, Delta);
+		MaxDelta = FMath::Max(MaxDelta, Delta);
+	});
 
 	UE_LOG(LogSolarOrbzTerrace, Log,
 		TEXT("SolarOrbz Terrace: baked %dx%d grid (Step Height %.0fm, Edge Softness %.2f, Strength %.2f, Irregularity %.2f) - delta height ranges %.1fcm .. %.1fcm"),
@@ -804,26 +915,7 @@ float USolarOrbzTerraceTerrainLayer::GetRawHeight(const FVector& UnitDirection, 
 		return 0.0f; // not baked yet
 	}
 
-	// Same convention as FSolarOrbzIcoSphereGenerator::ComputeUV / FSolarOrbzClimateGrid::Sample.
-	const double Azimuth = FMath::Atan2((double)UnitDirection.Y, (double)UnitDirection.X);
-	const double U = 0.5 + Azimuth / (2.0 * SolarOrbzErosion::PI_D);
-	const double Polar = FMath::Acos(FMath::Clamp((double)UnitDirection.Z, -1.0, 1.0));
-	const double V = Polar / SolarOrbzErosion::PI_D;
-
-	const double Fx = FMath::Frac(U) * (double)BakedWidth;
-	const double Fy = FMath::Clamp(V, 0.0, 1.0) * (double)(BakedHeight - 1);
-
-	const int32 X0 = FMath::FloorToInt(Fx) % BakedWidth;
-	const int32 X1 = (X0 + 1) % BakedWidth;
-	const int32 Y0 = FMath::Clamp(FMath::FloorToInt(Fy), 0, BakedHeight - 1);
-	const int32 Y1 = FMath::Clamp(Y0 + 1, 0, BakedHeight - 1);
-
-	const float Tx = (float)(Fx - FMath::FloorToDouble(Fx));
-	const float Ty = (float)(Fy - FMath::FloorToDouble(Fy));
-
-	const float A = FMath::Lerp(BakedDeltaHeightCm[Y0 * BakedWidth + X0], BakedDeltaHeightCm[Y0 * BakedWidth + X1], Tx);
-	const float B = FMath::Lerp(BakedDeltaHeightCm[Y1 * BakedWidth + X0], BakedDeltaHeightCm[Y1 * BakedWidth + X1], Tx);
-	return FMath::Lerp(A, B, Ty);
+	return FSolarOrbzLatLongGrid(BakedWidth, BakedHeight).SampleBilinear(BakedDeltaHeightCm, UnitDirection);
 }
 
 // ================================================================================================
@@ -882,7 +974,7 @@ void USolarOrbzContinentTerrainLayer::ApplyPlanetaryContext(const USolarOrbzPlan
 	CachedSeaLevelCm = SeaLevelCm;
 }
 
-void USolarOrbzContinentTerrainLayer::Bake(const TFunctionRef<float(const FVector& UnitDirection, const FVector2D& UV)>& PriorLayersHeight, float RadiusCm)
+void USolarOrbzContinentTerrainLayer::Bake(const TFunctionRef<float(const FVector& UnitDirection, const FVector2D& UV)>& PriorLayersHeight, double RadiusCm)
 {
 	// PriorLayersHeight is deliberately unused - seed positions/radii don't depend on anything
 	// below this layer in the stack. Bake() is only used here as a "once per regenerate" hook to
@@ -937,23 +1029,13 @@ void USolarOrbzContinentTerrainLayer::Bake(const TFunctionRef<float(const FVecto
 	// coarse average purely for this log line.
 	constexpr int32 CoverageSamplesW = 64, CoverageSamplesH = 32;
 	int32 LandSamples = 0;
-	for (int32 Y = 0; Y < CoverageSamplesH; ++Y)
+	FSolarOrbzLatLongGrid(CoverageSamplesW, CoverageSamplesH).ForEachCell([&](int32 Idx, const FVector& Dir, const FVector2D& UV)
 	{
-		const double V = (double)Y / (double)FMath::Max(CoverageSamplesH - 1, 1);
-		const double Polar = V * SolarOrbzErosion::PI_D;
-		const double Z = FMath::Cos(Polar);
-		const double SinPolar = FMath::Sin(Polar);
-		for (int32 X = 0; X < CoverageSamplesW; ++X)
+		if (GetRawHeight(Dir, UV) > 0.0f)
 		{
-			const double U = (double)X / (double)CoverageSamplesW;
-			const double Azimuth = (U - 0.5) * 2.0 * SolarOrbzErosion::PI_D;
-			const FVector Dir((float)(SinPolar * FMath::Cos(Azimuth)), (float)(SinPolar * FMath::Sin(Azimuth)), (float)Z);
-			if (GetRawHeight(Dir, FVector2D::ZeroVector) > 0.0f)
-			{
-				++LandSamples;
-			}
+			++LandSamples;
 		}
-	}
+	});
 	const float LandCoveragePercent = 100.0f * LandSamples / (float)(CoverageSamplesW * CoverageSamplesH);
 
 	UE_LOG(LogSolarOrbzContinent, Log,

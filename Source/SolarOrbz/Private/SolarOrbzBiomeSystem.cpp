@@ -21,13 +21,18 @@ float FSolarOrbzMaskRange::Evaluate(float Value) const
 		return 1.0f;
 	}
 
+	// Authors can leave Min > Max (e.g. while dragging both fields around) - swap rather than
+	// silently returning 0 everywhere, so a momentarily-inverted range still behaves sanely.
+	const float EffectiveMin = FMath::Min(Min, Max);
+	const float EffectiveMax = FMath::Max(Min, Max);
+
 	if (Falloff <= KINDA_SMALL_NUMBER)
 	{
-		return (Value >= Min && Value <= Max) ? 1.0f : 0.0f;
+		return (Value >= EffectiveMin && Value <= EffectiveMax) ? 1.0f : 0.0f;
 	}
 
-	const float LowEdge = FMath::SmoothStep(Min - Falloff, Min + Falloff, Value);
-	const float HighEdge = 1.0f - FMath::SmoothStep(Max - Falloff, Max + Falloff, Value);
+	const float LowEdge = FMath::SmoothStep(EffectiveMin - Falloff, EffectiveMin + Falloff, Value);
+	const float HighEdge = 1.0f - FMath::SmoothStep(EffectiveMax - Falloff, EffectiveMax + Falloff, Value);
 	return FMath::Clamp(FMath::Min(LowEdge, HighEdge), 0.0f, 1.0f);
 }
 
@@ -160,6 +165,54 @@ float USolarOrbzCompositeBiomeMask::GetWeight(const FSolarOrbzBiomeSampleContext
 	return 1.0f;
 }
 
+bool USolarOrbzCompositeBiomeMask::NeedsClimateData() const
+{
+	// Same reference-cycle guard as USolarOrbzBiome::GetWeight, scoped to this traversal - a cycle
+	// here already gets a loud warning from GetWeight itself once this mask is actually evaluated.
+	static thread_local int32 RecursionDepth = 0;
+	constexpr int32 MaxRecursionDepth = 16;
+	if (RecursionDepth >= MaxRecursionDepth)
+	{
+		return false;
+	}
+
+	++RecursionDepth;
+	bool bNeeds = false;
+	for (const TObjectPtr<USolarOrbzBiome>& Biome : Biomes)
+	{
+		if (Biome && Biome->Mask && Biome->Mask->NeedsClimateData())
+		{
+			bNeeds = true;
+			break;
+		}
+	}
+	--RecursionDepth;
+	return bNeeds;
+}
+
+bool USolarOrbzCompositeBiomeMask::NeedsSlope() const
+{
+	static thread_local int32 RecursionDepth = 0;
+	constexpr int32 MaxRecursionDepth = 16;
+	if (RecursionDepth >= MaxRecursionDepth)
+	{
+		return false;
+	}
+
+	++RecursionDepth;
+	bool bNeeds = false;
+	for (const TObjectPtr<USolarOrbzBiome>& Biome : Biomes)
+	{
+		if (Biome && Biome->Mask && Biome->Mask->NeedsSlope())
+		{
+			bNeeds = true;
+			break;
+		}
+	}
+	--RecursionDepth;
+	return bNeeds;
+}
+
 // ================================================================================================
 // USolarOrbzBiome
 // ================================================================================================
@@ -205,21 +258,29 @@ void USolarOrbzBiomeStack::EvaluateLayerWeights(const FSolarOrbzBiomeSampleConte
 
 USolarOrbzBiome* USolarOrbzBiomeStack::GetDominantBiome(const FSolarOrbzBiomeSampleContext& Context) const
 {
+	TArray<float> LayerWeights;
+	EvaluateLayerWeights(Context, LayerWeights);
+	return GetDominantBiome(Context, LayerWeights);
+}
+
+USolarOrbzBiome* USolarOrbzBiomeStack::GetDominantBiome(const FSolarOrbzBiomeSampleContext& Context, const TArray<float>& LayerWeights) const
+{
 	USolarOrbzBiome* Best = nullptr;
 	float BestWeight = 0.0f;
 
 	// Iterate forward and use >= so later (topmost) entries win ties, matching the Photoshop-style ordering.
-	for (const FSolarOrbzBiomeLayerEntry& Entry : Layers)
+	for (int32 i = 0; i < Layers.Num(); ++i)
 	{
+		const FSolarOrbzBiomeLayerEntry& Entry = Layers[i];
 		if (!Entry.Biome)
 		{
 			continue;
 		}
 
-		const float MaskWeight = Entry.Biome->GetWeight(Context) * Entry.Opacity;
-		if (MaskWeight >= BestWeight)
+		const float Weight = LayerWeights.IsValidIndex(i) ? LayerWeights[i] : 0.0f;
+		if (Weight >= BestWeight)
 		{
-			BestWeight = MaskWeight;
+			BestWeight = Weight;
 			Best = Entry.Biome;
 		}
 	}
@@ -229,16 +290,24 @@ USolarOrbzBiome* USolarOrbzBiomeStack::GetDominantBiome(const FSolarOrbzBiomeSam
 
 float USolarOrbzBiomeStack::EvaluateBiomeTerrainContribution(const FSolarOrbzBiomeSampleContext& Context) const
 {
+	TArray<float> LayerWeights;
+	EvaluateLayerWeights(Context, LayerWeights);
+	return EvaluateBiomeTerrainContribution(Context, LayerWeights);
+}
+
+float USolarOrbzBiomeStack::EvaluateBiomeTerrainContribution(const FSolarOrbzBiomeSampleContext& Context, const TArray<float>& LayerWeights) const
+{
 	float Accum = 0.0f;
 
-	for (const FSolarOrbzBiomeLayerEntry& Entry : Layers)
+	for (int32 i = 0; i < Layers.Num(); ++i)
 	{
+		const FSolarOrbzBiomeLayerEntry& Entry = Layers[i];
 		if (!Entry.Biome || !Entry.Biome->TerrainDetail)
 		{
 			continue;
 		}
 
-		const float Weight = Entry.Biome->GetWeight(Context) * Entry.Opacity;
+		const float Weight = LayerWeights.IsValidIndex(i) ? LayerWeights[i] : 0.0f;
 		if (Weight <= KINDA_SMALL_NUMBER)
 		{
 			continue;
@@ -265,11 +334,20 @@ void USolarOrbzBiomeStack::GetUniqueBiomes(TArray<USolarOrbzBiome*>& OutBiomes) 
 
 void USolarOrbzBiomeStack::EvaluateTopWeightedBiomes(const FSolarOrbzBiomeSampleContext& Context, int32 MaxBiomes, TArray<int32>& OutBiomeIndices, TArray<float>& OutWeights) const
 {
-	OutBiomeIndices.Reset();
-	OutWeights.Reset();
+	TArray<float> LayerWeights;
+	EvaluateLayerWeights(Context, LayerWeights);
 
 	TArray<USolarOrbzBiome*> UniqueBiomes;
 	GetUniqueBiomes(UniqueBiomes);
+
+	EvaluateTopWeightedBiomes(Context, LayerWeights, UniqueBiomes, MaxBiomes, OutBiomeIndices, OutWeights);
+}
+
+void USolarOrbzBiomeStack::EvaluateTopWeightedBiomes(const FSolarOrbzBiomeSampleContext& Context, const TArray<float>& LayerWeights, const TArray<USolarOrbzBiome*>& UniqueBiomes, int32 MaxBiomes, TArray<int32>& OutBiomeIndices, TArray<float>& OutWeights) const
+{
+	OutBiomeIndices.Reset();
+	OutWeights.Reset();
+
 	if (UniqueBiomes.Num() == 0)
 	{
 		return;
@@ -280,8 +358,9 @@ void USolarOrbzBiomeStack::EvaluateTopWeightedBiomes(const FSolarOrbzBiomeSample
 	TArray<float> WeightPerUniqueBiome;
 	WeightPerUniqueBiome.Init(0.0f, UniqueBiomes.Num());
 
-	for (const FSolarOrbzBiomeLayerEntry& Entry : Layers)
+	for (int32 i = 0; i < Layers.Num(); ++i)
 	{
+		const FSolarOrbzBiomeLayerEntry& Entry = Layers[i];
 		if (!Entry.Biome)
 		{
 			continue;
@@ -291,7 +370,7 @@ void USolarOrbzBiomeStack::EvaluateTopWeightedBiomes(const FSolarOrbzBiomeSample
 		{
 			continue;
 		}
-		const float Weight = FMath::Clamp(Entry.Biome->GetWeight(Context) * Entry.Opacity, 0.0f, 1.0f);
+		const float Weight = LayerWeights.IsValidIndex(i) ? LayerWeights[i] : 0.0f;
 		WeightPerUniqueBiome[Index] = FMath::Max(WeightPerUniqueBiome[Index], Weight);
 	}
 

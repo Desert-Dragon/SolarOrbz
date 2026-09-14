@@ -15,6 +15,7 @@
 
 class UTexture2D;
 class USolarOrbzPlanetProfile;
+class USolarOrbzBiomeMask;
 
 // ================================================================================================
 // ESolarOrbzTerrainBlendMode / USolarOrbzTerrainLayer - the base class every layer below derives
@@ -50,6 +51,18 @@ public:
 	float Weight = 1.0f;
 
 	/**
+	 * Optional. Scopes this layer's contribution to wherever this mask applies (0..1) - e.g. an
+	 * Erosion Layer masked to a wet Climate Mask only carves valleys in wet biomes; a Noise Layer
+	 * masked to a latitude range only adds terrain above/below that band. Reuses the same mask
+	 * types (Climate Mask, Composite Mask) a Biome's own Mask uses - a Composite Mask here can
+	 * reference an existing Biome asset directly, scoping this layer to "wherever that Biome
+	 * applies" without redefining its condition. Leave unset for "always applies everywhere" -
+	 * every layer's behavior before this existed, so existing planets are unaffected.
+	 */
+	UPROPERTY(EditAnywhere, Instanced, Category = "SolarOrbz|Layer|Mask")
+	TObjectPtr<USolarOrbzBiomeMask> Mask;
+
+	/**
 	 * Most layers (noise, heightmap, stamp) are pure functions of a single point - GetRawHeight
 	 * needs nothing but the point itself. Erosion is different: carving a valley requires knowing
 	 * about the terrain around a point, not just the point. Layers that need this override this to
@@ -66,7 +79,7 @@ public:
 	 * @param PriorLayersHeight  Callable: (UnitDirection, UV) -> combined height of layers below this one, in cm.
 	 * @param RadiusCm           The planet's base radius, for layers that need real physical distances (e.g. slope).
 	 */
-	virtual void Bake(const TFunctionRef<float(const FVector& UnitDirection, const FVector2D& UV)>& PriorLayersHeight, float RadiusCm) {}
+	virtual void Bake(const TFunctionRef<float(const FVector& UnitDirection, const FVector2D& UV)>& PriorLayersHeight, double RadiusCm) {}
 
 	/**
 	 * Some layers read part of a planet's physical identity from outside their own asset rather than
@@ -120,15 +133,49 @@ public:
 	/**
 	 * Call once per regenerate, before any EvaluateHeight calls (including from a ClimateSimulation
 	 * sampling this same stack) - gives layers that need whole-surface data (e.g. erosion) a chance
-	 * to bake it. No-op for layers that don't override RequiresWholeSurfaceBake().
+	 * to bake it. No-op for layers that don't override RequiresWholeSurfaceBake(). Also caches
+	 * RadiusCm for any per-layer Mask that needs it to estimate slope (see EstimateSlopeUpTo).
 	 */
-	void PrepareLayers(float RadiusCm) const;
+	void PrepareLayers(double RadiusCm) const;
 
-	/** Evaluates every enabled layer in order and returns the combined height, in UE units (cm). */
-	float EvaluateHeight(const FVector& UnitDirection, const FVector2D& UV) const;
+	/**
+	 * Evaluates every enabled layer in order and returns the combined height, in UE units (cm).
+	 * @param ClimateGrid  Optional. Only needed when at least one layer's Mask reads Temperature/
+	 *                      Moisture (see AnyLayerNeedsClimateData) - null is the correct default
+	 *                      everywhere else, including every call site that predates per-layer masks.
+	 */
+	float EvaluateHeight(const FVector& UnitDirection, const FVector2D& UV, const FSolarOrbzClimateGrid* ClimateGrid = nullptr) const;
 
 	/** Same as EvaluateHeight, but only accumulates layers with index < EndIndexExclusive - i.e. what a layer at that index would see as "everything below it". */
-	float EvaluateHeightUpTo(int32 EndIndexExclusive, const FVector& UnitDirection, const FVector2D& UV) const;
+	float EvaluateHeightUpTo(int32 EndIndexExclusive, const FVector& UnitDirection, const FVector2D& UV, const FSolarOrbzClimateGrid* ClimateGrid = nullptr) const;
+
+	/** True if any layer's Mask needs a Climate Simulation grid to be meaningful (see USolarOrbzBiomeMask::NeedsClimateData) - tells a caller whether it's worth the cost of a climate-aware re-evaluation pass. False (the common case, and free) when no layer has a Mask that cares. */
+	bool AnyLayerNeedsClimateData() const;
+
+	/** Same idea as AnyLayerNeedsClimateData, for Context.Slope (see USolarOrbzBiomeMask::NeedsSlope). */
+	bool AnyLayerNeedsSlope() const;
+
+private:
+	/**
+	 * Finite-difference slope estimate (0 = flat, 1 = vertical) for a layer's Mask that needs one
+	 * mid-Pass-A, where no real mesh normal exists yet (RecomputeSmoothNormals only runs after the
+	 * whole pass finishes). Perturbs UnitDirection a small angle along a tangent direction and
+	 * compares EvaluateHeightUpTo before/after - a known simplification (single-tangent-direction
+	 * estimate, not a true 2-axis gradient), same spirit as Erosion's own equatorial-only cell
+	 * spacing approximation. Only ever paid when a masked layer's Mask::NeedsSlope() is true.
+	 */
+	float EstimateSlopeUpTo(int32 EndIndexExclusive, const FVector& UnitDirection, const FVector2D& UV, const FSolarOrbzClimateGrid* ClimateGrid) const;
+
+	// Cached once per regenerate - by ApplyPlanetaryContext (Sea Level) and PrepareLayers (Radius) -
+	// so EvaluateHeightUpTo can build a full FSolarOrbzBiomeSampleContext for a masked layer without
+	// needing either threaded through every call site.
+	mutable float CachedSeaLevelCmForMasking = 0.0f;
+	mutable double CachedRadiusCmForMasking = 0.0;
+
+	// Same order as Layers, populated once by PrepareLayers() rather than calling Mask->NeedsSlope()
+	// (which, for a Composite Mask, walks a whole tree of referenced Biomes) on every single vertex
+	// inside EvaluateHeightUpTo - the answer is invariant for the whole regenerate.
+	mutable TArray<bool> CachedLayerNeedsSlope;
 };
 
 // ================================================================================================
@@ -209,7 +256,7 @@ public:
 
 	//~ Begin USolarOrbzTerrainLayer interface
 	virtual bool RequiresWholeSurfaceBake() const override { return true; }
-	virtual void Bake(const TFunctionRef<float(const FVector& UnitDirection, const FVector2D& UV)>& PriorLayersHeight, float RadiusCm) override;
+	virtual void Bake(const TFunctionRef<float(const FVector& UnitDirection, const FVector2D& UV)>& PriorLayersHeight, double RadiusCm) override;
 	virtual void ApplyPlanetaryContext(const USolarOrbzPlanetProfile* Profile, float SeaLevelCm) override { CachedSeaLevelCm = SeaLevelCm; }
 	//~ End USolarOrbzTerrainLayer interface
 
@@ -238,6 +285,9 @@ private:
 
 	/** Set by Bake() each regenerate - 1.0 (no change) when bCompensateAmplitude is false. */
 	mutable float CachedAmplitudeScale = 1.0f;
+
+	/** Set by Bake() each regenerate - depends only on Seed, so it's computed once here rather than on every ComputeNormalizedNoiseUncompensated call (i.e. every vertex). */
+	mutable FVector CachedSeedOffset = FVector::ZeroVector;
 };
 
 // ================================================================================================
@@ -466,7 +516,7 @@ public:
 
 	//~ Begin USolarOrbzTerrainLayer interface
 	virtual bool RequiresWholeSurfaceBake() const override { return true; }
-	virtual void Bake(const TFunctionRef<float(const FVector& UnitDirection, const FVector2D& UV)>& PriorLayersHeight, float RadiusCm) override;
+	virtual void Bake(const TFunctionRef<float(const FVector& UnitDirection, const FVector2D& UV)>& PriorLayersHeight, double RadiusCm) override;
 	virtual float GetRawHeight(const FVector& UnitDirection, const FVector2D& UV) const override;
 	//~ End USolarOrbzTerrainLayer interface
 
@@ -526,7 +576,7 @@ public:
 
 	//~ Begin USolarOrbzTerrainLayer interface
 	virtual bool RequiresWholeSurfaceBake() const override { return true; }
-	virtual void Bake(const TFunctionRef<float(const FVector& UnitDirection, const FVector2D& UV)>& PriorLayersHeight, float RadiusCm) override;
+	virtual void Bake(const TFunctionRef<float(const FVector& UnitDirection, const FVector2D& UV)>& PriorLayersHeight, double RadiusCm) override;
 	virtual float GetRawHeight(const FVector& UnitDirection, const FVector2D& UV) const override;
 	//~ End USolarOrbzTerrainLayer interface
 
@@ -676,7 +726,7 @@ public:
 	//~ Begin USolarOrbzTerrainLayer interface
 	virtual void ApplyPlanetaryContext(const USolarOrbzPlanetProfile* Profile, float SeaLevelCm) override;
 	virtual bool RequiresWholeSurfaceBake() const override { return true; }
-	virtual void Bake(const TFunctionRef<float(const FVector& UnitDirection, const FVector2D& UV)>& PriorLayersHeight, float RadiusCm) override;
+	virtual void Bake(const TFunctionRef<float(const FVector& UnitDirection, const FVector2D& UV)>& PriorLayersHeight, double RadiusCm) override;
 	virtual float GetRawHeight(const FVector& UnitDirection, const FVector2D& UV) const override;
 	//~ End USolarOrbzTerrainLayer interface
 

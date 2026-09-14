@@ -355,7 +355,7 @@ public:
 
 	/** Radius at bake time, meters - matches the actor's Radius Meters, regardless of body type. */
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "SolarOrbz|Baked")
-	float RadiusMeters = 0.0f;
+	double RadiusMeters = 0.0;
 
 	/** Returns None if Mesh is null or has no SolarOrbz body metadata attached (e.g. it was baked with no Profile assigned, or wasn't baked by SolarOrbz at all). Cheap - doesn't load anything, just checks which MeshUserData class (if any) is attached. */
 	UFUNCTION(BlueprintCallable, Category = "SolarOrbz|Baked")

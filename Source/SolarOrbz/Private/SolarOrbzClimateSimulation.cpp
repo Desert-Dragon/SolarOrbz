@@ -1,21 +1,11 @@
 // SolarOrbz - Climate simulation implementation.
 
 #include "SolarOrbzClimateSimulation.h"
+#include "SolarOrbzLatLongGrid.h"
 #include "SolarOrbzTerrainLayers.h"
-
-namespace SolarOrbzClimate
-{
-	// Same rationale as FSolarOrbzIcoSphereGenerator: an explicit double constant rather than the
-	// engine's PI macro, since FVector components are double (LWC) by default. PI_D itself is a
-	// private constant scoped to SolarOrbzIcoSphereGenerator.cpp, so it isn't visible here - this
-	// is this file's own copy of the same value.
-	static constexpr double PI_D = 3.14159265358979323846;
-}
 
 void FSolarOrbzClimateGrid::Sample(const FVector& UnitDirection, float& OutTemperatureKelvin, float& OutMoisture01) const
 {
-	using namespace SolarOrbzClimate;
-
 	if (!IsValid())
 	{
 		OutTemperatureKelvin = 288.0f;
@@ -23,38 +13,16 @@ void FSolarOrbzClimateGrid::Sample(const FVector& UnitDirection, float& OutTempe
 		return;
 	}
 
-	// Same convention as FSolarOrbzIcoSphereGenerator::ComputeUV.
-	const double Azimuth = FMath::Atan2((double)UnitDirection.Y, (double)UnitDirection.X); // -PI .. PI
-	const double U = 0.5 + Azimuth / (2.0 * PI_D);
-	const double Polar = FMath::Acos(FMath::Clamp((double)UnitDirection.Z, -1.0, 1.0)); // 0 .. PI
-	const double V = Polar / PI_D;
+	// Computed once, reused for both parallel arrays sampled at this same point.
+	const FSolarOrbzLatLongGrid Grid(Width, Height);
+	const FSolarOrbzLatLongGrid::FBilinearCell Cell = Grid.ComputeBilinearCell(UnitDirection);
 
-	const double Fx = FMath::Frac(U) * (double)Width;
-	const double Fy = FMath::Clamp(V, 0.0, 1.0) * (double)(Height - 1);
-
-	const int32 X0 = FMath::FloorToInt(Fx) % Width;
-	const int32 X1 = (X0 + 1) % Width;
-	const int32 Y0 = FMath::Clamp(FMath::FloorToInt(Fy), 0, Height - 1);
-	const int32 Y1 = FMath::Clamp(Y0 + 1, 0, Height - 1);
-
-	const float Tx = (float)(Fx - FMath::FloorToDouble(Fx));
-	const float Ty = (float)(Fy - FMath::FloorToDouble(Fy));
-
-	auto SampleBilinear = [&](const TArray<float>& Grid) -> float
-	{
-		const float A = FMath::Lerp(Grid[Y0 * Width + X0], Grid[Y0 * Width + X1], Tx);
-		const float B = FMath::Lerp(Grid[Y1 * Width + X0], Grid[Y1 * Width + X1], Tx);
-		return FMath::Lerp(A, B, Ty);
-	};
-
-	OutTemperatureKelvin = SampleBilinear(TemperatureKelvin);
-	OutMoisture01 = SampleBilinear(Moisture01);
+	OutTemperatureKelvin = FSolarOrbzLatLongGrid::SampleAtCell(TemperatureKelvin, Width, Cell);
+	OutMoisture01 = FSolarOrbzLatLongGrid::SampleAtCell(Moisture01, Width, Cell);
 }
 
-void USolarOrbzClimateSimulationAsset::Simulate(const USolarOrbzTerrainLayerStack* TerrainStack, float RadiusCm, float AtmosphereDensityAtSeaLevel, FSolarOrbzClimateGrid& OutGrid) const
+void USolarOrbzClimateSimulationAsset::Simulate(const USolarOrbzTerrainLayerStack* TerrainStack, double RadiusCm, float AtmosphereDensityAtSeaLevel, FSolarOrbzClimateGrid& OutGrid) const
 {
-	using namespace SolarOrbzClimate;
-
 	const int32 W = FMath::Max(GridWidth, 8);
 	const int32 H = FMath::Max(GridHeight, 4);
 
@@ -79,36 +47,18 @@ void USolarOrbzClimateSimulationAsset::Simulate(const USolarOrbzTerrainLayerStac
 	TArray<float> ElevationCm;
 	ElevationCm.SetNumUninitialized(W * H);
 
-	for (int32 Y = 0; Y < H; ++Y)
+	FSolarOrbzLatLongGrid(W, H).ForEachCell([&](int32 Idx, const FVector& UnitDirection, const FVector2D& UV)
 	{
-		const double V = (double)Y / (double)FMath::Max(H - 1, 1); // 0 north pole .. 1 south pole
-		const double Polar = V * PI_D;
-		const double Z = FMath::Cos(Polar);
-		const double SinPolar = FMath::Sin(Polar);
+		const float Elevation = TerrainStack ? TerrainStack->EvaluateHeight(UnitDirection, UV) : 0.0f;
+		ElevationCm[Idx] = Elevation;
 
-		for (int32 X = 0; X < W; ++X)
-		{
-			const double U = (double)X / (double)W; // wraps - no -1, W steps tile exactly around
-			const double Azimuth = (U - 0.5) * 2.0 * PI_D;
-
-			const FVector UnitDirection(
-				(float)(SinPolar * FMath::Cos(Azimuth)),
-				(float)(SinPolar * FMath::Sin(Azimuth)),
-				(float)Z);
-			const FVector2D UV((float)U, (float)V);
-
-			const int32 Idx = Y * W + X;
-			const float Elevation = TerrainStack ? TerrainStack->EvaluateHeight(UnitDirection, UV) : 0.0f;
-			ElevationCm[Idx] = Elevation;
-
-			const float LatitudeAbs = FMath::Abs((float)Z); // 0 equator .. 1 pole
-			const float ElevationAboveSeaKm = FMath::Max(Elevation - SeaLevelCm, 0.0f) / 100000.0f; // cm -> km
-			const float BaseTemp = FMath::Lerp(EquatorTemperature, PoleTemperature, LatitudeAbs);
-			// Floored at absolute zero only - deliberately not clamped to any Earth-relative range,
-			// so a lava world or a cryogenic moon are both representable.
-			OutGrid.TemperatureKelvin[Idx] = FMath::Max(BaseTemp - LapseRatePerKm * ElevationAboveSeaKm, 0.0f);
-		}
-	}
+		const float LatitudeAbs = FMath::Abs(UnitDirection.Z); // 0 equator .. 1 pole
+		const float ElevationAboveSeaKm = FMath::Max(Elevation - SeaLevelCm, 0.0f) / 100000.0f; // cm -> km
+		const float BaseTemp = FMath::Lerp(EquatorTemperature, PoleTemperature, LatitudeAbs);
+		// Floored at absolute zero only - deliberately not clamped to any Earth-relative range,
+		// so a lava world or a cryogenic moon are both representable.
+		OutGrid.TemperatureKelvin[Idx] = FMath::Max(BaseTemp - LapseRatePerKm * ElevationAboveSeaKm, 0.0f);
+	});
 
 	// --- Pass 2: march wind along each latitude row, wrapping WindLoops times so the carried-moisture ---
 	// value settles into a repeating steady state before the final circuit is recorded. Each row's wind

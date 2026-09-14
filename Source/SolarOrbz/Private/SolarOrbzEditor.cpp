@@ -152,13 +152,13 @@ void SSolarOrbzMainPanel::Construct(const FArguments& InArgs)
 			+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 2.0f)
 			[
 				MakeLabeledRow(LOCTEXT("RadiusLabel", "Radius (m)"),
-					SNew(SSpinBox<float>)
-					.MinValue(0.01f)
-					.MinSliderValue(1.0f)
-					.MaxSliderValue(1000000.0f) // slider convenience range (1,000 km) - typing goes further, no hard ceiling
-					.Delta(1.0f)
+					SNew(SSpinBox<double>)
+					.MinValue(0.01)
+					.MinSliderValue(1.0)
+					.MaxSliderValue(1000000.0) // slider convenience range (1,000 km) - typing goes further, no hard ceiling
+					.Delta(1.0)
 					.Value_Lambda([this]() { return RadiusMeters; })
-					.OnValueChanged_Lambda([this](float NewValue) { RadiusMeters = NewValue; })
+					.OnValueChanged_Lambda([this](double NewValue) { RadiusMeters = NewValue; })
 				)
 			]
 

@@ -152,5 +152,5 @@ public:
 	 *        deliberately simplified stand-in for real thermodynamics (vapor pressure, specific heat, etc.), not a
 	 *        full atmospheric model.
 	 */
-	void Simulate(const USolarOrbzTerrainLayerStack* TerrainStack, float RadiusCm, float AtmosphereDensityAtSeaLevel, FSolarOrbzClimateGrid& OutGrid) const;
+	void Simulate(const USolarOrbzTerrainLayerStack* TerrainStack, double RadiusCm, float AtmosphereDensityAtSeaLevel, FSolarOrbzClimateGrid& OutGrid) const;
 };

@@ -95,7 +95,83 @@ commitment or a schedule - just a place these don't get lost between sessions.
   Simulation's actual computed moisture. Wiring the two together would let erosion carve more
   aggressively in wet regions and barely at all in deserts, instead of uniformly everywhere.
 
+- **"Terrain not moving vertices enough at Earth scale to be noticeable."** **Done (partially -
+  see below).** Root cause was never the height math - `Height` is computed correctly, in real
+  centimeters, same as always. It's mesh resolution: `Max Subdivisions` is a hard cap independent
+  of `Radius Meters`, so at Earth's radius (~6.37M meters) the subdivision level actually needed to
+  hit a reasonable `Vertices Per Meter` (>20) is unreachable, and the cap silently binds - default
+  settings gave ~104km triangle edges, geometrically incapable of showing meter-to-km-scale terrain
+  regardless of how tall it actually is.
+  - Fixed: `RadiusMeters`/`RadiusCm` and the whole icosphere generator's radius parameter are now
+    `double`, not `float` - at Earth scale, float's ~7 significant digits was already losing tens of
+    centimeters before any terrain math ran, independent of the resolution issue above.
+  - Fixed: `Max Subdivisions`' editable range widened (`ClampMax` 6 -> 11 - level 11 is ~42M
+    vertices, a reasonable one-off-bake ceiling; still capped hard since this actor recomputes its
+    whole mesh live on every property change, and going higher risks freezing/crashing the editor
+    rather than just being slow). Tooltips on `Radius Meters`/`Vertices Per Meter`/`Max Subdivisions`
+    now spell out the edge-length math. `RegenerateMesh` now distinguishes two warning tiers: the cap
+    is binding but raising it would help, vs. the requested density (`EstimateVertexCount` in the
+    billions) is infeasible for any single mesh regardless of `Max Subdivisions`.
+  - **Not fixed, deliberately out of scope for this pass:** a single uniform-subdivision mesh
+    fundamentally cannot show ground-level detail at planetary radius no matter how high `Max
+    Subdivisions` goes - that needs a chunked/streaming LOD terrain system (camera-distance-adaptive
+    patches), which is planned separately on a Nanite-based custom backend, not a bigger single mesh.
+    This actor remains the right tool for a bounded preview/bake radius or zoomed-in testing.
+
 ## Climate / Biome
+
+- **Per-layer terrain masking.** **Done.** Any layer in the main `USolarOrbzTerrainLayerStack` can
+  now optionally carry its own procedural mask (`USolarOrbzTerrainLayer::Mask`, the same Climate
+  Mask/Composite Mask types `USolarOrbzBiome::Mask` already uses), scoping that individual layer's
+  contribution the way World Creator's per-filter masks do - "Erosion only in wet biomes," "Noise
+  only above a latitude band" - directly in the primary stack, with real blend-mode control and
+  explicit ordering relative to every other layer, rather than through a separate whole-biome pass
+  after the fact. A Composite Mask here can reference an existing Biome asset to reuse its condition
+  without redefining it. `USolarOrbzBiome::TerrainDetail` (the older additive secondary-stack
+  mechanism) is kept and unchanged for existing planets and for a self-contained biome-only pass,
+  but is no longer the first reach for new terrain-shaping work - masked main-stack layers are.
+  `USolarOrbzBiomeStack`'s whole-biome-identity role (ground texturing, debug colors, future PCG
+  scatter) is unaffected and remains the classification authority per the PCG Biome Core note below.
+  - Masks that read Temperature/Moisture (`USolarOrbzBiomeMask::NeedsClimateData`) need a real
+    Climate Simulation grid to be meaningful, which doesn't exist until after the base terrain pass
+    has already run once. Handled by a cheap `AnyLayerNeedsClimateData` check: when no layer's mask
+    needs it (the common case, and every planet authored before this existed), the base terrain pass
+    still runs exactly once, same cost as always. Only when a layer's mask actually needs it does the
+    pass re-run a second time after Climate Simulation, so that mask sees real data instead of its
+    no-simulation fallback. Masks that read Slope (`NeedsSlope`) get a finite-difference estimate
+    mid-pass (no real mesh normal exists yet) - a known simplification (single-tangent-direction, not
+    a true 2-axis gradient), same spirit as Erosion's own equatorial-only cell spacing approximation.
+  - Known limitation, inherited from the existing one-bake-per-regenerate design: a whole-surface-
+    baked layer (Erosion, Terrace) only ever sees the seed-pass (climate-neutral) result of any masked
+    layer below it in the stack, never the final climate-aware one, since `Bake()` runs once, before
+    either terrain pass walk.
+  - Also fixed in the same pass: the blend-mode-as-first-enabled-layer footgun (`EvaluateHeightUpTo`
+    used to start `Accum` at 0.0, so a first layer set to Multiply always yielded 0 forever, Min/Max
+    silently floored/clipped everything to 0, and Subtract silently negated the layer's own output) -
+    the first enabled layer in a stack is now always treated as an implicit Replace, matching how
+    every other layer-stack tool treats a stack's bottom filter. Intentional behavior change: a
+    planet whose first enabled layer relied on the old Subtract-from-zero quirk for a negative base
+    will see it flip sign - author that with `Weight = -1` on an Add/Replace layer instead.
+  - Each `USolarOrbzBiome::TerrainDetail` stack now also gets `ApplyPlanetaryContext`/`PrepareLayers`
+    called once per regenerate (previously never called for these secondary stacks at all) - fixes a
+    real pre-existing gap where a whole-surface-baked layer (Erosion, Terrace) inside `TerrainDetail`
+    silently contributed nothing (never baked), and Sea-Level-relative layers measured from 0 instead
+    of the real Sea Level. Also what lets a `Mask` on a `TerrainDetail` layer read Slope correctly.
+
+- **Terrain/climate pipeline cleanup**, found during the same review as the two items above.
+  **Done.** `USolarOrbzBiomeStack::EvaluateBiomeTerrainContribution`/`GetDominantBiome`/
+  `EvaluateTopWeightedBiomes` used to each independently re-walk `Layers` and re-evaluate every
+  mask from scratch when called back-to-back per vertex in `RegenerateMesh` Pass B - up to 2x the
+  mask evaluations needed, worse for recursive Composite Masks. Now share one `EvaluateLayerWeights`
+  result per vertex (new precomputed-weights overloads; original signatures kept as thin wrappers).
+  `FSolarOrbzMaskRange::Evaluate` no longer silently returns 0 everywhere if an author leaves
+  `Min > Max`. The fractal noise seed hash (`ComputeNormalizedNoiseUncompensated`'s `SeedOffset`,
+  depends only on `Seed`) is now cached once per `Bake()` instead of recomputed on every vertex, and
+  shares one formula (`SolarOrbzNoiseBasis::ComputeSeedOffset`) with Terrace's identical
+  `IrregularitySeedOffset` instead of duplicating it. The equirectangular lat/long grid walk +
+  longitude-wrapping bilinear sample - independently reimplemented across Erosion, Terrace,
+  Continent's coverage sampler, and Climate Simulation's grid/`Sample()` - is now one shared
+  `FSolarOrbzLatLongGrid` utility (`Source/SolarOrbz/Public/SolarOrbzLatLongGrid.h`).
 
 - **PCG Biome Core integration** for content scattering (trees, rocks, and eventually
   civilization - roads, farms, settlements). SolarOrbz's Climate + BiomeStack system stays the

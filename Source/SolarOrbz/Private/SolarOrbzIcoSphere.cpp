@@ -6,6 +6,7 @@
 
 #include "SolarOrbzTerrainLayers.h"
 #include "SolarOrbzBiomeSystem.h"
+#include "SolarOrbzLatLongGrid.h"
 #include "SolarOrbzProfiles.h"
 
 #include "Materials/MaterialInterface.h"
@@ -146,9 +147,10 @@ float FSolarOrbzTextureHeightSampler::SampleBilinear01(float U, float V) const
 // ================================================================================================
 namespace SolarOrbzIcoSphere
 {
-	// Using an explicit double constant rather than the engine's PI macro to
-	// avoid precision loss now that FVector components are double (LWC) by default.
-	static constexpr double PI_D = 3.14159265358979323846;
+	// Single canonical copy now lives on FSolarOrbzLatLongGrid - this generator is mesh-vertex-
+	// driven rather than grid-cell-driven, so it doesn't use that utility directly, but still
+	// shares its PI_D constant rather than keeping a second copy of the same literal.
+	static constexpr double PI_D = FSolarOrbzLatLongGrid::PI_D;
 
 	// Edge length of a regular icosahedron with circumradius 1.0.
 	static constexpr double UnitCircumradiusEdgeLength = 1.0514622242382672;
@@ -204,11 +206,11 @@ void FSolarOrbzIcoSphereGenerator::RecomputeSmoothNormals(FSolarOrbzIcoSphereMes
 	}
 }
 
-int32 FSolarOrbzIcoSphereGenerator::ComputeSubdivisionLevelForEdgeLength(float Radius, float TargetEdgeLength, int32 MaxSubdivisions, int32* OutUnclampedLevel)
+int32 FSolarOrbzIcoSphereGenerator::ComputeSubdivisionLevelForEdgeLength(double Radius, float TargetEdgeLength, int32 MaxSubdivisions, int32* OutUnclampedLevel)
 {
 	using namespace SolarOrbzIcoSphere;
 
-	const double BaseEdgeLength = FMath::Max(Radius, KINDA_SMALL_NUMBER) * UnitCircumradiusEdgeLength;
+	const double BaseEdgeLength = FMath::Max(Radius, (double)KINDA_SMALL_NUMBER) * UnitCircumradiusEdgeLength;
 
 	if (TargetEdgeLength <= KINDA_SMALL_NUMBER)
 	{
@@ -230,17 +232,17 @@ int32 FSolarOrbzIcoSphereGenerator::ComputeSubdivisionLevelForEdgeLength(float R
 	return FMath::Clamp(Level, 0, MaxSubdivisions);
 }
 
-int32 FSolarOrbzIcoSphereGenerator::Generate(float Radius, float VerticesPerMeter, FSolarOrbzIcoSphereMeshData& OutMeshData, int32 MaxSubdivisions, int32* OutUnclampedLevel)
+int32 FSolarOrbzIcoSphereGenerator::Generate(double Radius, float VerticesPerMeter, FSolarOrbzIcoSphereMeshData& OutMeshData, int32 MaxSubdivisions, int32* OutUnclampedLevel)
 {
 	// UE units are centimeters, so "per meter" density -> divide 100 by it to get target edge length in cm.
-	const float TargetEdgeLength = VerticesPerMeter > KINDA_SMALL_NUMBER ? (100.0f / VerticesPerMeter) : Radius;
+	const float TargetEdgeLength = VerticesPerMeter > KINDA_SMALL_NUMBER ? (100.0f / VerticesPerMeter) : (float)Radius;
 
 	const int32 Level = ComputeSubdivisionLevelForEdgeLength(Radius, TargetEdgeLength, MaxSubdivisions, OutUnclampedLevel);
 	GenerateAtSubdivisionLevel(Radius, Level, OutMeshData);
 	return Level;
 }
 
-void FSolarOrbzIcoSphereGenerator::GenerateAtSubdivisionLevel(float Radius, int32 SubdivisionLevel, FSolarOrbzIcoSphereMeshData& OutMeshData)
+void FSolarOrbzIcoSphereGenerator::GenerateAtSubdivisionLevel(double Radius, int32 SubdivisionLevel, FSolarOrbzIcoSphereMeshData& OutMeshData)
 {
 	FBuildContext Context;
 	BuildBaseIcosahedron(Context);
@@ -251,7 +253,7 @@ void FSolarOrbzIcoSphereGenerator::GenerateAtSubdivisionLevel(float Radius, int3
 		SubdivideOnce(Context);
 	}
 
-	FixUVSeamsAndFinalize(Context, FMath::Max(Radius, KINDA_SMALL_NUMBER), OutMeshData);
+	FixUVSeamsAndFinalize(Context, FMath::Max(Radius, (double)KINDA_SMALL_NUMBER), OutMeshData);
 }
 
 void FSolarOrbzIcoSphereGenerator::BuildBaseIcosahedron(FBuildContext& Context)
@@ -334,7 +336,7 @@ void FSolarOrbzIcoSphereGenerator::SubdivideOnce(FBuildContext& Context)
 	Context.Indices = MoveTemp(NewIndices);
 }
 
-void FSolarOrbzIcoSphereGenerator::FixUVSeamsAndFinalize(const FBuildContext& Context, float Radius, FSolarOrbzIcoSphereMeshData& OutMeshData)
+void FSolarOrbzIcoSphereGenerator::FixUVSeamsAndFinalize(const FBuildContext& Context, double Radius, FSolarOrbzIcoSphereMeshData& OutMeshData)
 {
 	using namespace SolarOrbzIcoSphere;
 
@@ -556,16 +558,33 @@ void ASolarOrbzIcoSphereActor::RegenerateMesh()
 
 	// The generator's own API works in UE units (cm) throughout, matching every other UE
 	// system (collision, physics, etc). RadiusMeters is purely a user-facing convenience -
-	// convert once, right here, and every internal calculation below stays in cm.
-	const float RadiusCm = RadiusMeters * 100.0f;
+	// convert once, right here, and every internal calculation below stays in cm. Kept as
+	// double end-to-end (not float) - at Earth-scale radii, float's ~7 significant digits
+	// already eats tens of centimeters of precision before any terrain math even runs.
+	const double RadiusCm = RadiusMeters * 100.0;
 
 	LastSubdivisionLevelUsed = FSolarOrbzIcoSphereGenerator::Generate(RadiusCm, VerticesPerMeter, CachedMeshData, MaxSubdivisions, &LastRequestedSubdivisionLevel);
 
 	if (LastRequestedSubdivisionLevel > LastSubdivisionLevelUsed)
 	{
-		UE_LOG(LogSolarOrbz, Warning,
-			TEXT("SolarOrbz: Vertices Per Meter (%.4f) would need subdivision level %d at this radius, but Max Subdivisions caps it at %d - the density setting is NOT being reached. Raise Max Subdivisions or lower Vertices Per Meter."),
-			VerticesPerMeter, LastRequestedSubdivisionLevel, LastSubdivisionLevelUsed);
+		// Above this, no single mesh could reach the requested density regardless of Max
+		// Subdivisions (EstimateVertexCount(14) is already ~2.7 billion vertices) - a fundamentally
+		// different situation from "the cap is binding but raising it would help", which the plain
+		// warning below covers. Callers hitting this need a chunked/streaming LOD terrain system,
+		// not a higher Max Subdivisions.
+		constexpr int32 InfeasibleLevelThreshold = 14;
+		if (LastRequestedSubdivisionLevel >= InfeasibleLevelThreshold)
+		{
+			UE_LOG(LogSolarOrbz, Warning,
+				TEXT("SolarOrbz: at this Radius/Vertices Per Meter, subdivision level %d (~%lld vertices) would be required - this is not achievable in any single mesh, regardless of Max Subdivisions. A chunked/streaming LOD terrain system (planned separately) is required for ground-level detail at this scale; this actor is intended for preview/bake at a bounded radius or vertex budget instead."),
+				LastRequestedSubdivisionLevel, FSolarOrbzIcoSphereGenerator::EstimateVertexCount(LastRequestedSubdivisionLevel));
+		}
+		else
+		{
+			UE_LOG(LogSolarOrbz, Warning,
+				TEXT("SolarOrbz: Vertices Per Meter (%.4f) would need subdivision level %d at this radius, but Max Subdivisions caps it at %d - the density setting is NOT being reached. Raise Max Subdivisions or lower Vertices Per Meter."),
+				VerticesPerMeter, LastRequestedSubdivisionLevel, LastSubdivisionLevelUsed);
+		}
 	}
 
 	// Keep the pristine outward sphere direction for every vertex - both passes displace
@@ -583,25 +602,21 @@ void ASolarOrbzIcoSphereActor::RegenerateMesh()
 	const float SeaLevelCm = ClimateSimulation ? ClimateSimulation->SeaLevel * 100.0f : 0.0f;
 
 	// --- Pass A: base terrain (procedural noise and/or authored heightmap). ---
-	if (TerrainStack)
+	// Runs once unconditionally (the "seed" pass, no Climate Simulation data yet - every layer's
+	// own Mask sees bHasClimateData=false and falls back to its own no-simulation behavior, same as
+	// today). If any layer's Mask actually needs Temperature/Moisture (AnyLayerNeedsClimateData),
+	// it runs a second time below, after Climate Simulation has produced a real grid, so those masks
+	// see real data instead of their fallback. Assigns rather than accumulates each time (from the
+	// pristine sphere position), so it's safe to call more than once - never double-displaces.
+	auto RunTerrainPassA = [this, &OriginalUnitDirections, RadiusCm](const FSolarOrbzClimateGrid* ClimateGridForMasking)
 	{
-		// Profile/Sea Level data (e.g. Continent's landmass counts, Noise/Planetary Noise's
-		// sea-level offset) must reach layers before PrepareLayers() bakes them - Bake() only runs
-		// once per regenerate, so this has to happen first, not after.
-		TerrainStack->ApplyPlanetaryContext(PlanetProfile, SeaLevelCm);
-
-		// Whole-surface bake first (e.g. erosion) - must happen before any per-point EvaluateHeight
-		// calls below, including the ones the Climate Simulation will make against this same stack,
-		// so rain shadows react to eroded terrain rather than the pre-erosion noise.
-		TerrainStack->PrepareLayers(RadiusCm);
-
 		float MinHeight = TNumericLimits<float>::Max(), MaxHeight = TNumericLimits<float>::Lowest(), SumHeight = 0.0f;
 
 		for (int32 i = 0; i < CachedMeshData.Vertices.Num(); ++i)
 		{
 			const FVector& UnitDirection = OriginalUnitDirections[i];
-			const float Height = TerrainStack->EvaluateHeight(UnitDirection, CachedMeshData.UVs[i]);
-			CachedMeshData.Vertices[i] += UnitDirection * Height;
+			const float Height = TerrainStack->EvaluateHeight(UnitDirection, CachedMeshData.UVs[i], ClimateGridForMasking);
+			CachedMeshData.Vertices[i] = UnitDirection * RadiusCm + UnitDirection * Height;
 
 			MinHeight = FMath::Min(MinHeight, Height);
 			MaxHeight = FMath::Max(MaxHeight, Height);
@@ -627,8 +642,32 @@ void ASolarOrbzIcoSphereActor::RegenerateMesh()
 				(PeakToPeakCm / RadiusCm) * 100.0f);
 		}
 
-		// Recompute now so Pass B has real slope data to mask against, not the pristine sphere's.
+		// Recompute now so Pass B (and, if this runs again below, slope-masked layer evaluation) has
+		// real slope data to work with, not the pristine sphere's.
 		FSolarOrbzIcoSphereGenerator::RecomputeSmoothNormals(CachedMeshData);
+	};
+
+	bool bTerrainNeedsClimateForMasking = false;
+	if (TerrainStack)
+	{
+		// Profile/Sea Level data (e.g. Continent's landmass counts, Noise/Planetary Noise's
+		// sea-level offset) must reach layers before PrepareLayers() bakes them - Bake() only runs
+		// once per regenerate, so this has to happen first, not after.
+		TerrainStack->ApplyPlanetaryContext(PlanetProfile, SeaLevelCm);
+
+		// Whole-surface bake first (e.g. erosion) - must happen before any per-point EvaluateHeight
+		// calls below, including the ones the Climate Simulation will make against this same stack,
+		// so rain shadows react to eroded terrain rather than the pre-erosion noise.
+		TerrainStack->PrepareLayers(RadiusCm);
+
+		bTerrainNeedsClimateForMasking = TerrainStack->AnyLayerNeedsClimateData();
+
+		if (TerrainStack->AnyLayerNeedsSlope())
+		{
+			UE_LOG(LogSolarOrbz, Log, TEXT("SolarOrbz Terrain: at least one layer's Mask reads Slope - those layers pay for a small finite-difference height sample per vertex to estimate it."));
+		}
+
+		RunTerrainPassA(nullptr);
 	}
 	else
 	{
@@ -687,6 +726,17 @@ void ASolarOrbzIcoSphereActor::RegenerateMesh()
 		UE_LOG(LogSolarOrbz, Warning, TEXT("SolarOrbz Climate: no ClimateSimulation assigned on the actor - any Climate Biome Mask using Moisture/Temperature is running on its no-simulation fallback, not real simulated data."));
 	}
 
+	// --- Pass A, final re-run: only when a layer's Mask actually needs Temperature/Moisture and a ---
+	// real grid is now available - re-evaluates the whole base terrain pass so those masks see real
+	// climate data instead of the seed pass's no-simulation fallback. Free (skipped entirely) for
+	// every planet that doesn't use a climate-gated per-layer mask, which is every planet authored
+	// before this existed.
+	if (TerrainStack && bTerrainNeedsClimateForMasking && CachedClimateGrid.IsValid())
+	{
+		UE_LOG(LogSolarOrbz, Log, TEXT("SolarOrbz Terrain: re-running the base terrain pass (final) now that Climate Simulation has run, so climate-gated layer masks see real Temperature/Moisture."));
+		RunTerrainPassA(&CachedClimateGrid);
+	}
+
 	// --- Pass B: biome-specific detail, masked by climate/composite conditions and blended on top. ---
 	// Rendering has three mutually-exclusive modes sharing the same vertex color + UV1/UV2 channels:
 	// debug colors (bShowBiomeDebugColors), texture-array blending (BiomeBlendMaterial assigned),
@@ -706,16 +756,33 @@ void ASolarOrbzIcoSphereActor::RegenerateMesh()
 			BiomeDebugColors.SetNum(CachedMeshData.Vertices.Num());
 		}
 
+		// Invariant for the whole regenerate - computed once here rather than rebuilt inside
+		// EvaluateTopWeightedBiomes on every single vertex.
+		TArray<USolarOrbzBiome*> UniqueBiomes;
+		BiomeStack->GetUniqueBiomes(UniqueBiomes);
+
+		// Each biome's own TerrainDetail stack is a full USolarOrbzTerrainLayerStack too, so it needs
+		// the same once-per-regenerate setup the main TerrainStack gets above - without this, any
+		// whole-surface-baked layer in it (e.g. Erosion) would silently contribute nothing (never
+		// baked), Sea-Level-relative layers would measure from 0 instead of the real Sea Level, and a
+		// per-layer Mask reading Slope would always see 0.
+		for (USolarOrbzBiome* Biome : UniqueBiomes)
+		{
+			if (Biome && Biome->TerrainDetail)
+			{
+				Biome->TerrainDetail->ApplyPlanetaryContext(PlanetProfile, SeaLevelCm);
+				Biome->TerrainDetail->PrepareLayers(RadiusCm);
+			}
+		}
+
 		if (bWantsBlendMaterial)
 		{
 #if WITH_EDITOR
 			// Auto-rebuild if the texture array looks out of sync with the current biome list, so
 			// first-time setup (and adding/removing a biome) just works without a separate manual
 			// step - BuildBiomeTextureArray is still exposed for an explicit rebuild too.
-			TArray<USolarOrbzBiome*> UniqueBiomesCheck;
-			BiomeStack->GetUniqueBiomes(UniqueBiomesCheck);
 			const bool bArrayStale = !BiomeStack->BiomeTextureArray
-				|| BiomeStack->BiomeTextureArray->SourceTextures.Num() != UniqueBiomesCheck.Num();
+				|| BiomeStack->BiomeTextureArray->SourceTextures.Num() != UniqueBiomes.Num();
 			if (bArrayStale)
 			{
 				BiomeStack->BuildBiomeTextureArray();
@@ -729,6 +796,7 @@ void ASolarOrbzIcoSphereActor::RegenerateMesh()
 		int32 NumWithClimateData = 0;
 		int32 NumDominantBiomeHits = 0;
 
+		TArray<float> LayerWeights;
 		TArray<int32> TopBiomeIndices;
 		TArray<float> TopBiomeWeights;
 
@@ -750,12 +818,17 @@ void ASolarOrbzIcoSphereActor::RegenerateMesh()
 				++NumWithClimateData;
 			}
 
-			const float BiomeHeight = BiomeStack->EvaluateBiomeTerrainContribution(Context);
+			// Evaluated once per vertex and reused below - every biome's mask used to be evaluated
+			// twice per vertex here (once via EvaluateBiomeTerrainContribution, once more via
+			// GetDominantBiome/EvaluateTopWeightedBiomes), worse for composite/recursive masks.
+			BiomeStack->EvaluateLayerWeights(Context, LayerWeights);
+
+			const float BiomeHeight = BiomeStack->EvaluateBiomeTerrainContribution(Context, LayerWeights);
 			CachedMeshData.Vertices[i] += UnitDirection * BiomeHeight;
 
 			if (bShowBiomeDebugColors)
 			{
-				if (const USolarOrbzBiome* Dominant = BiomeStack->GetDominantBiome(Context))
+				if (const USolarOrbzBiome* Dominant = BiomeStack->GetDominantBiome(Context, LayerWeights))
 				{
 					BiomeDebugColors[i] = Dominant->PreviewColor;
 					++NumDominantBiomeHits;
@@ -767,7 +840,7 @@ void ASolarOrbzIcoSphereActor::RegenerateMesh()
 			}
 			else if (bWantsBlendMaterial)
 			{
-				BiomeStack->EvaluateTopWeightedBiomes(Context, MaxBlendedBiomes, TopBiomeIndices, TopBiomeWeights);
+				BiomeStack->EvaluateTopWeightedBiomes(Context, LayerWeights, UniqueBiomes, MaxBlendedBiomes, TopBiomeIndices, TopBiomeWeights);
 				if (TopBiomeIndices.Num() > 0)
 				{
 					++NumDominantBiomeHits; // reusing the same stat: "at least one biome matched here"

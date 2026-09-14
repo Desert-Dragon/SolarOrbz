@@ -100,17 +100,17 @@ public:
 	 *                            was NOT reached - MaxSubdivisions was the binding constraint instead.
 	 * @return The subdivision level actually used.
 	 */
-	static int32 Generate(float Radius, float VerticesPerMeter, FSolarOrbzIcoSphereMeshData& OutMeshData, int32 MaxSubdivisions = 8, int32* OutUnclampedLevel = nullptr);
+	static int32 Generate(double Radius, float VerticesPerMeter, FSolarOrbzIcoSphereMeshData& OutMeshData, int32 MaxSubdivisions = 8, int32* OutUnclampedLevel = nullptr);
 
 	/** Generate an icosphere at an explicit subdivision level (0 = base icosahedron, 12 verts, 20 tris). */
-	static void GenerateAtSubdivisionLevel(float Radius, int32 SubdivisionLevel, FSolarOrbzIcoSphereMeshData& OutMeshData);
+	static void GenerateAtSubdivisionLevel(double Radius, int32 SubdivisionLevel, FSolarOrbzIcoSphereMeshData& OutMeshData);
 
 	/**
 	 * Returns the subdivision level whose average edge length best matches TargetEdgeLength, clamped to MaxSubdivisions.
 	 * @param OutUnclampedLevel  Optional. Receives the level before clamping - compare to the return value
 	 *                           to detect when MaxSubdivisions, not the density target, determined the result.
 	 */
-	static int32 ComputeSubdivisionLevelForEdgeLength(float Radius, float TargetEdgeLength, int32 MaxSubdivisions = 8, int32* OutUnclampedLevel = nullptr);
+	static int32 ComputeSubdivisionLevelForEdgeLength(double Radius, float TargetEdgeLength, int32 MaxSubdivisions = 8, int32* OutUnclampedLevel = nullptr);
 
 	/** Vertex count of a base icosahedron subdivided N times (handy for UI feedback before generating). */
 	static int64 EstimateVertexCount(int32 SubdivisionLevel);
@@ -134,7 +134,7 @@ private:
 	static void BuildBaseIcosahedron(FBuildContext& Context);
 	static void SubdivideOnce(FBuildContext& Context);
 	static int32 GetOrCreateMidpoint(FBuildContext& Context, int32 IndexA, int32 IndexB);
-	static void FixUVSeamsAndFinalize(const FBuildContext& Context, float Radius, FSolarOrbzIcoSphereMeshData& OutMeshData);
+	static void FixUVSeamsAndFinalize(const FBuildContext& Context, double Radius, FSolarOrbzIcoSphereMeshData& OutMeshData);
 };
 
 // ================================================================================================
@@ -150,16 +150,38 @@ class SOLARORBZ_API ASolarOrbzIcoSphereActor : public AActor
 public:
 	ASolarOrbzIcoSphereActor();
 
-	/** Sphere radius, in meters. No upper limit - performance is your only ceiling at extreme scales/densities. */
+	/**
+	 * Sphere radius, in meters. No upper limit - performance is your only ceiling at extreme
+	 * scales/densities. Double precision so planet-scale radii (Earth is ~6.37 million meters)
+	 * don't lose the fractional-meter precision terrain layers still author in.
+	 *
+	 * IMPORTANT: a single mesh cannot show ground-level (meter-scale) detail at planetary radius -
+	 * see Max Subdivisions below. This actor is a good fit for a bounded preview/bake radius, or
+	 * for zoomed-in testing; a full Earth-scale planet with real ground-level terrain needs a
+	 * chunked/streaming LOD terrain system (planned separately), not a bigger single mesh.
+	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "SolarOrbz|IcoSphere", meta = (ClampMin = "0.01"))
-	float RadiusMeters = 1000.0f;
+	double RadiusMeters = 1000.0;
 
-	/** Desired vertex density along the surface, vertices per meter. No upper limit. */
+	/**
+	 * Desired vertex density along the surface, vertices per meter. No upper limit, but the
+	 * subdivision level actually needed to hit this at your current Radius is clamped by Max
+	 * Subdivisions below - watch the log/stats line to see whether the density target was reached.
+	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "SolarOrbz|IcoSphere", meta = (ClampMin = "0.001"))
 	float VerticesPerMeter = 1.0f;
 
-	/** Subdivision level cap. No upper limit - each +1 is roughly 4x the triangle count, so watch the stats line once you push this high. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "SolarOrbz|IcoSphere", meta = (ClampMin = "0"))
+	/**
+	 * Subdivision level cap - each +1 is roughly 4x the triangle count. Hard-clamped at 11
+	 * (~42 million vertices before UV-seam/pole duplication) since this actor recomputes its
+	 * whole mesh live on every property change; going higher risks freezing or crashing the
+	 * editor rather than just being slow. For reference, level 9-10 is already heavy for live
+	 * editing - prefer keeping this low and using Bake To Static Mesh for a denser one-off result.
+	 * Raising this will NOT make ground-level detail visible at planetary radius - triangle edge
+	 * length scales with Radius, so the same subdivision level covers far more physical distance
+	 * per triangle on a bigger planet. Watch the log for a warning when the gap is this large.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "SolarOrbz|IcoSphere", meta = (ClampMin = "0", ClampMax = "11", UIMax = "9"))
 	int32 MaxSubdivisions = 6;
 
 	/** Optional terrain recipe (procedural noise and/or an authored heightmap) applied as radial displacement after the base sphere is built. */
