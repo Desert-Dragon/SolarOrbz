@@ -108,16 +108,38 @@ public:
 };
 
 // ================================================================================================
-// USolarOrbzFractalNoiseTerrainLayerBase - shared fractal (multi-octave) Perlin noise machinery.
-// Concrete layers (Noise, Planetary Noise below) share this exact noise field, domain warp, and
-// seeding, and only differ in how the normalized -1..1 result gets scaled into an actual height.
+// ESolarOrbzNoiseType / USolarOrbzFractalNoiseTerrainLayerBase - shared fractal (multi-octave)
+// noise machinery. Concrete layers (Noise, Planetary Noise below) share this exact noise field,
+// domain warp, and seeding, and only differ in how the normalized -1..1 result gets scaled into
+// an actual height.
 // ================================================================================================
+
+/** Which basis function each octave samples from - changes the terrain's character, not just its scale. */
+UENUM(BlueprintType)
+enum class ESolarOrbzNoiseType : uint8
+{
+	/** Smooth, flowing gradient noise - the general-purpose default. Rolling hills, continents. */
+	Perlin,
+	/** 1-abs(noise), squared to sharpen - sharp mountain ridgelines with V-shaped valleys between them. */
+	Ridged,
+	/** abs(noise) folded upward - rounded, billowy humps. Softer and more rounded than Perlin, good for plains-like terrain. */
+	Billow,
+	/** Lattice-interpolated random values rather than gradients - blockier and less "flowy" than Perlin, a distinct visual character rather than a variation on it. */
+	Value,
+	/** Cellular/Worley noise - distance to the nearest randomly-placed feature point. Produces cell-like patterns rather than smooth ridges/hills - blobby plateaus with sharper boundaries between cells. */
+	Voronoi,
+};
+
 UCLASS(Abstract, EditInlineNew)
 class SOLARORBZ_API USolarOrbzFractalNoiseTerrainLayerBase : public USolarOrbzTerrainLayer
 {
 	GENERATED_BODY()
 
 public:
+	/** Which basis function each octave uses. Only affects the fractal sum below - domain warp always uses Perlin, regardless of this setting. */
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Noise")
+	ESolarOrbzNoiseType NoiseType = ESolarOrbzNoiseType::Perlin;
+
 	/** Randomizes the noise pattern without changing its statistical character. */
 	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Noise")
 	int32 Seed = 0;
@@ -390,4 +412,194 @@ private:
 
 	/** Height AFTER erosion minus height BEFORE erosion, per cell - this is what GetRawHeight samples, since this layer's contribution is a delta on top of the layers it eroded. */
 	TArray<float> BakedDeltaHeightCm;
+};
+
+// ================================================================================================
+// USolarOrbzTerraceTerrainLayer - quantizes the height of everything below it into flat plateaus
+// with steps between them, like Erosion this needs the combined height of every layer below it
+// across the whole planet (not just a single point), so it bakes a delta grid the same way. Gives
+// genuine flat plains/plateaus rather than terrain that only happens to look flat in places.
+//
+// Matches World Creator's Terrace filter family: Simple/Steep (Irregularity 0, just a different
+// Step Height) and Irregular (Irregularity > 0) aren't separate layer types here, just different
+// values of the same properties.
+// ================================================================================================
+UCLASS(EditInlineNew, meta = (DisplayName = "Terrace Layer"))
+class SOLARORBZ_API USolarOrbzTerraceTerrainLayer : public USolarOrbzTerrainLayer
+{
+	GENERATED_BODY()
+
+public:
+	/** Bake grid resolution, longitude axis. Independent of mesh density. */
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Terrace|Grid", meta = (ClampMin = "8"))
+	int32 GridWidth = 256;
+
+	/** Bake grid resolution, latitude axis. */
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Terrace|Grid", meta = (ClampMin = "4"))
+	int32 GridHeight = 128;
+
+	/** Vertical distance between plateaus, meters. Smaller values give more, closer-together steps; larger values give fewer, wider plains between bigger jumps. */
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Terrace", meta = (ClampMin = "1.0", Units = "m"))
+	float StepHeightMeters = 200.0f;
+
+	/** How much of each step's height band is a smooth ramp up to the next plateau, rather than perfectly flat. 0 = sharp stair-step cliffs between plateaus. 1 = no flat area at all - effectively disables terracing. */
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Terrace", meta = (ClampMin = "0.001", ClampMax = "1.0"))
+	float EdgeSoftness = 0.1f;
+
+	/** Blends between the original (untouched) height and the fully terraced result - 0 disables this layer's effect entirely, 1 is fully terraced. */
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Terrace", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	float TerraceStrength = 0.75f;
+
+	/** 0 = perfectly uniform steps (World Creator's "Simple"/"Steep" presets - just tune Step Height Meters for the difference). >0 jitters step boundaries with noise so they don't look like perfectly uniform contour lines (World Creator's "Irregular"). */
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Terrace|Irregularity", meta = (ClampMin = "0.0"))
+	float IrregularityStrength = 0.0f;
+
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Terrace|Irregularity", meta = (ClampMin = "0.01", EditCondition = "IrregularityStrength > 0.0"))
+	float IrregularityFrequency = 4.0f;
+
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Terrace|Irregularity", meta = (EditCondition = "IrregularityStrength > 0.0"))
+	int32 IrregularitySeed = 0;
+
+	//~ Begin USolarOrbzTerrainLayer interface
+	virtual bool RequiresWholeSurfaceBake() const override { return true; }
+	virtual void Bake(const TFunctionRef<float(const FVector& UnitDirection, const FVector2D& UV)>& PriorLayersHeight, float RadiusCm) override;
+	virtual float GetRawHeight(const FVector& UnitDirection, const FVector2D& UV) const override;
+	//~ End USolarOrbzTerrainLayer interface
+
+private:
+	int32 BakedWidth = 0;
+	int32 BakedHeight = 0;
+
+	/** Terraced height minus original height, per cell - same delta-grid pattern as Erosion. */
+	TArray<float> BakedDeltaHeightCm;
+};
+
+// ================================================================================================
+// USolarOrbzCanyonTerrainLayer - carves narrow, sharp-edged grooves following ridge-like noise
+// patterns, rather than the broad drainage networks Erosion's hydraulic pass produces. A pure
+// function of position (like Noise/Stamp), not a whole-surface bake - it doesn't need to know
+// about surrounding terrain, just where its own ridged pattern peaks.
+//
+// Built on the same fractal noise machinery as Noise/Planetary Noise Layer, so Seed/Octaves/
+// Frequency/Lacunarity/Persistence/Warp all work identically here. Defaults to the Ridged basis,
+// since canyons following true ridgelines is the useful case, but any Noise Type can be selected -
+// a Voronoi-based canyon carves along cell boundaries instead, for a different (more angular) look.
+// ================================================================================================
+UCLASS(EditInlineNew, meta = (DisplayName = "Canyon Layer"))
+class SOLARORBZ_API USolarOrbzCanyonTerrainLayer : public USolarOrbzFractalNoiseTerrainLayerBase
+{
+	GENERATED_BODY()
+
+public:
+	USolarOrbzCanyonTerrainLayer();
+
+	/** How deep canyons carve at their sharpest point, meters. Always carves downward regardless of Blend Mode's sign convention elsewhere. */
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Canyon", meta = (ClampMin = "0.0", ClampMax = "1000000.0", Units = "m"))
+	float DepthMeters = 500.0f;
+
+	/** How much of the underlying noise's peak range actually carves a canyon, 0-1. Small values give a few narrow, isolated canyons; larger values give wider or more frequent canyon networks. */
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Canyon", meta = (ClampMin = "0.001", ClampMax = "1.0"))
+	float CanyonWidth = 0.15f;
+
+	/** Shapes the canyon's cross-section profile. 1 = linear V-shape. Higher values give flatter canyon floors with steeper walls near the rim. */
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Canyon", meta = (ClampMin = "0.1"))
+	float Sharpness = 2.0f;
+
+	virtual float GetRawHeight(const FVector& UnitDirection, const FVector2D& UV) const override;
+};
+
+// ================================================================================================
+// FSolarOrbzContinentSeedData / USolarOrbzContinentTerrainLayer - places a controllable number of
+// discrete landmasses via seeded/grown regions instead of noise-derived coastlines, so an actual
+// continent COUNT is directly authorable rather than an emergent side effect of noise frequency.
+//
+// A pure function of position (like Noise/Stamp) - seed positions/radii don't depend on anything
+// below it in the stack, so it opts into the whole-surface-bake hook purely as a "run once per
+// regenerate" moment to regenerate its seed list deterministically, not because it needs
+// PriorLayersHeight (it's ignored). Place this FIRST in a stack, before your mountain/detail noise
+// layers - it defines the base land/ocean shape those layers then add detail on top of.
+//
+// Islands are just smaller-radius versions of the same seed-growth mechanism as continents, not a
+// separate algorithm or a post-hoc size classification - Min/Max Continent Radius vs Min/Max
+// Island Radius is what actually distinguishes them, so both counts are independently authorable.
+//
+// Known simplification: seed placement is pure uniform-random on the sphere, not blue-noise/
+// Poisson-disc - so seeds can occasionally cluster closer together than a hand-placed layout would,
+// though this is what re-rolling Seed is for in practice.
+// ================================================================================================
+struct SOLARORBZ_API FSolarOrbzContinentSeedData
+{
+	FVector Direction = FVector::UpVector; // unit vector, seed center
+	float RadiusRadians = 0.0f; // great-circle angular radius before coastline noise perturbation
+	FVector NoiseOffset = FVector::ZeroVector; // decorrelates this seed's coastline wiggle from every other seed's
+};
+
+UCLASS(EditInlineNew, meta = (DisplayName = "Continent Layer"))
+class SOLARORBZ_API USolarOrbzContinentTerrainLayer : public USolarOrbzTerrainLayer
+{
+	GENERATED_BODY()
+
+public:
+	/** Same seed always resolves to the same continent layout - change this to reroll. */
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Continent")
+	int32 Seed = 0;
+
+	/** How many continent-scale landmasses to place, at random positions on the sphere. */
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Continent", meta = (ClampMin = "0"))
+	int32 NumContinents = 5;
+
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Continent", meta = (ClampMin = "1.0", ClampMax = "90.0"))
+	float MinContinentRadiusDegrees = 15.0f;
+
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Continent", meta = (ClampMin = "1.0", ClampMax = "90.0"))
+	float MaxContinentRadiusDegrees = 35.0f;
+
+	/** How many smaller islands to scatter, at random positions on the sphere - independent of, and in addition to, the continents above. */
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Continent|Islands", meta = (ClampMin = "0"))
+	int32 NumIslands = 10;
+
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Continent|Islands", meta = (ClampMin = "0.1", ClampMax = "90.0"))
+	float MinIslandRadiusDegrees = 1.0f;
+
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Continent|Islands", meta = (ClampMin = "0.1", ClampMax = "90.0"))
+	float MaxIslandRadiusDegrees = 5.0f;
+
+	/** Places a landmass centered exactly on the north pole (an Antarctica-analogue, just at the other end) - not randomly positioned like continents/islands above. */
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Continent|Poles")
+	bool bHasNorthPolarContinent = false;
+
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Continent|Poles")
+	bool bHasSouthPolarContinent = false;
+
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Continent|Poles", meta = (ClampMin = "1.0", ClampMax = "90.0", EditCondition = "bHasNorthPolarContinent || bHasSouthPolarContinent"))
+	float PolarContinentRadiusDegrees = 20.0f;
+
+	/** How much each landmass's coastline wiggles away from a perfect circle, as a fraction of that landmass's own radius. 0 = perfect circles. */
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Continent|Coastline", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	float CoastlineNoiseAmplitude = 0.3f;
+
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Continent|Coastline", meta = (ClampMin = "0.01"))
+	float CoastlineNoiseFrequency = 3.0f;
+
+	/** Shapes the ocean-to-land transition. 1 = a gradual continental shelf. Higher values give a sharper, more sudden coastline. */
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Continent|Coastline", meta = (ClampMin = "0.1"))
+	float CoastlineSharpness = 1.5f;
+
+	/** How deep the ocean floor sits, meters, relative to sea level - the height this layer outputs everywhere no landmass reaches. */
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Continent|Height", meta = (ClampMax = "0.0", Units = "m"))
+	float OceanFloorDepthMeters = -4000.0f;
+
+	/** How high the base land plateau sits, meters, relative to sea level - before any mountain/detail noise layers stacked on top of this one add real terrain. Keep this modest; it's a base shelf, not the final peak height. */
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Continent|Height", meta = (ClampMin = "0.0", Units = "m"))
+	float LandPlateauHeightMeters = 200.0f;
+
+	//~ Begin USolarOrbzTerrainLayer interface
+	virtual bool RequiresWholeSurfaceBake() const override { return true; }
+	virtual void Bake(const TFunctionRef<float(const FVector& UnitDirection, const FVector2D& UV)>& PriorLayersHeight, float RadiusCm) override;
+	virtual float GetRawHeight(const FVector& UnitDirection, const FVector2D& UV) const override;
+	//~ End USolarOrbzTerrainLayer interface
+
+private:
+	/** Regenerated each Bake() from Seed/NumContinents/NumIslands/poles - GetRawHeight only ever reads this, never regenerates it, so per-vertex cost stays a cheap linear scan. */
+	TArray<FSolarOrbzContinentSeedData> CachedSeeds;
 };

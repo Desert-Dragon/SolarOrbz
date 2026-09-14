@@ -5,26 +5,35 @@ commitment or a schedule - just a place these don't get lost between sessions.
 
 ## Terrain
 
-- **More noise generation variety for better mountains, plains, and ravines.** Today's noise
-  layers (`Noise Layer`, `Planetary Noise Layer`) are a single fractal Perlin sum - good for
-  general roughness and continent-scale shape, but it doesn't give sharp mountain ridgelines, flat
-  plains/plateaus, or carved ravines/canyons as distinct, controllable features. Worth adding:
-  - **Ridged noise** (e.g. `1 - abs(noise)`, optionally squared/sharpened) for actual mountain
-    ridgelines instead of smooth rolling hills.
-  - **Terraced/plateau noise** (quantizing the height into discrete steps, optionally with a
-    smoothing pass at the step edges) for flat plains and mesa-like plateaus.
-  - **Billow/ravine noise** (`abs(noise)` inverted, or a dedicated flow-carving pass akin to
-    Erosion's hydraulic model but tuned for sharper, narrower canyons rather than broad drainage)
-    for ravines and canyons as a distinct feature rather than an erosion side effect.
-  - Likely shape: either new concrete layer types alongside the existing Noise/Planetary Noise
-    layers (sharing `FractalNoiseTerrainLayerBase` where it makes sense), or a "noise type" enum on
-    the existing layers if the underlying math is similar enough to not warrant new classes.
+- ~~More noise generation variety for better mountains, plains, and ravines.~~ **Done.**
+  - `Noise Type` (Perlin / Ridged / Billow / Value / Voronoi) on `Noise Layer` and `Planetary Noise
+    Layer` - a selectable basis function per octave, not just a scale change.
+  - `Terrace Layer` - quantizes height into flat plateaus with a soft-edged ramp between them
+    (`Step Height`, `Edge Softness`, `Terrace Strength`, plus `Irregularity` for jittered/non-uniform
+    boundaries). Matches World Creator's Terrace filter family (Simple/Steep are just different
+    Step Height values; Irregular is Irregularity > 0).
+  - `Canyon Layer` - narrow, sharp-edged carved grooves following the selected Noise Type's ridge
+    pattern (defaults to Ridged). Built on the same fractal base as Noise Layer, so it inherits
+    Seed/Octaves/Frequency/Lacunarity/Persistence/Warp for free.
+  - Still open from the original World Creator filter list, lower priority (need real neighbor/
+    whole-grid access, more work than the above): Smooth, Denoise, Kuwahara, Distortion, Inflate/
+    Deflate/Balloon. Also skipped as out of scope/overlapping other systems: Scatter (overlaps PCG
+    biome scatter), Shore (overlaps Climate sea level/moisture), the Sediment filter category
+    (overlaps Erosion's existing hydraulic pass), and purely stylized effects (Hexagons, Blocks, Swirl).
 
-- **Continent Layer** (discussed, not yet built). A whole-surface-bake layer (architecturally like
-  Erosion) that places a controllable number of discrete landmasses via seeded/grown regions
-  instead of noise-derived coastlines, so `USolarOrbzPlanetProfile::GetNumContinents()` /
-  `GetNumIslands()` / `HasNorth/SouthPolarContinent()` - already wired into the Profile data model -
-  have something reading them. This is the biggest single piece of unbuilt terrain work.
+- **Continent Layer.** **Done.** `USolarOrbzContinentTerrainLayer` - a pure per-point function (like
+  Noise/Stamp, not a whole-surface bake in the Erosion/Terrace sense) that places a controllable
+  number of continents and islands as seeded, grown landmasses with noise-perturbed coastlines,
+  plus optional landmasses pinned exactly to either pole. Islands are just smaller-radius versions
+  of the same seed mechanism as continents (`Min/MaxContinentRadiusDegrees` vs `Min/MaxIslandRadiusDegrees`
+  independently authored), not a post-hoc size classification.
+  - Still NOT wired to `USolarOrbzPlanetProfile::GetNumContinents()` etc - this layer has its own
+    authored Seed/NumContinents/NumIslands/pole flags, matching every other layer's self-contained
+    pattern, rather than reading from Profile automatically. A convenience "populate this layer's
+    fields from the assigned Profile" button/function would be a reasonable follow-up if that
+    disconnect becomes annoying in practice.
+  - Known simplification: seed placement is pure uniform-random on the sphere, not blue-noise/
+    Poisson-disc, so seeds can occasionally cluster closer together than a hand-placed layout would.
 
 - **Erosion Rainfall Amount** is uniform across the planet by default, not yet driven by a Climate
   Simulation's actual computed moisture. Wiring the two together would let erosion carve more
