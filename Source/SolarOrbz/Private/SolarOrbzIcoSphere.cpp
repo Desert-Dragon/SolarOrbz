@@ -9,6 +9,7 @@
 #include "SolarOrbzProfiles.h"
 
 #include "Materials/MaterialInterface.h"
+#include "Materials/MaterialInstanceDynamic.h"
 #include "Engine/StaticMesh.h"
 #include "MeshDescription.h"
 #include "StaticMeshAttributes.h"
@@ -536,6 +537,7 @@ void ASolarOrbzIcoSphereActor::PostEditChangeProperty(FPropertyChangedEvent& Pro
 		GET_MEMBER_NAME_CHECKED(ASolarOrbzIcoSphereActor, bShowBiomeDebugColors),
 		GET_MEMBER_NAME_CHECKED(ASolarOrbzIcoSphereActor, DebugBiomeMaterial),
 		GET_MEMBER_NAME_CHECKED(ASolarOrbzIcoSphereActor, DefaultMaterial),
+		GET_MEMBER_NAME_CHECKED(ASolarOrbzIcoSphereActor, BiomeBlendMaterial),
 	};
 
 	if (RegenTriggers.Contains(PropertyChangedEvent.GetPropertyName()))
@@ -671,7 +673,17 @@ void ASolarOrbzIcoSphereActor::RegenerateMesh()
 	}
 
 	// --- Pass B: biome-specific detail, masked by climate/composite conditions and blended on top. ---
+	// Rendering has three mutually-exclusive modes sharing the same vertex color + UV1/UV2 channels:
+	// debug colors (bShowBiomeDebugColors), texture-array blending (BiomeBlendMaterial assigned),
+	// or plain DefaultMaterial with none of this data populated.
+	const bool bWantsBlendMaterial = !bShowBiomeDebugColors && BiomeStack && BiomeBlendMaterial;
+	constexpr int32 MaxBlendedBiomes = 4; // matches vertex color's 4 channels (RGBA) and UV1/UV2's 2+2 float slots
+
 	TArray<FLinearColor> BiomeDebugColors;
+	TArray<FVector2D> BiomeBlendUV1; // (Index0, Index1)
+	TArray<FVector2D> BiomeBlendUV2; // (Index2, Index3)
+	TArray<FLinearColor> BiomeBlendWeights; // (Weight0, Weight1, Weight2, Weight3)
+
 	if (BiomeStack)
 	{
 		if (bShowBiomeDebugColors)
@@ -679,8 +691,31 @@ void ASolarOrbzIcoSphereActor::RegenerateMesh()
 			BiomeDebugColors.SetNum(CachedMeshData.Vertices.Num());
 		}
 
+		if (bWantsBlendMaterial)
+		{
+#if WITH_EDITOR
+			// Auto-rebuild if the texture array looks out of sync with the current biome list, so
+			// first-time setup (and adding/removing a biome) just works without a separate manual
+			// step - BuildBiomeTextureArray is still exposed for an explicit rebuild too.
+			TArray<USolarOrbzBiome*> UniqueBiomesCheck;
+			BiomeStack->GetUniqueBiomes(UniqueBiomesCheck);
+			const bool bArrayStale = !BiomeStack->BiomeTextureArray
+				|| BiomeStack->BiomeTextureArray->SourceTextures.Num() != UniqueBiomesCheck.Num();
+			if (bArrayStale)
+			{
+				BiomeStack->BuildBiomeTextureArray();
+			}
+#endif
+			BiomeBlendUV1.SetNum(CachedMeshData.Vertices.Num());
+			BiomeBlendUV2.SetNum(CachedMeshData.Vertices.Num());
+			BiomeBlendWeights.Init(FLinearColor(0, 0, 0, 0), CachedMeshData.Vertices.Num());
+		}
+
 		int32 NumWithClimateData = 0;
 		int32 NumDominantBiomeHits = 0;
+
+		TArray<int32> TopBiomeIndices;
+		TArray<float> TopBiomeWeights;
 
 		for (int32 i = 0; i < CachedMeshData.Vertices.Num(); ++i)
 		{
@@ -715,6 +750,21 @@ void ASolarOrbzIcoSphereActor::RegenerateMesh()
 					BiomeDebugColors[i] = FLinearColor::Black; // no biome layer applies here
 				}
 			}
+			else if (bWantsBlendMaterial)
+			{
+				BiomeStack->EvaluateTopWeightedBiomes(Context, MaxBlendedBiomes, TopBiomeIndices, TopBiomeWeights);
+				if (TopBiomeIndices.Num() > 0)
+				{
+					++NumDominantBiomeHits; // reusing the same stat: "at least one biome matched here"
+				}
+
+				auto IndexOrPad = [&TopBiomeIndices](int32 Slot) { return TopBiomeIndices.IsValidIndex(Slot) ? (float)TopBiomeIndices[Slot] : -1.0f; };
+				auto WeightOrPad = [&TopBiomeWeights](int32 Slot) { return TopBiomeWeights.IsValidIndex(Slot) ? TopBiomeWeights[Slot] : 0.0f; };
+
+				BiomeBlendUV1[i] = FVector2D(IndexOrPad(0), IndexOrPad(1));
+				BiomeBlendUV2[i] = FVector2D(IndexOrPad(2), IndexOrPad(3));
+				BiomeBlendWeights[i] = FLinearColor(WeightOrPad(0), WeightOrPad(1), WeightOrPad(2), WeightOrPad(3));
+			}
 		}
 
 		FSolarOrbzIcoSphereGenerator::RecomputeSmoothNormals(CachedMeshData);
@@ -730,6 +780,17 @@ void ASolarOrbzIcoSphereActor::RegenerateMesh()
 				UE_LOG(LogSolarOrbz, Warning, TEXT("SolarOrbz Biome Debug: not a single vertex matched any biome layer's mask - check each layer's Mask Preset ranges (Min/Max/Falloff) against the Moisture/Temperature/Elevation stats logged above."));
 			}
 		}
+		else if (bWantsBlendMaterial)
+		{
+			UE_LOG(LogSolarOrbz, Log,
+				TEXT("SolarOrbz Biome Blend: %d/%d verts had climate data, %d/%d verts matched at least one biome (rest render with all-zero weights - no biome applies there)."),
+				NumWithClimateData, CachedMeshData.Vertices.Num(), NumDominantBiomeHits, CachedMeshData.Vertices.Num());
+
+			if (NumDominantBiomeHits == 0)
+			{
+				UE_LOG(LogSolarOrbz, Warning, TEXT("SolarOrbz Biome Blend: not a single vertex matched any biome - check each biome's Mask ranges against the Moisture/Temperature/Elevation stats logged above."));
+			}
+		}
 	}
 	else if (bShowBiomeDebugColors)
 	{
@@ -741,10 +802,37 @@ void ASolarOrbzIcoSphereActor::RegenerateMesh()
 		UE_LOG(LogSolarOrbz, Warning, TEXT("SolarOrbz Biome Debug: Show Biome Debug Colors is on but Debug Biome Material is not assigned - slot 0 will get a null material (default checker/gray) regardless of the vertex colors computed above."));
 	}
 
-	ProcMesh->SetMaterial(0, bShowBiomeDebugColors ? DebugBiomeMaterial : DefaultMaterial);
-	UE_LOG(LogSolarOrbz, Log, TEXT("SolarOrbz: material slot 0 set to '%s' (bShowBiomeDebugColors=%s)"),
-		*GetNameSafe(bShowBiomeDebugColors ? DebugBiomeMaterial : DefaultMaterial),
-		bShowBiomeDebugColors ? TEXT("true") : TEXT("false"));
+	// --- Resolve which material actually goes in slot 0, and which vertex color / UV1 / UV2 data ---
+	// accompanies it - the three rendering modes above populated at most one of BiomeDebugColors /
+	// BiomeBlendWeights, so this just routes whichever one is live.
+	UMaterialInterface* MaterialToUse = DefaultMaterial;
+	const TArray<FLinearColor>* VertexColorsToUse = &BiomeDebugColors; // empty unless debug mode populated it
+	const TArray<FVector2D>* UV1ToUse = nullptr;
+	const TArray<FVector2D>* UV2ToUse = nullptr;
+
+	if (bShowBiomeDebugColors)
+	{
+		MaterialToUse = DebugBiomeMaterial;
+	}
+	else if (bWantsBlendMaterial)
+	{
+		if (!BiomeBlendMID || BiomeBlendMID->Parent != BiomeBlendMaterial)
+		{
+			BiomeBlendMID = UMaterialInstanceDynamic::Create(BiomeBlendMaterial, this);
+		}
+		if (BiomeBlendMID)
+		{
+			BiomeBlendMID->SetTextureParameterValue(FName(TEXT("BiomeTextureArray")), BiomeStack->BiomeTextureArray);
+		}
+		MaterialToUse = BiomeBlendMID;
+		VertexColorsToUse = &BiomeBlendWeights;
+		UV1ToUse = &BiomeBlendUV1;
+		UV2ToUse = &BiomeBlendUV2;
+	}
+
+	ProcMesh->SetMaterial(0, MaterialToUse);
+	UE_LOG(LogSolarOrbz, Log, TEXT("SolarOrbz: material slot 0 set to '%s' (bShowBiomeDebugColors=%s, blendMaterial=%s)"),
+		*GetNameSafe(MaterialToUse), bShowBiomeDebugColors ? TEXT("true") : TEXT("false"), bWantsBlendMaterial ? TEXT("true") : TEXT("false"));
 
 	TArray<FProcMeshTangent> ProcTangents;
 	ProcTangents.Reserve(CachedMeshData.Tangents.Num());
@@ -762,8 +850,10 @@ void ASolarOrbzIcoSphereActor::RegenerateMesh()
 		CachedMeshData.Triangles,
 		CachedMeshData.Normals,
 		CachedMeshData.UVs,
-		EmptyUVChannel, EmptyUVChannel, EmptyUVChannel,
-		BiomeDebugColors,
+		UV1ToUse ? *UV1ToUse : EmptyUVChannel,
+		UV2ToUse ? *UV2ToUse : EmptyUVChannel,
+		EmptyUVChannel,
+		*VertexColorsToUse,
 		ProcTangents,
 		bEnablePreviewCollision);
 

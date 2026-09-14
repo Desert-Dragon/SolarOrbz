@@ -206,6 +206,17 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "SolarOrbz|Biome|Debug")
 	TObjectPtr<class UMaterialInterface> DefaultMaterial;
 
+	/**
+	 * Optional. A material with a Texture2DArray parameter named "BiomeTextureArray" that blends up
+	 * to 4 biome textures per point using the weights/indices baked into vertex color and UV1/UV2
+	 * each regenerate. When this and Biome Stack are both assigned (and Show Biome Debug Colors is
+	 * off), this drives rendering instead of Default Material - lets any number of biomes exist on
+	 * the planet while only ~4 ever need to blend at a single point. See the plugin docs for the
+	 * exact material graph setup this expects.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "SolarOrbz|Biome|Material")
+	TObjectPtr<class UMaterialInterface> BiomeBlendMaterial;
+
 	/** Build simple collision on the preview mesh. Leave off for large/high-density previews - cheap to add later on the baked mesh instead. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "SolarOrbz|IcoSphere")
 	bool bEnablePreviewCollision = false;
@@ -259,4 +270,8 @@ private:
 	FSolarOrbzClimateGrid CachedClimateGrid;
 	int32 LastSubdivisionLevelUsed = 0;
 	int32 LastRequestedSubdivisionLevel = 0;
+
+	/** Runtime-only Material Instance Dynamic wrapping BiomeBlendMaterial, with BiomeTextureArray bound. Reused across regenerates rather than recreated every time. */
+	UPROPERTY(Transient)
+	TObjectPtr<class UMaterialInstanceDynamic> BiomeBlendMID;
 };

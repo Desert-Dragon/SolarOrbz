@@ -2,6 +2,10 @@
 
 #include "SolarOrbzBiomeSystem.h"
 #include "SolarOrbzTerrainLayers.h"
+#include "Engine/Texture2D.h"
+#include "Engine/Texture2DArray.h"
+
+DEFINE_LOG_CATEGORY_STATIC(LogSolarOrbzBiome, Log, All);
 
 // ================================================================================================
 // USolarOrbzBiomeMask - GetWeight has an inline default; nothing else to implement here.
@@ -245,4 +249,137 @@ float USolarOrbzBiomeStack::EvaluateBiomeTerrainContribution(const FSolarOrbzBio
 	}
 
 	return Accum;
+}
+
+void USolarOrbzBiomeStack::GetUniqueBiomes(TArray<USolarOrbzBiome*>& OutBiomes) const
+{
+	OutBiomes.Reset();
+	for (const FSolarOrbzBiomeLayerEntry& Entry : Layers)
+	{
+		if (Entry.Biome && !OutBiomes.Contains(Entry.Biome))
+		{
+			OutBiomes.Add(Entry.Biome);
+		}
+	}
+}
+
+void USolarOrbzBiomeStack::EvaluateTopWeightedBiomes(const FSolarOrbzBiomeSampleContext& Context, int32 MaxBiomes, TArray<int32>& OutBiomeIndices, TArray<float>& OutWeights) const
+{
+	OutBiomeIndices.Reset();
+	OutWeights.Reset();
+
+	TArray<USolarOrbzBiome*> UniqueBiomes;
+	GetUniqueBiomes(UniqueBiomes);
+	if (UniqueBiomes.Num() == 0)
+	{
+		return;
+	}
+
+	// Weight per UNIQUE biome - if the same biome appears in more than one layer entry, its
+	// strongest entry wins rather than double-counting.
+	TArray<float> WeightPerUniqueBiome;
+	WeightPerUniqueBiome.Init(0.0f, UniqueBiomes.Num());
+
+	for (const FSolarOrbzBiomeLayerEntry& Entry : Layers)
+	{
+		if (!Entry.Biome)
+		{
+			continue;
+		}
+		const int32 Index = UniqueBiomes.IndexOfByKey(Entry.Biome);
+		if (Index == INDEX_NONE)
+		{
+			continue;
+		}
+		const float Weight = FMath::Clamp(Entry.Biome->GetWeight(Context) * Entry.Opacity, 0.0f, 1.0f);
+		WeightPerUniqueBiome[Index] = FMath::Max(WeightPerUniqueBiome[Index], Weight);
+	}
+
+	// Sort unique-biome indices by weight, strongest first.
+	TArray<int32> SortedIndices;
+	SortedIndices.Reserve(UniqueBiomes.Num());
+	for (int32 i = 0; i < UniqueBiomes.Num(); ++i)
+	{
+		SortedIndices.Add(i);
+	}
+	SortedIndices.Sort([&WeightPerUniqueBiome](int32 A, int32 B) { return WeightPerUniqueBiome[A] > WeightPerUniqueBiome[B]; });
+
+	float TotalWeight = 0.0f;
+	for (int32 i = 0; i < SortedIndices.Num() && OutBiomeIndices.Num() < MaxBiomes; ++i)
+	{
+		const int32 Index = SortedIndices[i];
+		const float Weight = WeightPerUniqueBiome[Index];
+		if (Weight <= KINDA_SMALL_NUMBER)
+		{
+			break; // sorted descending - nothing further is nonzero either
+		}
+		OutBiomeIndices.Add(Index);
+		OutWeights.Add(Weight);
+		TotalWeight += Weight;
+	}
+
+	// Renormalize so the returned weights sum to 1 - ready to feed straight into a material blend.
+	if (TotalWeight > KINDA_SMALL_NUMBER)
+	{
+		for (float& Weight : OutWeights)
+		{
+			Weight /= TotalWeight;
+		}
+	}
+}
+
+void USolarOrbzBiomeStack::BuildBiomeTextureArray()
+{
+#if WITH_EDITOR
+	TArray<USolarOrbzBiome*> UniqueBiomes;
+	GetUniqueBiomes(UniqueBiomes);
+
+	if (UniqueBiomes.Num() == 0)
+	{
+		UE_LOG(LogSolarOrbzBiome, Warning, TEXT("SolarOrbz Biome Texture Array: no biomes in Layers - nothing to build."));
+		return;
+	}
+
+	// Every unique biome needs a texture, or the array's slice indices would no longer line up
+	// with GetUniqueBiomes() order (what EvaluateTopWeightedBiomes' OutBiomeIndices addresses) -
+	// refuse to build rather than silently produce a misaligned array.
+	TArray<TObjectPtr<UTexture2D>> SourceTextures;
+	SourceTextures.Reserve(UniqueBiomes.Num());
+	bool bAllTexturesPresent = true;
+
+	for (USolarOrbzBiome* Biome : UniqueBiomes)
+	{
+		if (Biome && Biome->BaseColorTexture)
+		{
+			SourceTextures.Add(Biome->BaseColorTexture);
+		}
+		else
+		{
+			bAllTexturesPresent = false;
+			UE_LOG(LogSolarOrbzBiome, Error, TEXT("SolarOrbz Biome Texture Array: biome '%s' has no Base Color Texture assigned - every unique biome needs one for indices to stay in sync. Not rebuilding; any existing array is unchanged."), Biome ? *Biome->GetName() : TEXT("<null>"));
+		}
+	}
+
+	if (!bAllTexturesPresent)
+	{
+		return;
+	}
+
+	if (!BiomeTextureArray)
+	{
+		BiomeTextureArray = NewObject<UTexture2DArray>(this, NAME_None, RF_Public);
+	}
+
+	// NOTE: this is the same editor-only API the Content Browser's own "Create Texture Array"
+	// context menu action uses internally under the hood. This has shifted across engine versions
+	// before (same caveat as FSolarOrbzTextureHeightSampler's GetMipData use elsewhere in this
+	// plugin) - adjust here if 5.8's UTexture2DArray header differs from this.
+	BiomeTextureArray->SourceTextures = SourceTextures;
+	BiomeTextureArray->UpdateSourceFromSourceTextures();
+	BiomeTextureArray->PostEditChange();
+
+	MarkPackageDirty();
+
+	UE_LOG(LogSolarOrbzBiome, Log, TEXT("SolarOrbz Biome Texture Array: built from %d biome(s)."), SourceTextures.Num());
+#endif
 }

@@ -251,6 +251,16 @@ public:
 	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Biome")
 	TObjectPtr<USolarOrbzTerrainLayerStack> TerrainDetail;
 
+	/**
+	 * This biome's ground texture. Fed into the owning Biome Stack's texture array (see
+	 * USolarOrbzBiomeStack::BuildBiomeTextureArray) rather than assigned to a material directly -
+	 * a single shared material blends up to 4 of these per point based on which biomes actually
+	 * apply there, so any number of biomes can exist on one planet even though only ~4 ever need to
+	 * render at any single point.
+	 */
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Biome")
+	TObjectPtr<class UTexture2D> BaseColorTexture;
+
 	/** Placeholder for the future PCG/PCGEx hookup - what this biome scatters, and how densely. */
 	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Biome")
 	TArray<FSolarOrbzBiomeScatterEntry> ScatterEntries;
@@ -268,6 +278,11 @@ public:
 // painted onto the planet Photoshop-style. Layers[0] is the bottom of the stack; the last entry is
 // the topmost / highest priority. Where each biome applies comes from that Biome's own Mask now,
 // not a separate reference here.
+//
+// The stack also owns the texture-array bridge for material rendering: any number of biomes can
+// exist here, but a single point on the mesh only ever blends the top ~4 strongest-applying ones
+// (see EvaluateTopWeightedBiomes) - so ground texturing scales to a full biome palette without
+// needing a material with one texture slot per biome.
 // ================================================================================================
 USTRUCT(BlueprintType)
 struct SOLARORBZ_API FSolarOrbzBiomeLayerEntry
@@ -292,6 +307,15 @@ public:
 	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Biome")
 	TArray<FSolarOrbzBiomeLayerEntry> Layers;
 
+	/**
+	 * Built by BuildBiomeTextureArray() below from every unique biome's Base Color Texture, in the
+	 * same order GetUniqueBiomes() returns - that order IS the array index each biome is addressed
+	 * by from a vertex's encoded indices. Assign a material with a Texture2DArray parameter named
+	 * "BiomeTextureArray" to the actor's Biome Blend Material to read this.
+	 */
+	UPROPERTY(VisibleAnywhere, Category = "SolarOrbz|Biome|Material")
+	TObjectPtr<class UTexture2DArray> BiomeTextureArray;
+
 	/** Per-layer weight (mask weight * opacity) at this point, same order as Layers - useful for baking vertex colors or per-point PCG attributes later. */
 	void EvaluateLayerWeights(const FSolarOrbzBiomeSampleContext& Context, TArray<float>& OutWeights) const;
 
@@ -300,4 +324,26 @@ public:
 
 	/** Extra terrain height from every biome's TerrainDetail stack, blended by that layer's weight. Call this after the base terrain stack has already displaced the vertex. */
 	float EvaluateBiomeTerrainContribution(const FSolarOrbzBiomeSampleContext& Context) const;
+
+	/** Every distinct Biome referenced anywhere in Layers, in first-appearance order - this order defines each biome's texture array index. Duplicate references to the same Biome across multiple layer entries only appear once. */
+	void GetUniqueBiomes(TArray<USolarOrbzBiome*>& OutBiomes) const;
+
+	/**
+	 * Finds up to MaxBiomes of the strongest-applying biomes at this point, sorted strongest-first,
+	 * with weights renormalized to sum to 1 (ready to feed straight into a weighted material blend).
+	 * OutBiomeIndices are indices into GetUniqueBiomes()'s order, not into Layers - i.e. exactly the
+	 * indices BiomeTextureArray's slices are addressed by. Arrays returned shorter than MaxBiomes
+	 * when fewer than MaxBiomes biomes have any weight here at all.
+	 */
+	void EvaluateTopWeightedBiomes(const FSolarOrbzBiomeSampleContext& Context, int32 MaxBiomes, TArray<int32>& OutBiomeIndices, TArray<float>& OutWeights) const;
+
+	/**
+	 * Rebuilds BiomeTextureArray from every unique biome's Base Color Texture, in GetUniqueBiomes()
+	 * order. Editor-only. Call after adding/removing/reordering biomes in Layers, or changing a
+	 * biome's texture - the actor calls this automatically during Regenerate Mesh if the array looks
+	 * stale (wrong biome count), so you don't strictly have to remember it, but it's exposed here too
+	 * for an explicit rebuild (e.g. from a content pipeline script).
+	 */
+	UFUNCTION(CallInEditor, Category = "SolarOrbz|Biome|Material")
+	void BuildBiomeTextureArray();
 };
