@@ -775,9 +775,9 @@ void ASolarOrbzIcoSphereActor::RegenerateMesh()
 	constexpr int32 MaxBlendedBiomes = 4; // matches vertex color's 4 channels (RGBA) and UV1/UV2's 2+2 float slots
 
 	TArray<FLinearColor> BiomeDebugColors;
-	TArray<FVector2D> BiomeBlendUV1; // (Index0, Index1)
-	TArray<FVector2D> BiomeBlendUV2; // (Index2, Index3)
-	TArray<FLinearColor> BiomeBlendWeights; // (Weight0, Weight1, Weight2, Weight3)
+	CachedBiomeBlendUV1.Reset();
+	CachedBiomeBlendUV2.Reset();
+	CachedBiomeBlendWeights.Reset();
 
 	if (BiomeStack)
 	{
@@ -818,9 +818,9 @@ void ASolarOrbzIcoSphereActor::RegenerateMesh()
 				BiomeStack->BuildBiomeTextureArray();
 			}
 #endif
-			BiomeBlendUV1.SetNum(CachedMeshData.Vertices.Num());
-			BiomeBlendUV2.SetNum(CachedMeshData.Vertices.Num());
-			BiomeBlendWeights.Init(FLinearColor(0, 0, 0, 0), CachedMeshData.Vertices.Num());
+			CachedBiomeBlendUV1.SetNum(CachedMeshData.Vertices.Num());
+			CachedBiomeBlendUV2.SetNum(CachedMeshData.Vertices.Num());
+			CachedBiomeBlendWeights.Init(FLinearColor(0, 0, 0, 0), CachedMeshData.Vertices.Num());
 		}
 
 		int32 NumWithClimateData = 0;
@@ -879,9 +879,9 @@ void ASolarOrbzIcoSphereActor::RegenerateMesh()
 				auto IndexOrPad = [&TopBiomeIndices](int32 Slot) { return TopBiomeIndices.IsValidIndex(Slot) ? (float)TopBiomeIndices[Slot] : -1.0f; };
 				auto WeightOrPad = [&TopBiomeWeights](int32 Slot) { return TopBiomeWeights.IsValidIndex(Slot) ? TopBiomeWeights[Slot] : 0.0f; };
 
-				BiomeBlendUV1[i] = FVector2D(IndexOrPad(0), IndexOrPad(1));
-				BiomeBlendUV2[i] = FVector2D(IndexOrPad(2), IndexOrPad(3));
-				BiomeBlendWeights[i] = FLinearColor(WeightOrPad(0), WeightOrPad(1), WeightOrPad(2), WeightOrPad(3));
+				CachedBiomeBlendUV1[i] = FVector2D(IndexOrPad(0), IndexOrPad(1));
+				CachedBiomeBlendUV2[i] = FVector2D(IndexOrPad(2), IndexOrPad(3));
+				CachedBiomeBlendWeights[i] = FLinearColor(WeightOrPad(0), WeightOrPad(1), WeightOrPad(2), WeightOrPad(3));
 			}
 		}
 
@@ -943,9 +943,9 @@ void ASolarOrbzIcoSphereActor::RegenerateMesh()
 			BiomeBlendMID->SetTextureParameterValue(FName(TEXT("BiomeTextureArray")), BiomeStack->BiomeTextureArray);
 		}
 		MaterialToUse = BiomeBlendMID;
-		VertexColorsToUse = &BiomeBlendWeights;
-		UV1ToUse = &BiomeBlendUV1;
-		UV2ToUse = &BiomeBlendUV2;
+		VertexColorsToUse = &CachedBiomeBlendWeights;
+		UV1ToUse = &CachedBiomeBlendUV1;
+		UV2ToUse = &CachedBiomeBlendUV2;
 	}
 
 	ProcMesh->SetMaterial(0, MaterialToUse);
@@ -1026,7 +1026,19 @@ void ASolarOrbzIcoSphereActor::BakeToStaticMeshAsset()
 	TVertexInstanceAttributesRef<float> InstanceBinormalSigns = Attributes.GetVertexInstanceBinormalSigns();
 	TVertexInstanceAttributesRef<FVector4f> InstanceColors = Attributes.GetVertexInstanceColors();
 	TVertexInstanceAttributesRef<FVector2f> InstanceUVs = Attributes.GetVertexInstanceUVs();
-	InstanceUVs.SetNumChannels(1);
+
+	// The live preview's Biome Blend Material reads weights from vertex color and biome indices from
+	// UV1/UV2 (see RegenerateMesh) - carry that same data into the baked mesh so the material keeps
+	// working once it's applied here instead of driving the ProcMeshComponent.
+	const bool bHasBiomeBlendData = CachedBiomeBlendWeights.Num() == CachedMeshData.Vertices.Num()
+		&& CachedBiomeBlendUV1.Num() == CachedMeshData.Vertices.Num()
+		&& CachedBiomeBlendUV2.Num() == CachedMeshData.Vertices.Num();
+	InstanceUVs.SetNumChannels(bHasBiomeBlendData ? 3 : 1);
+
+	if (BiomeStack && BiomeBlendMaterial && !bHasBiomeBlendData)
+	{
+		UE_LOG(LogSolarOrbz, Warning, TEXT("SolarOrbz Bake: Biome Stack and Biome Blend Material are both assigned, but no cached blend data matches the current vertex count (last Regenerate had Show Biome Debug Colors on, or hasn't run since a parameter changed) - baked vertex colors will be flat white and UV1/UV2 empty. Regenerate Mesh with Show Biome Debug Colors off, then Bake again."));
+	}
 
 	const FPolygonGroupID PolygonGroupID = MeshDescription.CreatePolygonGroup();
 	Attributes.GetPolygonGroupMaterialSlotNames()[PolygonGroupID] = FName(TEXT("Default"));
@@ -1057,8 +1069,15 @@ void ASolarOrbzIcoSphereActor::BakeToStaticMeshAsset()
 		InstanceNormals[InstanceID] = FVector3f(CachedMeshData.Normals[i]);
 		InstanceTangents[InstanceID] = FVector3f(CachedMeshData.Tangents[i]);
 		InstanceBinormalSigns[InstanceID] = 1.0f;
-		InstanceColors[InstanceID] = FVector4f(1.0f, 1.0f, 1.0f, 1.0f);
+		InstanceColors[InstanceID] = bHasBiomeBlendData
+			? FVector4f(CachedBiomeBlendWeights[i].R, CachedBiomeBlendWeights[i].G, CachedBiomeBlendWeights[i].B, CachedBiomeBlendWeights[i].A)
+			: FVector4f(1.0f, 1.0f, 1.0f, 1.0f);
 		InstanceUVs.Set(InstanceID, 0, FVector2f(CachedMeshData.UVs[i]));
+		if (bHasBiomeBlendData)
+		{
+			InstanceUVs.Set(InstanceID, 1, FVector2f(CachedBiomeBlendUV1[i]));
+			InstanceUVs.Set(InstanceID, 2, FVector2f(CachedBiomeBlendUV2[i]));
+		}
 
 		InstanceIDs[i] = InstanceID;
 	}
