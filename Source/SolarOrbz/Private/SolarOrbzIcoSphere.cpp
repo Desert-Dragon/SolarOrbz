@@ -154,6 +154,17 @@ namespace SolarOrbzIcoSphere
 
 	// Edge length of a regular icosahedron with circumradius 1.0.
 	static constexpr double UnitCircumradiusEdgeLength = 1.0514622242382672;
+
+	// Absolute ceiling on subdivision level, enforced here in code regardless of what
+	// MaxSubdivisions value a caller passes in. ASolarOrbzIcoSphereActor::MaxSubdivisions' own
+	// UPROPERTY meta (ClampMax=11) only constrains NEW edits made through the Details panel widget -
+	// it does NOT retroactively re-clamp a value already saved on an actor from before that meta
+	// existed, nor one set via Blueprint, C++, or the property matrix. Without a real code-level
+	// ceiling, a stale/out-of-range MaxSubdivisions combined with a high Vertices Per Meter can
+	// request a subdivision level whose vertex/index buffers overflow uint32 during mesh section
+	// creation - an editor crash (IntFitsIn/IntCastChecked assertion), not just a slow regenerate.
+	// Keep in sync with the ClampMax on MaxSubdivisions in SolarOrbzIcoSphere.h.
+	constexpr int32 AbsoluteMaxSubdivisionLevel = 11;
 }
 
 int64 FSolarOrbzIcoSphereGenerator::EstimateVertexCount(int32 SubdivisionLevel)
@@ -210,6 +221,10 @@ int32 FSolarOrbzIcoSphereGenerator::ComputeSubdivisionLevelForEdgeLength(double 
 {
 	using namespace SolarOrbzIcoSphere;
 
+	// Clamped once, here, so every return path below (including the early-out just past this line)
+	// automatically respects the absolute ceiling regardless of what MaxSubdivisions came in as.
+	MaxSubdivisions = FMath::Clamp(MaxSubdivisions, 0, AbsoluteMaxSubdivisionLevel);
+
 	const double BaseEdgeLength = FMath::Max(Radius, (double)KINDA_SMALL_NUMBER) * UnitCircumradiusEdgeLength;
 
 	if (TargetEdgeLength <= KINDA_SMALL_NUMBER)
@@ -247,7 +262,10 @@ void FSolarOrbzIcoSphereGenerator::GenerateAtSubdivisionLevel(double Radius, int
 	FBuildContext Context;
 	BuildBaseIcosahedron(Context);
 
-	SubdivisionLevel = FMath::Max(SubdivisionLevel, 0);
+	// Second, independent line of defense (see AbsoluteMaxSubdivisionLevel above) - this is a public
+	// entry point callers can reach directly with an explicit level, bypassing
+	// ComputeSubdivisionLevelForEdgeLength's own clamp entirely.
+	SubdivisionLevel = FMath::Clamp(SubdivisionLevel, 0, SolarOrbzIcoSphere::AbsoluteMaxSubdivisionLevel);
 	for (int32 i = 0; i < SubdivisionLevel; ++i)
 	{
 		SubdivideOnce(Context);
@@ -562,6 +580,18 @@ void ASolarOrbzIcoSphereActor::RegenerateMesh()
 	// double end-to-end (not float) - at Earth-scale radii, float's ~7 significant digits
 	// already eats tens of centimeters of precision before any terrain math even runs.
 	const double RadiusCm = RadiusMeters * 100.0;
+
+	// Max Subdivisions' own ClampMax=11 only constrains new edits through the Details panel - it
+	// doesn't retroactively re-clamp a value already saved on this actor from before that limit
+	// existed (or one set via Blueprint/C++). The generator itself now hard-clamps to the same
+	// ceiling regardless (see FSolarOrbzIcoSphereGenerator), so this can no longer crash - but if
+	// this actor's own authored value is stale/out of range, say so rather than silently ignoring it.
+	if (MaxSubdivisions > 11)
+	{
+		UE_LOG(LogSolarOrbz, Warning,
+			TEXT("SolarOrbz: Max Subdivisions is set to %d, above the safe ceiling (11) - this was likely saved before that ceiling existed. Generation is being capped to 11 regardless; open Max Subdivisions in the Details panel and re-enter a value (even the same one) to update the stored property."),
+			MaxSubdivisions);
+	}
 
 	LastSubdivisionLevelUsed = FSolarOrbzIcoSphereGenerator::Generate(RadiusCm, VerticesPerMeter, CachedMeshData, MaxSubdivisions, &LastRequestedSubdivisionLevel);
 
