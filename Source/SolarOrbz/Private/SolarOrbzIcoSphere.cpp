@@ -633,7 +633,7 @@ void ASolarOrbzIcoSphereActor::RegenerateMesh()
 		if (PeakToPeakCm < KINDA_SMALL_NUMBER)
 		{
 			UE_LOG(LogSolarOrbz, Warning,
-				TEXT("SolarOrbz Terrain: peak-to-peak height is ~0 - either every layer is disabled/has 0 Weight, or the stack has no layers at all. Check the Layers array on your TerrainLayerStack asset."));
+				TEXT("SolarOrbz Terrain: peak-to-peak height is ~0 - either every layer is disabled/has 0 Strength, or the stack has no layers at all. Check the Layers array on your TerrainLayerStack asset."));
 		}
 		else if (PeakToPeakCm / RadiusCm < 0.001f) // under 0.1% of radius
 		{

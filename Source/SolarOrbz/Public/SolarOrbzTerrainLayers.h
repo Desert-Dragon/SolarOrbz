@@ -46,9 +46,14 @@ public:
 	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Layer")
 	ESolarOrbzTerrainBlendMode BlendMode = ESolarOrbzTerrainBlendMode::Add;
 
-	/** Multiplies this layer's raw output before blending - the simplest way to fade a layer in/out. */
+	/**
+	 * Multiplier on how strong this layer's contribution is, applied to its raw output before
+	 * blending - the simplest way to fade a layer in/out. 1.0 = full strength (the raw output
+	 * unchanged), 0.5 = half strength, 2.0 = double, negative = inverts. Independent of Mask below -
+	 * this scales the layer everywhere, Mask controls where it applies at all.
+	 */
 	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Layer")
-	float Weight = 1.0f;
+	float Strength = 1.0f;
 
 	/**
 	 * Optional. Scopes this layer's contribution to wherever this mask applies (0..1) - e.g. an
@@ -243,10 +248,10 @@ public:
 
 	/**
 	 * When true (default), rescales the fractal sum so its TYPICAL variation matches what you'd
-	 * expect from Amplitude/MaxElevationMeters at Weight 1.0. Without this, multi-octave fractal
+	 * expect from Amplitude/MaxElevationMeters at Strength 1.0. Without this, multi-octave fractal
 	 * noise's typical output is naturally much smaller than its nominal peak - a well-known property
 	 * of summing octaves with decreasing amplitude - and it gets worse the more Octaves you use.
-	 * That's why Weight often needed cranking to 10-15+ to see appreciable terrain before this
+	 * That's why Strength often needed cranking to 10-15+ to see appreciable terrain before this
 	 * existed. Calibrated once per regenerate via Monte Carlo sampling of this exact Seed/Octaves/
 	 * Persistence/Lacunarity/NoiseType combination (not a fixed formula), so it stays accurate no
 	 * matter how you tune them. Turn off to get the old, uncompensated behavior.
@@ -460,7 +465,7 @@ private:
  * Simulates erosion on top of whatever layers sit below it in the stack - place it after your
  * Noise/Heightmap layers so it has real terrain to erode. Its own output is a height DELTA (usually
  * negative in carved valleys, occasionally positive where sediment deposits), so leave Blend Mode
- * at the default Add. Weight (inherited) scales the overall erosion intensity without re-baking.
+ * at the default Add. Strength (inherited) scales the overall erosion intensity without re-baking.
  */
 UCLASS(EditInlineNew, meta = (DisplayName = "Erosion Layer"))
 class SOLARORBZ_API USolarOrbzErosionTerrainLayer : public USolarOrbzTerrainLayer

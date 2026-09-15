@@ -102,7 +102,7 @@ float USolarOrbzTerrainLayerStack::EvaluateHeightUpTo(int32 EndIndexExclusive, c
 			continue;
 		}
 
-		const float LayerHeight = Layer->GetRawHeight(UnitDirection, UV) * Layer->Weight;
+		const float LayerHeight = Layer->GetRawHeight(UnitDirection, UV) * Layer->Strength;
 
 		// A stack's first enabled layer has nothing to blend against yet - treat it as an implicit
 		// Replace regardless of its own BlendMode, the same way a bottom-of-stack layer works in
@@ -113,7 +113,7 @@ float USolarOrbzTerrainLayerStack::EvaluateHeightUpTo(int32 EndIndexExclusive, c
 		// output instead of just being it. This is a deliberate, intentional behavior change from
 		// the old "Accum starts at 0.0, every BlendMode applies from the first layer onward" logic -
 		// any existing planet whose first enabled layer relied on that old Subtract-from-zero
-		// behavior for a negative base terrain will now see it inverted; author that with a Weight
+		// behavior for a negative base terrain will now see it inverted; author that with a Strength
 		// of -1 (applied before blending) on an Add/Replace layer instead.
 		const float FullyAppliedAccum = bHasAccumulated ? ApplyBlendMode(Accum, LayerHeight, Layer->BlendMode) : LayerHeight;
 
