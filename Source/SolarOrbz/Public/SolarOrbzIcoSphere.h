@@ -293,6 +293,16 @@ private:
 	int32 LastSubdivisionLevelUsed = 0;
 	int32 LastRequestedSubdivisionLevel = 0;
 
+	// Per-vertex Biome Blend Material inputs cached from the last RegenerateMesh() call, parallel to
+	// CachedMeshData.Vertices. Only populated when that regenerate had BiomeStack + BiomeBlendMaterial
+	// both assigned and Show Biome Debug Colors off (i.e. bWantsBlendMaterial was true) - empty
+	// otherwise. BakeToStaticMeshAsset writes these into the static mesh's vertex color and UV1/UV2
+	// channels so a Biome Blend Material assigned to the baked mesh keeps working post-bake, matching
+	// what ProcMesh already shows in the live preview.
+	TArray<FLinearColor> CachedBiomeBlendWeights; // vertex color RGBA = the 4 blended biomes' weights
+	TArray<FVector2D> CachedBiomeBlendUV1;        // UV1 = (biome index 0, biome index 1)
+	TArray<FVector2D> CachedBiomeBlendUV2;        // UV2 = (biome index 2, biome index 3)
+
 	/** Runtime-only Material Instance Dynamic wrapping BiomeBlendMaterial, with BiomeTextureArray bound. Reused across regenerates rather than recreated every time. */
 	UPROPERTY(Transient)
 	TObjectPtr<class UMaterialInstanceDynamic> BiomeBlendMID;
