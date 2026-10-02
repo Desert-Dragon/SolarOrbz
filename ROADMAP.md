@@ -239,6 +239,15 @@ commitment or a schedule - just a place these don't get lost between sessions.
 
 ## Planetary / World
 
+- **Chunked/streaming planet terrain** - the actual fix for ground-level detail at true planetary
+  radius that every entry above flags as out of scope for the single-mesh `ASolarOrbzIcoSphereActor`.
+  Design + first foundational piece (cube-sphere chunk addressing/mesh generation,
+  `FSolarOrbzChunkAddress`/`FSolarOrbzCubeSphereChunkGenerator` in `SolarOrbzCubeSphereChunk.h/.cpp`)
+  written; no streaming/LOD-seam handling/baking/ASN_MK1 integration yet. See
+  `Docs/ChunkedPlanetTerrain.md` for the full design, the phased CPU-first-then-GPU-compute plan, and
+  the explicit list of what's deliberately not built yet - don't start the GPU-compute phase before
+  the CPU-chunked streaming architecture is proven out.
+
 - **Real-time orbit and rotation.** Planets need to actually orbit their star and rotate on their
   axis in real time, with players able to seamlessly leave one planet and travel to another. This
   is a separate actor/simulation system built on top of the current terrain pipeline, not a change
