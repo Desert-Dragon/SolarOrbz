@@ -18,6 +18,8 @@
 #include "UObject/SavePackage.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "Misc/PackageName.h"
+#include "Async/ParallelFor.h"
+#include "HAL/ThreadSafeCounter.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogSolarOrbz, Log, All);
 
@@ -540,6 +542,60 @@ void ASolarOrbzIcoSphereActor::OnConstruction(const FTransform& Transform)
 }
 
 #if WITH_EDITOR
+bool ASolarOrbzIcoSphereActor::TryApplyCosmeticOnlyChange(FName ChangedPropertyName)
+{
+	if (!ProcMesh || CachedMeshData.Vertices.Num() == 0)
+	{
+		return false; // nothing generated yet to swap a material on - let the normal path run
+	}
+
+	// Blend mode is "live" right now only if every one of its three preconditions holds AND the
+	// cached per-vertex arrays it needs still match the current mesh - i.e. a prior regenerate
+	// actually populated them for this exact vertex count, not just that the properties are set.
+	const bool bBlendModeCurrentlyLive = !bShowBiomeDebugColors && BiomeStack && BiomeBlendMaterial
+		&& CachedBiomeBlendWeights.Num() == CachedMeshData.Vertices.Num()
+		&& CachedBiomeBlendUV1.Num() == CachedMeshData.Vertices.Num()
+		&& CachedBiomeBlendUV2.Num() == CachedMeshData.Vertices.Num();
+
+	if (ChangedPropertyName == GET_MEMBER_NAME_CHECKED(ASolarOrbzIcoSphereActor, DefaultMaterial))
+	{
+		// Only a true no-op swap if DefaultMaterial is actually what drives material slot 0 right
+		// now - neither debug colors nor blend material active. If either of those IS active,
+		// DefaultMaterial isn't even visible yet, so there's nothing to swap - but it also doesn't
+		// need a regenerate for that same reason; just record it's handled (there's genuinely
+		// nothing to do) rather than paying for a full pipeline re-run over an invisible change.
+		if (!bShowBiomeDebugColors && !bBlendModeCurrentlyLive)
+		{
+			ProcMesh->SetMaterial(0, DefaultMaterial);
+		}
+		return true;
+	}
+
+	if (ChangedPropertyName == GET_MEMBER_NAME_CHECKED(ASolarOrbzIcoSphereActor, BiomeBlendMaterial))
+	{
+		// Only a fast path when blend mode was ALREADY live with matching cached data - i.e. this is
+		// "swap to a different blend material", not "turn blend mode on for the first time" (no
+		// cached weights/UVs exist yet to reuse in that case, and RegenerateMesh also needs to run
+		// once to populate BiomeTextureArray - see its own bArrayStale check).
+		if (bBlendModeCurrentlyLive)
+		{
+			if (!BiomeBlendMID || BiomeBlendMID->Parent != BiomeBlendMaterial)
+			{
+				BiomeBlendMID = UMaterialInstanceDynamic::Create(BiomeBlendMaterial, this);
+			}
+			if (BiomeBlendMID)
+			{
+				BiomeBlendMID->SetTextureParameterValue(FName(TEXT("BiomeTextureArray")), BiomeStack->BiomeTextureArray);
+				ProcMesh->SetMaterial(0, BiomeBlendMID);
+				return true;
+			}
+		}
+		return false;
+	}
+
+	return false;
+}
+
 void ASolarOrbzIcoSphereActor::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
 {
 	Super::PostEditChangeProperty(PropertyChangedEvent);
@@ -560,7 +616,18 @@ void ASolarOrbzIcoSphereActor::PostEditChangeProperty(FPropertyChangedEvent& Pro
 		GET_MEMBER_NAME_CHECKED(ASolarOrbzIcoSphereActor, BiomeBlendMaterial),
 	};
 
-	if (RegenTriggers.Contains(PropertyChangedEvent.GetPropertyName()))
+	const FName ChangedPropertyName = PropertyChangedEvent.GetPropertyName();
+
+	// DefaultMaterial/BiomeBlendMaterial are both still in RegenTriggers above (for the cases
+	// TryApplyCosmeticOnlyChange declines - first-time blend mode setup, or either changing while not
+	// the active rendering mode) - this fast path only short-circuits the ones it positively confirms
+	// it fully handled; everything else still falls through to the normal full-pipeline check below.
+	if (TryApplyCosmeticOnlyChange(ChangedPropertyName))
+	{
+		return;
+	}
+
+	if (RegenTriggers.Contains(ChangedPropertyName))
 	{
 		RegenerateMesh();
 	}
@@ -640,20 +707,38 @@ void ASolarOrbzIcoSphereActor::RegenerateMesh()
 	// pristine sphere position), so it's safe to call more than once - never double-displaces.
 	auto RunTerrainPassA = [this, &OriginalUnitDirections, RadiusCm](const FSolarOrbzClimateGrid* ClimateGridForMasking)
 	{
-		float MinHeight = TNumericLimits<float>::Max(), MaxHeight = TNumericLimits<float>::Lowest(), SumHeight = 0.0f;
+		const int32 NumVerts = CachedMeshData.Vertices.Num();
 
-		for (int32 i = 0; i < CachedMeshData.Vertices.Num(); ++i)
+		// Heights scratch, parallel to CachedMeshData.Vertices - every USolarOrbzTerrainLayer/
+		// USolarOrbzBiomeMask in the per-vertex evaluation below is already written to be safe under
+		// concurrent calls (thread_local recursion guards throughout SolarOrbzBiomeSystem.cpp/
+		// SolarOrbzTerrainLayers.cpp, and USolarOrbzTerrainLayerStack::PrepareLayers() now warms every
+		// layer's own lazy caches - e.g. Heightmap/Stamp's texture decode - single-threaded before this
+		// runs), so the actual per-vertex height evaluation + displacement below runs under ParallelFor.
+		// The Min/Max/Sum stats further down are log-only, not correctness-critical, so they're reduced
+		// in a cheap sequential pass over this scratch array afterward rather than accumulated from
+		// multiple threads directly into shared locals - ParallelFor has no built-in reduction, and a
+		// naive shared float accumulator here would be a real data race (lost updates), not just slow.
+		TArray<float> Heights;
+		Heights.SetNumUninitialized(NumVerts);
+
+		ParallelFor(NumVerts, [this, &OriginalUnitDirections, RadiusCm, ClimateGridForMasking, &Heights](int32 i)
 		{
 			const FVector& UnitDirection = OriginalUnitDirections[i];
 			const float Height = TerrainStack->EvaluateHeight(UnitDirection, CachedMeshData.UVs[i], ClimateGridForMasking);
 			CachedMeshData.Vertices[i] = UnitDirection * RadiusCm + UnitDirection * Height;
+			Heights[i] = Height;
+		});
 
-			MinHeight = FMath::Min(MinHeight, Height);
-			MaxHeight = FMath::Max(MaxHeight, Height);
-			SumHeight += Height;
+		float MinHeight = TNumericLimits<float>::Max(), MaxHeight = TNumericLimits<float>::Lowest(), SumHeight = 0.0f;
+		for (int32 i = 0; i < NumVerts; ++i)
+		{
+			MinHeight = FMath::Min(MinHeight, Heights[i]);
+			MaxHeight = FMath::Max(MaxHeight, Heights[i]);
+			SumHeight += Heights[i];
 		}
 
-		const float AvgHeight = CachedMeshData.Vertices.Num() > 0 ? SumHeight / CachedMeshData.Vertices.Num() : 0.0f;
+		const float AvgHeight = NumVerts > 0 ? SumHeight / NumVerts : 0.0f;
 		const float PeakToPeakCm = MaxHeight - MinHeight;
 		UE_LOG(LogSolarOrbz, Log,
 			TEXT("SolarOrbz Terrain: %d enabled layer(s), height range %.1fcm..%.1fcm (avg %.1fcm), peak-to-peak %.1fcm = %.4f%% of radius (%.1fcm)"),
@@ -823,15 +908,27 @@ void ASolarOrbzIcoSphereActor::RegenerateMesh()
 			CachedBiomeBlendWeights.Init(FLinearColor(0, 0, 0, 0), CachedMeshData.Vertices.Num());
 		}
 
-		int32 NumWithClimateData = 0;
-		int32 NumDominantBiomeHits = 0;
+		// FThreadSafeCounter rather than plain int32 - these two are incremented from inside the
+		// ParallelFor below, and a bare `int32 += ` from multiple worker threads at once is a real
+		// data race (lost updates), not just a style nit.
+		FThreadSafeCounter NumWithClimateData;
+		FThreadSafeCounter NumDominantBiomeHits;
 
-		TArray<float> LayerWeights;
-		TArray<int32> TopBiomeIndices;
-		TArray<float> TopBiomeWeights;
-
-		for (int32 i = 0; i < CachedMeshData.Vertices.Num(); ++i)
+		ParallelFor(CachedMeshData.Vertices.Num(), [&](int32 i)
 		{
+			// Declared fresh per vertex rather than hoisted out of the loop (as a pre-ParallelFor pass
+			// over this same code did) - hoisted TArrays were reused/resized in place across
+			// iterations specifically to dodge a per-vertex heap allocation, but that only works when
+			// iterations run strictly one after another. Under ParallelFor, concurrent tasks would be
+			// writing into the SAME three arrays at once and corrupt each other. These are small,
+			// bounded-size arrays (one entry per biome layer, at most MaxBlendedBiomes for the other
+			// two) - the reintroduced small per-vertex allocation is an acceptable trade for correct
+			// concurrent execution, and is dwarfed by the actual mask/noise evaluation cost this
+			// parallelizes.
+			TArray<float> LayerWeights;
+			TArray<int32> TopBiomeIndices;
+			TArray<float> TopBiomeWeights;
+
 			const FVector& UnitDirection = OriginalUnitDirections[i];
 
 			FSolarOrbzBiomeSampleContext Context;
@@ -845,7 +942,7 @@ void ASolarOrbzIcoSphereActor::RegenerateMesh()
 			{
 				Context.bHasClimateData = true;
 				CachedClimateGrid.Sample(UnitDirection, Context.Temperature, Context.Moisture);
-				++NumWithClimateData;
+				NumWithClimateData.Increment();
 			}
 
 			// Evaluated once per vertex and reused below - every biome's mask used to be evaluated
@@ -861,7 +958,7 @@ void ASolarOrbzIcoSphereActor::RegenerateMesh()
 				if (const USolarOrbzBiome* Dominant = BiomeStack->GetDominantBiome(Context, LayerWeights))
 				{
 					BiomeDebugColors[i] = Dominant->PreviewColor;
-					++NumDominantBiomeHits;
+					NumDominantBiomeHits.Increment();
 				}
 				else
 				{
@@ -873,7 +970,7 @@ void ASolarOrbzIcoSphereActor::RegenerateMesh()
 				BiomeStack->EvaluateTopWeightedBiomes(Context, LayerWeights, UniqueBiomes, MaxBlendedBiomes, TopBiomeIndices, TopBiomeWeights);
 				if (TopBiomeIndices.Num() > 0)
 				{
-					++NumDominantBiomeHits; // reusing the same stat: "at least one biome matched here"
+					NumDominantBiomeHits.Increment(); // reusing the same stat: "at least one biome matched here"
 				}
 
 				auto IndexOrPad = [&TopBiomeIndices](int32 Slot) { return TopBiomeIndices.IsValidIndex(Slot) ? (float)TopBiomeIndices[Slot] : -1.0f; };
@@ -883,7 +980,7 @@ void ASolarOrbzIcoSphereActor::RegenerateMesh()
 				CachedBiomeBlendUV2[i] = FVector2D(IndexOrPad(2), IndexOrPad(3));
 				CachedBiomeBlendWeights[i] = FLinearColor(WeightOrPad(0), WeightOrPad(1), WeightOrPad(2), WeightOrPad(3));
 			}
-		}
+		});
 
 		FSolarOrbzIcoSphereGenerator::RecomputeSmoothNormals(CachedMeshData);
 
@@ -891,9 +988,9 @@ void ASolarOrbzIcoSphereActor::RegenerateMesh()
 		{
 			UE_LOG(LogSolarOrbz, Log,
 				TEXT("SolarOrbz Biome Debug: %d/%d verts had climate data, %d/%d verts matched a biome layer (rest rendered black = no layer applies there)."),
-				NumWithClimateData, CachedMeshData.Vertices.Num(), NumDominantBiomeHits, CachedMeshData.Vertices.Num());
+				NumWithClimateData.GetValue(), CachedMeshData.Vertices.Num(), NumDominantBiomeHits.GetValue(), CachedMeshData.Vertices.Num());
 
-			if (NumDominantBiomeHits == 0)
+			if (NumDominantBiomeHits.GetValue() == 0)
 			{
 				UE_LOG(LogSolarOrbz, Warning, TEXT("SolarOrbz Biome Debug: not a single vertex matched any biome layer's mask - check each layer's Mask Preset ranges (Min/Max/Falloff) against the Moisture/Temperature/Elevation stats logged above."));
 			}
@@ -902,9 +999,9 @@ void ASolarOrbzIcoSphereActor::RegenerateMesh()
 		{
 			UE_LOG(LogSolarOrbz, Log,
 				TEXT("SolarOrbz Biome Blend: %d/%d verts had climate data, %d/%d verts matched at least one biome (rest render with all-zero weights - no biome applies there)."),
-				NumWithClimateData, CachedMeshData.Vertices.Num(), NumDominantBiomeHits, CachedMeshData.Vertices.Num());
+				NumWithClimateData.GetValue(), CachedMeshData.Vertices.Num(), NumDominantBiomeHits.GetValue(), CachedMeshData.Vertices.Num());
 
-			if (NumDominantBiomeHits == 0)
+			if (NumDominantBiomeHits.GetValue() == 0)
 			{
 				UE_LOG(LogSolarOrbz, Warning, TEXT("SolarOrbz Biome Blend: not a single vertex matched any biome - check each biome's Mask ranges against the Moisture/Temperature/Elevation stats logged above."));
 			}

@@ -306,4 +306,19 @@ private:
 	/** Runtime-only Material Instance Dynamic wrapping BiomeBlendMaterial, with BiomeTextureArray bound. Reused across regenerates rather than recreated every time. */
 	UPROPERTY(Transient)
 	TObjectPtr<class UMaterialInstanceDynamic> BiomeBlendMID;
+
+#if WITH_EDITOR
+	/**
+	 * Handles a property change that can be satisfied WITHOUT re-running the whole
+	 * geometry/terrain/climate/biome pipeline - today, just DefaultMaterial or BiomeBlendMaterial
+	 * changing while already in the matching rendering mode with cached per-vertex data that still
+	 * matches CachedMeshData's current vertex count. Returns true if it fully handled the change
+	 * (caller should NOT also call RegenerateMesh()); false means "not a case this knows how to fast-
+	 * path, fall back to a full regenerate" - always correct, just not always the fastest path.
+	 * Deliberately conservative: bShowBiomeDebugColors toggling and DebugBiomeMaterial changes always
+	 * fall through to a full regenerate, since BiomeDebugColors (unlike the blend arrays above) isn't
+	 * cached across calls today - nothing to reuse for the debug-color material.
+	 */
+	bool TryApplyCosmeticOnlyChange(FName ChangedPropertyName);
+#endif
 };

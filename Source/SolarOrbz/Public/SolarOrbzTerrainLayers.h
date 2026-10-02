@@ -87,6 +87,19 @@ public:
 	virtual void Bake(const TFunctionRef<float(const FVector& UnitDirection, const FVector2D& UV)>& PriorLayersHeight, double RadiusCm) {}
 
 	/**
+	 * Called once per regenerate, before GetRawHeight is ever called for this layer, same timing as
+	 * Bake() but unconditional (every enabled layer, not just RequiresWholeSurfaceBake() ones) - a
+	 * place for a layer to populate any lazily-built mutable cache up front, single-threaded, so
+	 * GetRawHeight's own per-vertex calls never race to populate it themselves. Added specifically
+	 * because GetRawHeight is called from inside a ParallelFor (see
+	 * ASolarOrbzIcoSphereActor::RegenerateMesh) - a layer whose GetRawHeight lazily fills a `mutable`
+	 * member (e.g. Heightmap/Stamp's FSolarOrbzTextureHeightSampler) MUST pre-populate it here instead,
+	 * or concurrent first-touch from multiple worker threads is a real data race. No-op by default;
+	 * only layers with a lazy mutable cache need to override it.
+	 */
+	virtual void WarmCaches() const {}
+
+	/**
 	 * Some layers read part of a planet's physical identity from outside their own asset rather than
 	 * being hardcoded per-instance - e.g. Continent reading Profile's continent count, or Planetary
 	 * Noise/Continent needing Sea Level so "meters above/below sea level" means the same thing
@@ -377,6 +390,7 @@ public:
 	float MaxHeightMeters = 8848.0f; // Everest
 
 	virtual float GetRawHeight(const FVector& UnitDirection, const FVector2D& UV) const override;
+	virtual void WarmCaches() const override { Sampler.EnsureDecoded(HeightmapTexture); }
 
 private:
 	mutable FSolarOrbzTextureHeightSampler Sampler;
@@ -430,6 +444,7 @@ public:
 	float CraterRimHeight = 0.3f;
 
 	virtual float GetRawHeight(const FVector& UnitDirection, const FVector2D& UV) const override;
+	virtual void WarmCaches() const override { Sampler.EnsureDecoded(StampHeightmap); }
 
 private:
 	mutable FSolarOrbzTextureHeightSampler Sampler;

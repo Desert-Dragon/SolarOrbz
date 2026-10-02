@@ -46,6 +46,17 @@ void USolarOrbzTerrainLayerStack::PrepareLayers(double RadiusCm) const
 		CachedLayerNeedsSlope[i] = Layer && Layer->Mask && Layer->Mask->NeedsSlope();
 	}
 
+	// Unconditional (every enabled layer, not just RequiresWholeSurfaceBake() ones) and single-
+	// threaded, before EvaluateHeight is ever called for real below - see WarmCaches()'s own comment
+	// for why this has to happen here rather than lazily inside GetRawHeight.
+	for (const TObjectPtr<USolarOrbzTerrainLayer>& Layer : Layers)
+	{
+		if (Layer && Layer->bEnabled)
+		{
+			Layer->WarmCaches();
+		}
+	}
+
 	for (int32 i = 0; i < Layers.Num(); ++i)
 	{
 		USolarOrbzTerrainLayer* Layer = Layers[i];

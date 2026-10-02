@@ -117,6 +117,57 @@ commitment or a schedule - just a place these don't get lost between sessions.
     Subdivisions` goes - that needs a chunked/streaming LOD terrain system (camera-distance-adaptive
     patches), which is planned separately on a Nanite-based custom backend, not a bigger single mesh.
     This actor remains the right tool for a bounded preview/bake radius or zoomed-in testing.
+  - **Still true after the perf pass directly below** - parallelizing the per-vertex evaluation
+    makes a given subdivision level regenerate faster, it doesn't change what a single mesh can
+    geometrically represent. Nothing here moves until the chunked/streaming system above exists.
+
+- **Regenerate performance / "the whole function" pass.** **Done**, prompted directly by dissatisfaction
+  with how `RegenerateMesh` felt to iterate against, independent of any one specific bug. Three changes,
+  all in `ASolarOrbzIcoSphereActor`/`USolarOrbzTerrainLayerStack`:
+  - **The two expensive per-vertex loops (base terrain Pass A, biome Pass B in `RegenerateMesh`) are now
+    `ParallelFor`'d** instead of single-threaded `for` loops - this is the dominant cost at any real
+    vertex count, including every Earth-scale/high-`Max Subdivisions` case above, so it's the single
+    biggest lever for both interactive editing and bake time. Safe to do now specifically because the
+    rest of the codebase was already written defensively for it: every mask/noise evaluation path
+    (`USolarOrbzBiomeMask` subclasses, `USolarOrbzTerrainLayerStack::EstimateSlopeUpTo`) already used
+    `thread_local` recursion guards rather than shared mutable counters, and all per-regenerate setup
+    (`ApplyPlanetaryContext`/`PrepareLayers`/`Bake`) already ran once, single-threaded, before any
+    per-vertex evaluation - nothing architectural had to change to make this safe, it just hadn't been
+    switched on. One real gap found and fixed to make it actually safe:
+    `USolarOrbzHeightmapTerrainLayer`/`USolarOrbzStampTerrainLayer` lazily decoded their texture
+    (`FSolarOrbzTextureHeightSampler::EnsureDecoded`) from inside `GetRawHeight` itself - harmless
+    single-threaded, but a real first-touch data race once `GetRawHeight` is called from multiple
+    worker threads at once. Fixed via a new `USolarOrbzTerrainLayer::WarmCaches()` virtual, called
+    unconditionally (every enabled layer, not just `RequiresWholeSurfaceBake()` ones) from
+    `PrepareLayers()` - single-threaded, before the parallel passes start.
+  - Pass A's and Pass B's log-only Min/Max/Sum/count stats no longer accumulate into shared locals
+    from inside the parallel section (a real data race under `ParallelFor` - it has no built-in
+    reduction) - Pass A writes a per-vertex `Heights` scratch array and reduces it in a cheap
+    sequential pass afterward; Pass B's two hit-counters are `FThreadSafeCounter` instead of `int32`.
+    Pass B's small per-vertex scratch arrays (`LayerWeights`/`TopBiomeIndices`/`TopBiomeWeights`) moved
+    from being hoisted above the loop (reused in place - fine single-threaded, but concurrent tasks
+    would corrupt each other's data in the same arrays) to declared fresh inside each iteration -
+    reintroduces a small per-vertex heap allocation, an accepted, clearly cheaper-than-the-alternative
+    trade given what's being parallelized around it.
+  - **`PostEditChangeProperty` no longer re-runs the entire pipeline for a purely cosmetic edit.**
+    `DefaultMaterial`/`BiomeBlendMaterial` were in the regenerate-trigger list alongside `RadiusMeters`/
+    `TerrainStack`/etc., even though neither affects geometry at all - swapping which material is
+    assigned, or which exact Biome Blend Material asset is referenced while blend mode is already live,
+    is now just `ProcMesh->SetMaterial()` (plus updating the MID's texture param for the blend case),
+    no icosphere rebuild/terrain/climate/biome re-evaluation. Deliberately conservative about when this
+    fast path applies (`ASolarOrbzIcoSphereActor::TryApplyCosmeticOnlyChange`) - `bShowBiomeDebugColors`
+    toggling and `DebugBiomeMaterial` changes still fall through to a full regenerate, since
+    `BiomeDebugColors` (unlike the blend arrays) isn't cached across calls today; turning blend mode on
+    for the first time also still needs a real regenerate (nothing cached yet to reuse). Correct in
+    both cases, just not maximally fast - safe default over a riskier guess at correctness no compiler
+    was available to check.
+  - **Not done, flagged rather than silently skipped:** `RecomputeSmoothNormals` (its own full
+    triangle-walk accumulation pass, called up to twice per regenerate) is still single-threaded - its
+    write pattern (multiple triangles scatter-adding into shared per-vertex normal accumulators) isn't
+    the same embarrassingly-parallel shape as Pass A/B's one-task-per-vertex loops, so parallelizing it
+    safely needs either per-task partial accumulators merged afterward or an atomic-add approach,
+    neither implemented here. Worth a follow-up pass if it shows up as a real bottleneck once the two
+    bigger loops above are no longer the dominant cost.
 
 ## Climate / Biome
 
