@@ -276,12 +276,8 @@ void FSolarOrbzIcoSphereGenerator::GenerateAtSubdivisionLevel(double Radius, int
 	FixUVSeamsAndFinalize(Context, FMath::Max(Radius, (double)KINDA_SMALL_NUMBER), OutMeshData);
 }
 
-void FSolarOrbzIcoSphereGenerator::BuildBaseIcosahedron(FBuildContext& Context)
+void FSolarOrbzIcoSphereGenerator::GetBaseIcosahedron(TArray<FVector>& OutVertices, TArray<FIntVector>& OutFaces)
 {
-	Context.Positions.Reset(12);
-	Context.Indices.Reset(60);
-	Context.MidpointCache.Reset();
-
 	const double T = (1.0 + FMath::Sqrt(5.0)) / 2.0;
 
 	// 12 vertices of a regular icosahedron, normalized onto the unit sphere.
@@ -292,9 +288,10 @@ void FSolarOrbzIcoSphereGenerator::BuildBaseIcosahedron(FBuildContext& Context)
 		FVector( T,  0, -1), FVector( T,  0,  1), FVector(-T,  0, -1), FVector(-T,  0,  1),
 	};
 
+	OutVertices.Reset(12);
 	for (const FVector& V : RawVerts)
 	{
-		Context.Positions.Add(V.GetSafeNormal());
+		OutVertices.Add(V.GetSafeNormal());
 	}
 
 	// 20 triangular faces, wound so normals point outward (CCW when viewed from outside).
@@ -306,12 +303,29 @@ void FSolarOrbzIcoSphereGenerator::BuildBaseIcosahedron(FBuildContext& Context)
 		{4, 9, 5},  {2, 4, 11}, {6, 2, 10}, {8, 6, 7},  {9, 8, 1},
 	};
 
+	OutFaces.Reset(20);
 	for (const int32 (&Face)[3] : RawFaces)
 	{
-		Context.Indices.Add(Face[0]);
-		Context.Indices.Add(Face[1]);
-		Context.Indices.Add(Face[2]);
+		OutFaces.Add(FIntVector(Face[0], Face[1], Face[2]));
 	}
+}
+
+void FSolarOrbzIcoSphereGenerator::BuildBaseIcosahedron(FBuildContext& Context)
+{
+	TArray<FVector> BaseVertices;
+	TArray<FIntVector> BaseFaces;
+	GetBaseIcosahedron(BaseVertices, BaseFaces);
+
+	Context.Positions = BaseVertices;
+	Context.Indices.Reset(BaseFaces.Num() * 3);
+	for (const FIntVector& Face : BaseFaces)
+	{
+		Context.Indices.Add(Face.X);
+		Context.Indices.Add(Face.Y);
+		Context.Indices.Add(Face.Z);
+	}
+
+	Context.MidpointCache.Reset();
 }
 
 int32 FSolarOrbzIcoSphereGenerator::GetOrCreateMidpoint(FBuildContext& Context, int32 IndexA, int32 IndexB)

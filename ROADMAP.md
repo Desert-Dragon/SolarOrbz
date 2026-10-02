@@ -241,9 +241,11 @@ commitment or a schedule - just a place these don't get lost between sessions.
 
 - **Chunked/streaming planet terrain** - the actual fix for ground-level detail at true planetary
   radius that every entry above flags as out of scope for the single-mesh `ASolarOrbzIcoSphereActor`.
-  Design + first foundational piece (cube-sphere chunk addressing/mesh generation,
-  `FSolarOrbzChunkAddress`/`FSolarOrbzCubeSphereChunkGenerator` in `SolarOrbzCubeSphereChunk.h/.cpp`)
-  written; no streaming/LOD-seam handling/baking/ASN_MK1 integration yet. See
+  Design + first foundational piece (an icosphere-based chunk addressing/mesh generation, built
+  directly on `FSolarOrbzIcoSphereGenerator`'s own base-icosahedron table and subdivision scheme -
+  `FSolarOrbzChunkAddress`/`FSolarOrbzIcoSphereChunkGenerator` in `SolarOrbzIcoSphereChunk.h/.cpp`;
+  superseded an earlier cube-sphere-based version, see the design doc's revision note) written; no
+  streaming/LOD-seam handling/baking/ASN_MK1 integration yet. See
   `Docs/ChunkedPlanetTerrain.md` for the full design, the phased CPU-first-then-GPU-compute plan, and
   the explicit list of what's deliberately not built yet - don't start the GPU-compute phase before
   the CPU-chunked streaming architecture is proven out.

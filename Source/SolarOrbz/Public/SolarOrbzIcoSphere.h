@@ -116,6 +116,15 @@ public:
 	static int64 EstimateVertexCount(int32 SubdivisionLevel);
 
 	/**
+	 * The 12 unit-sphere vertices and 20 triangular faces (index triples into those vertices, wound
+	 * CCW viewed from outside) of the base icosahedron this generator subdivides - exposed so
+	 * FSolarOrbzIcoSphereChunkGenerator (SolarOrbzIcoSphereChunk.h) can address "which of the 20 base
+	 * faces does this chunk descend from" against the exact same table BuildBaseIcosahedron uses
+	 * internally, rather than a second, possibly-drifting copy of the same 12 numbers.
+	 */
+	static void GetBaseIcosahedron(TArray<FVector>& OutVertices, TArray<FIntVector>& OutFaces);
+
+	/**
 	 * Recomputes per-vertex normals from the current triangle positions via area-weighted face-normal
 	 * averaging. Call this after displacing Vertices (e.g. for terrain) - the original analytic sphere
 	 * normals are no longer correct once the surface isn't a sphere anymore.

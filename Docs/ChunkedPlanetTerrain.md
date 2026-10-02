@@ -1,9 +1,16 @@
 # Chunked / Streaming Planet Terrain — Design
 
-**Status: design + first foundational piece (cube-sphere chunk math) only. Nothing here streams,
+**Status: design + first foundational piece (icosphere-based chunk math) only. Nothing here streams,
 LODs, or renders yet.** Written without a UE5.8 compiler available (see README's standing caveat on
 every other SolarOrbz doc) - read code comments for the same "verify before relying on this" flags
 `SolarOrbzIcoSphere.cpp` already uses for winding/orientation-sensitive math.
+
+**Revision note:** the first pass of this document and its foundational code used a cube-sphere
+chunking scheme (6 quadtree-subdivided cube faces). Superseded, by explicit request, in favor of
+building the chunk system directly on `FSolarOrbzIcoSphereGenerator`'s own base-icosahedron geometry
+instead - see "Topology" below for why this is actually lower-risk, not just a stylistic preference.
+The cube-sphere files (`SolarOrbzCubeSphereChunk.h/.cpp`) were deleted rather than kept alongside this
+version - there is one chunked system, not two competing ones.
 
 ## Why this exists
 
@@ -20,29 +27,42 @@ near the camera/player exist as real geometry at any given time, and farther chu
 don't exist at all yet). This is a second, parallel system - `ASolarOrbzIcoSphereActor` keeps doing
 exactly what it does today for anyone who wants a bounded, fully-resident test body.
 
-## Topology: cube-sphere, not icosphere-quadtree
+## Topology: a quadtree over the icosphere generator's own 20 base faces
 
-The icosphere generator (`FSolarOrbzIcoSphereGenerator`) stays exactly as it is - this is a second,
-independent mesh generator (`FSolarOrbzCubeSphereChunkGenerator`, see below), not a replacement.
+The whole-sphere icosphere generator (`FSolarOrbzIcoSphereGenerator`) stays exactly as it is and keeps
+serving `ASolarOrbzIcoSphereActor` unchanged - this is a second, parallel mesh generator
+(`FSolarOrbzIcoSphereChunkGenerator`, see below), not a replacement. But it deliberately **reuses that
+generator's own base-icosahedron table and recursive subdivision scheme** rather than inventing a
+second, independent geometric basis:
 
-A **cube-sphere** (6 quadtree-subdivided cube faces, each face's quadtree node projected onto the
-sphere) is the chunking scheme, not a quadtree built directly over the icosphere's triangles. Reasons:
-
-- **Uniform quad chunks.** Each cube face chunk is a plain NxN grid - trivial to generate, trivial
-  neighbor-finding (exactly 4 neighbors per chunk, same depth). An icosphere-based chunking would need
-  *triangular* chunks, and every icosphere vertex has 5 or 6 neighbors (the 12 original icosahedron
-  vertices are permanently 5-valent) - workable, but every piece of neighbor/seam logic needs a special
-  case at those 12 points that a cube-sphere's 8 corners (3 faces meeting) and 12 edges (2 faces
-  meeting) don't need nearly as much of.
-- **Industry precedent.** This is the standard approach for planet-scale terrain in the space-sim/
-  planet-renderer space (Outerra and most "quadtree planet" implementations use it) - not a novel
-  choice that still needs its own research pass.
-- **The existing terrain recipe doesn't care.** `USolarOrbzTerrainLayerStack::EvaluateHeight(UnitDirection,
+- **One chunk address = one path down the exact same 4-way split `SubdivideOnce` already performs.**
+  `BuildBaseIcosahedron`'s 20 triangular faces are the quadtree's 20 roots; each `+1` depth quarters
+  the current triangle into the same 4 children (3 corner triangles + 1 center triangle) that function
+  already produces for the whole mesh - `FSolarOrbzChunkAddress::GetCornerUnitDirections` just walks
+  that same split down to a chosen depth instead of applying it everywhere and emitting one giant mesh.
+  Concretely: `FSolarOrbzIcoSphereGenerator::GetBaseIcosahedron()` is a new public accessor exposing the
+  exact 12 vertices/20 faces `BuildBaseIcosahedron` already builds from, so the chunk system reads the
+  same numbers rather than a second, possibly-drifting copy.
+- **Meaningfully lower-risk than the cube-sphere version this replaced.** That version needed 6
+  hand-derived per-face (Right, Up, Forward) basis vector triples - new geometry, unverified without a
+  renderer. This version's corner-resolution math is a strict subset of logic the whole-sphere
+  generator already relies on (and whatever confidence that code has earned from being the generator
+  `ASolarOrbzIcoSphereActor` actually uses, this inherits) - what's actually new here is only the
+  *triangulation* of each chunk's own internal vertex grid (a barycentric subdivision of one triangle,
+  not full-mesh subdivision), which is still unverified without a renderer like everything else in this
+  pass.
+- **The existing terrain recipe still doesn't care.** `USolarOrbzTerrainLayerStack::EvaluateHeight(UnitDirection,
   UV, ClimateGrid)` only ever takes a direction vector + a UV - it has no idea whether that direction
-  came from an icosphere vertex or a cube-sphere grid point. Every existing `USolarOrbzTerrainLayer`/
+  came from the whole-sphere mesh or one chunk's local grid. Every existing `USolarOrbzTerrainLayer`/
   `USolarOrbzBiomeMask`/planet `Profile`/`USolarOrbzClimateSimulationAsset` asset keeps working
   completely unchanged; a planet authored today for the preview actor can be pointed at the chunked
   system later with the same `TerrainStack`/`BiomeStack`/`ClimateSimulation`/`Profile` references.
+- **Real, accepted tradeoff: the 12 original icosahedron vertices are permanently 5-valent** (5
+  neighbors instead of 6) - every piece of neighbor-finding/seam logic eventually needs a special case
+  at those 12 points that a cube-sphere's uniform 4-neighbor quads wouldn't have needed. Accepted
+  deliberately in exchange for the lower-risk geometry reuse above - not a problem solved by this pass
+  (no neighbor/seam logic exists yet at all, see "known out of scope" below), just a known shape of the
+  problem this topology will eventually have to handle.
 
 ## Where Nanite actually fits
 
@@ -53,7 +73,7 @@ already sitting unused in `ASolarOrbzIcoSphereActor::BakeToStaticMeshAsset`, cur
 a `// flip on later once you're baking at final terrain density` comment). So concretely, this is a
 **two-level LOD system**, not Nanite doing everything:
 
-- **Coarse level (ours to build): which chunks exist at all right now.** A quadtree-per-cube-face
+- **Coarse level (ours to build): which chunks exist at all right now.** A quadtree-per-base-face
   streaming manager, driven by camera/player distance, decides which `FSolarOrbzChunkAddress` nodes
   are currently resident, generates/bakes them, and evicts ones that fall out of range. This is
   ordinary gameplay-code streaming logic (not a rendering feature) - closer to how `World Partition`/
@@ -76,7 +96,7 @@ compiler the way the C++ side's mistakes at least sometimes can.
 Phased plan, in order - **do not start Phase 2 before Phase 1 is proven to work**:
 
 1. **Phase 1 (this and the next few passes): CPU-chunked streaming, prove the architecture.** Build
-   the cube-sphere chunk generator (below), the quadtree streaming manager, neighbor/LOD-seam
+   the icosphere chunk generator (below), the quadtree streaming manager, neighbor/LOD-seam
    handling, and ASN_MK1 integration (gravity/atmosphere need a chunked-aware body, see "ASN_MK1
    integration" below) all using the *existing* CPU `EvaluateHeight` path, parallelized with
    `ParallelFor` the same way `ASolarOrbzIcoSphereActor::RegenerateMesh` now is (see `ROADMAP.md`'s
@@ -107,19 +127,27 @@ working from `GetActorLocation()` + radius regardless of how many chunk sub-acto
 underneath, and atmosphere sampling (`IASNAtmosphereSource`) likewise shouldn't care whether the
 surface under a given world position is one baked mesh or a streamed-in chunk. The concrete shape of
 "one owning actor, many chunk children" isn't designed yet - flagged here so it isn't forgotten, not
-blocking Phase 1's cube-sphere/chunk-generation work starting in SolarOrbz itself first.
+blocking Phase 1's icosphere-chunk-generation work starting in SolarOrbz itself first.
 
 ## What's actually built so far (this pass)
 
-- **`FSolarOrbzChunkAddress`** (`SolarOrbzCubeSphereChunk.h`) - a quadtree node's identity: which of
-  the 6 cube faces, subdivision depth, and (X, Y) coordinates within that face at that depth.
-  `GetParent()`/`GetChildren()` for walking the tree; no streaming/residency logic yet, this is pure
-  addressing.
-- **`FSolarOrbzCubeSphereChunkGenerator`** (`SolarOrbzCubeSphereChunk.h/.cpp`) - generates one chunk's
-  mesh data (reuses `FSolarOrbzIcoSphereMeshData` - a grid of displaced vertices is a grid of displaced
-  vertices, regardless of which generator produced it) for a given `FSolarOrbzChunkAddress` + grid
-  resolution + radius, optionally displaced by an existing `USolarOrbzTerrainLayerStack` exactly the
-  way `RunTerrainPassA` displaces the icosphere today. `TerrainStack == nullptr` generates an
+- **`FSolarOrbzIcoSphereGenerator::GetBaseIcosahedron()`** (new public accessor, `SolarOrbzIcoSphere.h/
+  .cpp`) - exposes the generator's own 12 base vertices/20 base faces, which `BuildBaseIcosahedron` now
+  sources from too (one table, not a duplicate). Nothing about the existing whole-sphere generator's
+  behavior changed - this is a pure refactor (expose existing private data), not a new algorithm.
+- **`FSolarOrbzChunkAddress`** (`SolarOrbzIcoSphereChunk.h`) - a quadtree node's identity: which of the
+  20 base icosahedron faces, subdivision depth, and a packed `PathBits` recording which of the 4
+  children was chosen at every level down to that depth. `GetParent()`/`GetChildren()` for walking the
+  tree; `GetCornerUnitDirections()` resolves the chunk's actual 3 corner directions by replaying
+  `SubdivideOnce`'s own corner-child/center-child split down `PathBits`. No streaming/residency logic
+  yet, this is pure addressing.
+- **`FSolarOrbzIcoSphereChunkGenerator`** (`SolarOrbzIcoSphereChunk.h/.cpp`) - generates one chunk's
+  mesh data (reuses `FSolarOrbzIcoSphereMeshData`) for a given `FSolarOrbzChunkAddress` + per-edge
+  subdivision count + radius, optionally displaced by an existing `USolarOrbzTerrainLayerStack` exactly
+  the way `RunTerrainPassA` displaces the whole-sphere mesh today. Fills the chunk's triangle via
+  barycentric interpolation of its 3 corners (re-normalized onto the unit sphere per vertex) rather than
+  recursively re-subdividing down to the target resolution - simpler and resolution-independent (doesn't
+  require the within-chunk density to be a power of 2). `TerrainStack == nullptr` generates an
   undisplaced sphere patch - useful for testing chunk topology/seams in isolation before wiring in real
   terrain.
 
@@ -128,21 +156,25 @@ blocking Phase 1's cube-sphere/chunk-generation work starting in SolarOrbz itsel
 - **No neighbor/LOD-seam stitching yet.** Two adjacent chunks at different quadtree depths will show a
   visible crack/T-junction where their edge vertex densities don't match - a well-known, well-solved
   problem (skirts, edge morphing, or simply never letting neighboring resident chunks differ by more
-  than one LOD level), just not implemented here. Don't stream mixed-LOD neighbors in yet.
-- **No normalize-only distortion correction.** `FaceLocalToUnitSphereDirection` projects a cube point
-  onto the sphere via plain normalization, which is NOT area-preserving (chunks near a cube corner
-  cover less surface area than chunks near a face center, at the same quadtree depth). The standard
-  fix is a "COBE quad-sphere" warp on the face-local (S,T) before projecting - worth adding once chunk
-  density differences are actually visible in practice, not guessed at now.
+  than one LOD level), just not implemented here. Don't stream mixed-LOD neighbors in yet. The 12
+  permanently-5-valent base icosahedron vertices (see "Topology" above) are this problem's hardest
+  corner case specifically - don't assume whatever seam fix gets built first automatically covers them.
+- **Distortion is a smaller concern here than the cube-sphere version had, but not zero.** Barycentric
+  interpolation across a base triangle's 3 corners, re-normalized per vertex, is the same kind of
+  geodesic subdivision `SubdivideOnce` already performs for the whole mesh - a long-established,
+  comparatively mild distortion profile (this is a large part of why icospheres are generally preferred
+  over cube-spheres for even triangle sizing). Not re-derived or specifically measured for the chunked
+  case here, just inherited from a scheme already in production use elsewhere in this file.
 - **No antimeridian handling.** A chunk whose footprint straddles the equirectangular UV seam (U
   wrapping 0->1, exactly the case `FSolarOrbzIcoSphereGenerator::FixUVSeamsAndFinalize` exists to fix
-  for the whole-sphere mesh) will get a badly-interpolated V... er, U coordinate across that chunk,
-  which matters for any Heightmap/Stamp layer sampling via UV. Rare in practice (most chunks are far
-  from the seam), but real; same fix shape as the icosphere's (duplicate/offset U per-triangle) would
-  apply per-chunk, not implemented yet.
+  for the whole-sphere mesh) will get a badly-interpolated U coordinate across that chunk, which matters
+  for any Heightmap/Stamp layer sampling via UV. Rare in practice (most chunks are far from the seam),
+  but real; same fix shape as the whole-sphere mesh's (duplicate/offset U per-triangle) would apply
+  per-chunk, not implemented yet.
 - **No streaming manager, no LOD-selection-by-camera-distance, no baking/Nanite path, no ASN_MK1
   integration.** All of "Phase 1" above beyond the chunk generator itself.
-- **Face basis vectors/winding are UNVERIFIED** - written without a compiler. `GetFaceBasis`'s six
-  per-face (Right, Up, Forward) triples need to be checked against an actual rendered chunk before
-  trusting seams line up between faces, the same way `SolarOrbzIcoSphere.cpp`'s own header flags its
-  `FMatrix` constructor assumption. **Test this before building anything else on top of it.**
+- **Triangulation winding is UNVERIFIED** - written without a compiler or renderer.
+  `FSolarOrbzIcoSphereChunkGenerator::GenerateChunk`'s within-chunk grid triangulation applies the same
+  "swap the last two corners" empirical fix `FSolarOrbzIcoSphereGenerator::FixUVSeamsAndFinalize`
+  documents, by analogy rather than by independent verification. **Test a generated chunk's front/back
+  facing before building anything else on top of it.**
