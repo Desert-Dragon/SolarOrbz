@@ -77,6 +77,96 @@ void FSolarOrbzChunkAddress::GetCornerUnitDirections(FVector& OutA, FVector& Out
 	OutA = A; OutB = B; OutC = C;
 }
 
+bool FSolarOrbzChunkAddress::IsAnchoredAtOriginalVertex(int32& OutOriginalVertexIndex) const
+{
+	if (Depth <= 0)
+	{
+		// Documented behavior (see header) - the whole base face touches all 3 of its own original
+		// corners at once, not one specific pinned point.
+		return false;
+	}
+
+	const int32 Level0Child = (int32)(PathBits & 0x3);
+	if (Level0Child == 3)
+	{
+		// Level 0 picked the center child - none of a center triangle's 3 corners are original
+		// vertices (all three are midpoints), so nothing below this can ever be anchored either.
+		return false;
+	}
+
+	// Every level after 0 must be exactly child 0 (the only choice that leaves "A" - wherever it's
+	// currently pinned - unchanged, per GetCornerUnitDirections' switch) to keep this chunk anchored
+	// at the same point level 0 locked onto, rather than sliding onto a midpoint introduced later.
+	if ((PathBits >> 2) != 0)
+	{
+		return false;
+	}
+
+	TArray<FVector> BaseVertices;
+	TArray<FIntVector> BaseFaces;
+	FSolarOrbzIcoSphereGenerator::GetBaseIcosahedron(BaseVertices, BaseFaces);
+
+	const FIntVector& Face = BaseFaces[BaseFaceIndex];
+	switch (Level0Child)
+	{
+	case 0: OutOriginalVertexIndex = Face.X; break;
+	case 1: OutOriginalVertexIndex = Face.Y; break;
+	default: OutOriginalVertexIndex = Face.Z; break; // Level0Child == 2
+	}
+
+	return true;
+}
+
+bool FSolarOrbzChunkAddress::GetPentagonVertexNeighbors(FSolarOrbzPentagonVertexNeighbors& OutNeighbors) const
+{
+	int32 OriginalVertexIndex = INDEX_NONE;
+	if (!IsAnchoredAtOriginalVertex(OriginalVertexIndex))
+	{
+		return false;
+	}
+
+	TArray<FVector> BaseVertices;
+	TArray<FIntVector> BaseFaces;
+	FSolarOrbzIcoSphereGenerator::GetBaseIcosahedron(BaseVertices, BaseFaces);
+
+	OutNeighbors.OriginalVertexIndex = OriginalVertexIndex;
+	OutNeighbors.OtherChunks.Reset();
+
+	for (int32 OtherFaceIndex = 0; OtherFaceIndex < BaseFaces.Num(); ++OtherFaceIndex)
+	{
+		if (OtherFaceIndex == BaseFaceIndex)
+		{
+			continue; // this chunk's own face - not "other"
+		}
+
+		const FIntVector& OtherFace = BaseFaces[OtherFaceIndex];
+		int32 CornerSlot = INDEX_NONE;
+		if (OtherFace.X == OriginalVertexIndex) CornerSlot = 0;
+		else if (OtherFace.Y == OriginalVertexIndex) CornerSlot = 1;
+		else if (OtherFace.Z == OriginalVertexIndex) CornerSlot = 2;
+
+		if (CornerSlot != INDEX_NONE)
+		{
+			// Same construction IsAnchoredAtOriginalVertex requires: level 0 = this face's own corner
+			// slot for the shared vertex, every level after 0 implicitly 0 (PathBits has no higher
+			// bits set at all here) - i.e. "anchor to this vertex, at the same Depth".
+			OutNeighbors.OtherChunks.Add(FSolarOrbzChunkAddress(OtherFaceIndex, Depth, (uint64)CornerSlot));
+		}
+	}
+
+	// Verified directly (see Docs/ChunkedPlanetTerrain.md's revision work) that every one of the 12
+	// base vertices is touched by exactly 5 faces - if this ever fires, GetBaseIcosahedron's table
+	// changed without this assumption being re-checked.
+	if (OutNeighbors.OtherChunks.Num() != 4)
+	{
+		UE_LOG(LogSolarOrbzChunk, Warning,
+			TEXT("SolarOrbz Chunk: GetPentagonVertexNeighbors found %d other chunks for original vertex %d, expected exactly 4 - GetBaseIcosahedron's face table may have changed."),
+			OutNeighbors.OtherChunks.Num(), OriginalVertexIndex);
+	}
+
+	return true;
+}
+
 void FSolarOrbzIcoSphereChunkGenerator::GenerateChunk(
 	const FSolarOrbzChunkAddress& Address,
 	int32 Resolution,

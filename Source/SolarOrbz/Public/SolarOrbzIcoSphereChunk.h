@@ -21,6 +21,16 @@
 class USolarOrbzTerrainLayerStack;
 struct FSolarOrbzClimateGrid;
 
+/** Result of FSolarOrbzChunkAddress::GetPentagonVertexNeighbors - see that function's own comment. */
+struct SOLARORBZ_API FSolarOrbzPentagonVertexNeighbors
+{
+	/** Which of the 12 original icosahedron vertices this is - index into FSolarOrbzIcoSphereGenerator::GetBaseIcosahedron's vertex array. */
+	int32 OriginalVertexIndex = INDEX_NONE;
+
+	/** The other chunks (same Depth as the chunk GetPentagonVertexNeighbors was called on, from the other base faces touching this same vertex) - always exactly 4 when the call succeeds, since 5 faces touch each original vertex, minus this chunk's own. */
+	TArray<FSolarOrbzChunkAddress> OtherChunks;
+};
+
 /**
  * A node in the triangular quadtree over one of the base icosahedron's 20 faces: Depth 0 is the
  * whole base face as a single chunk; each +1 Depth quarters the current triangle into 4 children,
@@ -72,6 +82,38 @@ struct SOLARORBZ_API FSolarOrbzChunkAddress
 	 * CA)), so winding stays consistent with the rest of the plugin at every depth.
 	 */
 	void GetCornerUnitDirections(FVector& OutA, FVector& OutB, FVector& OutC) const;
+
+	/**
+	 * True if this chunk's own corner-child path has, at every level, picked the child that keeps one
+	 * specific corner pinned to one of the base icosahedron's 12 original vertices (level 0 picks
+	 * which original corner - 0/1/2, never 3 - to anchor to; every level after that must be exactly 0
+	 * to keep that same point pinned rather than sliding onto a midpoint - see GetCornerUnitDirections'
+	 * switch: only child 0 leaves "A" unchanged). See GetPentagonVertexNeighbors for why this matters.
+	 * Depth 0 is never "anchored" by this definition (the whole base face touches all 3 of its own
+	 * corners at once, not one specific point) - always returns false for Depth 0.
+	 * @param OutOriginalVertexIndex  If true is returned, which of the 12 original vertices (0..11,
+	 *                                index into FSolarOrbzIcoSphereGenerator::GetBaseIcosahedron's
+	 *                                vertex array) this chunk is anchored to. GetCornerUnitDirections'
+	 *                                OutA is guaranteed to be exactly that vertex whenever this is true.
+	 */
+	bool IsAnchoredAtOriginalVertex(int32& OutOriginalVertexIndex) const;
+
+	/**
+	 * The 12 original icosahedron vertices are permanently 5-valent (5 base faces meet there, not 6 -
+	 * verified directly against FSolarOrbzIcoSphereGenerator::GetBaseIcosahedron's own 20-face table;
+	 * see Docs/ChunkedPlanetTerrain.md's "Topology" section) - any neighbor-finding/seam-stitching logic
+	 * that assumes 6 same-depth chunks surround every vertex gets this wrong at exactly these 12 points.
+	 * Only meaningful when this chunk IsAnchoredAtOriginalVertex (checked internally; returns false and
+	 * leaves OutNeighbors untouched otherwise) - resolves the OTHER same-depth chunks, one from each of
+	 * the other base faces touching that same vertex, that share it. Always exactly 4 entries when it
+	 * succeeds (5 faces touch each original vertex total, minus this chunk's own face).
+	 *
+	 * Lookup only - nothing yet consumes this to actually stitch geometry (no streaming/seam system
+	 * exists at all yet, see the design doc). This is the primitive future seam-stitching at these 12
+	 * points will need, built now so the pentagon case isn't left to be discovered/reverse-engineered
+	 * later once the general (valence-6) neighbor system already exists and assumes 6 everywhere.
+	 */
+	bool GetPentagonVertexNeighbors(FSolarOrbzPentagonVertexNeighbors& OutNeighbors) const;
 };
 
 /**

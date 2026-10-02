@@ -57,12 +57,19 @@ second, independent geometric basis:
   `USolarOrbzBiomeMask`/planet `Profile`/`USolarOrbzClimateSimulationAsset` asset keeps working
   completely unchanged; a planet authored today for the preview actor can be pointed at the chunked
   system later with the same `TerrainStack`/`BiomeStack`/`ClimateSimulation`/`Profile` references.
-- **Real, accepted tradeoff: the 12 original icosahedron vertices are permanently 5-valent** (5
-  neighbors instead of 6) - every piece of neighbor-finding/seam logic eventually needs a special case
-  at those 12 points that a cube-sphere's uniform 4-neighbor quads wouldn't have needed. Accepted
-  deliberately in exchange for the lower-risk geometry reuse above - not a problem solved by this pass
-  (no neighbor/seam logic exists yet at all, see "known out of scope" below), just a known shape of the
-  problem this topology will eventually have to handle.
+- **Real tradeoff, now partly addressed: the 12 original icosahedron vertices are permanently
+  5-valent** (5 neighbors instead of 6) - every piece of neighbor-finding/seam logic eventually needs a
+  special case at those 12 points that a cube-sphere's uniform 4-neighbor quads wouldn't have needed.
+  Accepted deliberately in exchange for the lower-risk geometry reuse above. **The lookup primitive for
+  this special case now exists** - `FSolarOrbzChunkAddress::IsAnchoredAtOriginalVertex`/
+  `GetPentagonVertexNeighbors` (see "What's actually built so far" below) resolve, for a chunk whose own
+  corner sits exactly at one of the 12 points, the other same-depth chunks (one per other base face)
+  sharing it - verified independently against the real 20-face table (all 12 vertices confirmed
+  touched by exactly 5 faces, both the simple all-same-slot case and a mixed-slot case). Still not
+  wired into any actual seam-stitching (no general, valence-6 neighbor-finding exists yet either - see
+  "known out of scope" below) - this is the special-case primitive the general system will need to
+  call, built first so it isn't discovered/reverse-engineered after the general system already assumes
+  6 everywhere.
 
 ## Where Nanite actually fits
 
@@ -150,15 +157,33 @@ blocking Phase 1's icosphere-chunk-generation work starting in SolarOrbz itself 
   require the within-chunk density to be a power of 2). `TerrainStack == nullptr` generates an
   undisplaced sphere patch - useful for testing chunk topology/seams in isolation before wiring in real
   terrain.
+- **`FSolarOrbzChunkAddress::IsAnchoredAtOriginalVertex` / `GetPentagonVertexNeighbors`** (the "5-valent
+  fix", `SolarOrbzIcoSphereChunk.h/.cpp`) - the pentagon-vertex special case from "Topology" above, as a
+  standalone lookup. `IsAnchoredAtOriginalVertex` recognizes a chunk whose own corner sits exactly at
+  one of the 12 original icosahedron vertices (level 0 of its `PathBits` picked which original corner
+  to anchor to - 0/1/2, never the center child 3 - and every level after that stayed on child 0 to keep
+  that exact point pinned rather than sliding onto a midpoint). `GetPentagonVertexNeighbors` then walks
+  `GetBaseIcosahedron`'s 20-face table for every OTHER face touching that same original vertex and
+  builds the matching same-depth `FSolarOrbzChunkAddress` for each - always exactly 4 (5 faces touch
+  each original vertex, minus the querying chunk's own). Checked independently against the real face
+  table outside the engine (both the simple case where every touching face shares the same corner-slot,
+  and a mixed-slot case where they don't) - see the commit history for the verification script; all 12
+  vertices confirmed exactly 5-valent, both test shapes matched by hand. **Lookup only** - nothing
+  consumes this yet to actually stitch geometry.
 
 **Known, deliberately out of scope for this pass** (do not assume these are solved):
 
-- **No neighbor/LOD-seam stitching yet.** Two adjacent chunks at different quadtree depths will show a
-  visible crack/T-junction where their edge vertex densities don't match - a well-known, well-solved
-  problem (skirts, edge morphing, or simply never letting neighboring resident chunks differ by more
-  than one LOD level), just not implemented here. Don't stream mixed-LOD neighbors in yet. The 12
-  permanently-5-valent base icosahedron vertices (see "Topology" above) are this problem's hardest
-  corner case specifically - don't assume whatever seam fix gets built first automatically covers them.
+- **No neighbor/LOD-seam stitching yet**, still - the pentagon-vertex lookup above is the special-case
+  primitive that kind of stitching will need, not the stitching itself. Two adjacent chunks at different
+  quadtree depths will show a visible crack/T-junction where their edge vertex densities don't match - a
+  well-known, well-solved problem (skirts, edge morphing, or simply never letting neighboring resident
+  chunks differ by more than one LOD level), just not implemented here. Don't stream mixed-LOD neighbors
+  in yet.
+- **No general (valence-6, non-pentagon) neighbor-finding either.** Finding "the chunk across this edge"
+  for an ordinary interior or base-face-boundary edge needs its own table (which of the 30 shared edges
+  between the 20 base faces connects to which, and in what orientation/flip) - not built yet, and not
+  the same problem `GetPentagonVertexNeighbors` solves (that one is specifically about the 12 vertices,
+  not edges in general).
 - **Distortion is a smaller concern here than the cube-sphere version had, but not zero.** Barycentric
   interpolation across a base triangle's 3 corners, re-normalized per vertex, is the same kind of
   geodesic subdivision `SubdivideOnce` already performs for the whole mesh - a long-established,
