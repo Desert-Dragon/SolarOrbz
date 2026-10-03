@@ -318,6 +318,29 @@ blocking Phase 1's icosphere-chunk-generation work starting in SolarOrbz itself 
   increases as viewer approaches a fixed chunk; strictly decreases with depth at a fixed viewer
   position) held with zero failures across the full practical range. Not wired into any tree walk yet -
   that's items 3/4.
+- **`FSolarOrbzChunkResidencyWalker::GatherDesiredLeaves`** (Phase 1, continued, item 3 -
+  `SolarOrbzChunkResidencyWalk.h/.cpp`, new files) - "starting from the 20 base faces, recursively
+  applying the LOD policy, what is the resulting desired leaf-set for a viewer at a given position?"
+  Pure recursion: at each node, resolve its 3 corners (`GetCornerUnitDirections`, scaled by `Radius`
+  - the one place that scaling happens, so callers don't do it themselves), ask
+  `FSolarOrbzChunkLODPolicy::ShouldSplit`; split into `GetChildren`'s 4 children if yes, otherwise
+  append the node as a leaf. The walker owns an explicit `Node.Depth < MaxDepth` guard deliberately
+  redundant with `ShouldSplit`'s own `CurrentDepth` check - `GetChildren` itself silently degrades at
+  `MaxDepth` (returns non-advancing "children"), so relying solely on the policy function's internal
+  check would risk infinite recursion if that check were ever weakened elsewhere; the tree walker
+  itself must own this bound, not just delegate it. `ShouldMerge` is deliberately unused here - this
+  is a stateless, always-fresh-from-the-roots walk with no resident state to decide collapsing
+  against (that's item 5). This is a topological correctness claim (does the output leaf-set tile the
+  whole sphere with no gaps/overlaps, and respect `MaxDepth`), not a tuned heuristic, so held to that
+  bar: verified both by the implementing agent (5 scenarios spanning orbit altitude to standing-on-
+  the-ground plus a forced-to-`MaxDepth` case, 20,000 random-direction coverage/overlap samples plus
+  4,063 gathered leaves checked for nesting/`MaxDepth` compliance, zero failures, cross-checked
+  against a second independently-coded oracle) and independently re-verified from scratch afterward
+  (a fresh, not-reused Python reimplementation, different scenarios/random seed: 20,000 more coverage
+  samples across 5 scenarios and 4,435 leaves, again zero gaps/overlaps/nested-pairs/`MaxDepth`
+  violations, plus a 4-point monotonicity sweep with zero violations). This is the NAIVE,
+  *unrestricted* walk only - two adjacent output leaves can differ by an arbitrary number of depth
+  levels; capping that to 1 level is item 4, next.
 
 **Known, deliberately out of scope for this pass** (do not assume these are solved):
 
@@ -339,10 +362,12 @@ blocking Phase 1's icosphere-chunk-generation work starting in SolarOrbz itself 
   for any Heightmap/Stamp layer sampling via UV. Rare in practice (most chunks are far from the seam),
   but real; same fix shape as the whole-sphere mesh's (duplicate/offset U per-triangle) would apply
   per-chunk, not implemented yet.
-- **No streaming manager, no baking/Nanite path, no ASN_MK1 integration.** Point-location (item 1) and
-  the LOD policy (item 2) above exist now, but items 3-7 (the actual tree walk, the neighbor-depth
-  restriction, resident-set lifecycle, skirts, and the owning actor) don't yet - neither piece above is
-  wired into anything that streams chunks in or out.
+- **No streaming manager, no baking/Nanite path, no ASN_MK1 integration.** Point-location (item 1),
+  the LOD policy (item 2), and the unrestricted residency walk (item 3) above exist now, but items 4-7
+  (the neighbor-depth restriction, resident-set lifecycle, skirts, and the owning actor) don't yet -
+  none of the pieces above are wired into anything that actually streams chunks in or out, and the
+  walk's own output can still have arbitrarily large depth differences between adjacent leaves until
+  item 4 lands.
 - **Triangulation winding is UNVERIFIED** - written without a compiler or renderer.
   `FSolarOrbzIcoSphereChunkGenerator::GenerateChunk`'s within-chunk grid triangulation applies the same
   "swap the last two corners" empirical fix `FSolarOrbzIcoSphereGenerator::FixUVSeamsAndFinalize`

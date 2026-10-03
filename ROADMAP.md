@@ -256,12 +256,17 @@ commitment or a schedule - just a place these don't get lost between sessions.
   verified independently twice outside the engine, 259,000+ then another 3,200+30 cases, zero
   failures) and the LOD policy (`FSolarOrbzChunkLODPolicy::ShouldSplit`/`ShouldMerge` - longest-edge/
   nearest-distance ratio with hysteresis, checked against hand-computed depth/distance numbers then
-  independently re-derived, zero discrepancies) are both built now
-  (`SolarOrbzChunkPointLocation.h/.cpp`, `SolarOrbzChunkLODPolicy.h/.cpp`); still planned, not built:
-  the restricted-quadtree (max 1-level neighbor difference) fixpoint pass using `GetEdgeNeighbor`,
-  resident-chunk spawn/despawn, skirts for seam-hiding, and a new `AASolarOrbzChunkedPlanetActor` to
-  own all of it - see the design doc's own "Phase 1, continued" section for the full checklist. Still
-  no baking/ASN_MK1 integration yet. See
+  independently re-derived, zero discrepancies) are built
+  (`SolarOrbzChunkPointLocation.h/.cpp`, `SolarOrbzChunkLODPolicy.h/.cpp`), and so is the unrestricted
+  residency walk (`FSolarOrbzChunkResidencyWalker::GatherDesiredLeaves` -
+  `SolarOrbzChunkResidencyWalk.h/.cpp` - recursively applies the LOD policy from the 20 base faces to
+  produce a naive desired leaf-set; verified twice independently outside the engine, 20,000+ coverage/
+  overlap samples and 4,000+ leaves checked for nesting/`MaxDepth` compliance each time, zero
+  failures); still planned, not built: the restricted-quadtree (max 1-level neighbor difference)
+  fixpoint pass using `GetEdgeNeighbor` (the walk's own output can still have arbitrarily large
+  neighbor-depth differences), resident-chunk spawn/despawn, skirts for seam-hiding, and a new
+  `AASolarOrbzChunkedPlanetActor` to own all of it - see the design doc's own "Phase 1, continued"
+  section for the full checklist. Still no baking/ASN_MK1 integration yet. See
   `Docs/ChunkedPlanetTerrain.md` for the full design, the phased CPU-first-then-GPU-compute plan, and
   the explicit list of what's deliberately not built yet - don't start the GPU-compute phase before
   the CPU-chunked streaming architecture is proven out.
