@@ -20,6 +20,7 @@
 
 class USolarOrbzTerrainLayerStack;
 struct FSolarOrbzClimateGrid;
+struct FSolarOrbzPentagonVertexNeighbors; // full definition below FSolarOrbzChunkAddress - see there for why.
 
 /**
  * Names a chunk's 3 edges using GetCornerUnitDirections' own corner order (AB = between OutA and
@@ -33,16 +34,6 @@ enum class ESolarOrbzChunkEdge : uint8
 	AB,
 	BC,
 	CA,
-};
-
-/** Result of FSolarOrbzChunkAddress::GetPentagonVertexNeighbors - see that function's own comment. */
-struct SOLARORBZ_API FSolarOrbzPentagonVertexNeighbors
-{
-	/** Which of the 12 original icosahedron vertices this is - index into FSolarOrbzIcoSphereGenerator::GetBaseIcosahedron's vertex array. */
-	int32 OriginalVertexIndex = INDEX_NONE;
-
-	/** The other chunks (same Depth as the chunk GetPentagonVertexNeighbors was called on, from the other base faces touching this same vertex) - always exactly 4 when the call succeeds, since 5 faces touch each original vertex, minus this chunk's own. */
-	TArray<FSolarOrbzChunkAddress> OtherChunks;
 };
 
 /**
@@ -160,6 +151,26 @@ struct SOLARORBZ_API FSolarOrbzChunkAddress
 	 *                     apply to a given chunk.
 	 */
 	void GetEdgeNeighbor(ESolarOrbzChunkEdge Edge, FSolarOrbzChunkAddress& OutNeighbor) const;
+};
+
+/**
+ * Result of FSolarOrbzChunkAddress::GetPentagonVertexNeighbors - see that function's own comment.
+ * Declared AFTER FSolarOrbzChunkAddress (not before it, where this used to sit) - TArray<T> needs
+ * T's complete definition, not just a forward declaration, and this struct holds one by value. A
+ * real compile error (C2065/C2923/C2976/C2955 - "undeclared identifier" cascading into "too few
+ * template arguments" for TArray) caught this on the first actual build of this plugin; every
+ * verification this subsystem did up to that point was outside the engine (see
+ * Docs/ChunkedPlanetTerrain.md), so an ordering mistake like this - invisible to Python, invisible
+ * to code review unless you're specifically checking declaration order - was always going to surface
+ * here first, not earlier.
+ */
+struct SOLARORBZ_API FSolarOrbzPentagonVertexNeighbors
+{
+	/** Which of the 12 original icosahedron vertices this is - index into FSolarOrbzIcoSphereGenerator::GetBaseIcosahedron's vertex array. */
+	int32 OriginalVertexIndex = INDEX_NONE;
+
+	/** The other chunks (same Depth as the chunk GetPentagonVertexNeighbors was called on, from the other base faces touching this same vertex) - always exactly 4 when the call succeeds, since 5 faces touch each original vertex, minus this chunk's own. */
+	TArray<FSolarOrbzChunkAddress> OtherChunks;
 };
 
 /**
