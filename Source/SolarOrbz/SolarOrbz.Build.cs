@@ -50,8 +50,9 @@ public class SolarOrbz : ModuleRules
 				"CoreUObject",
 				"MeshDescription",
 				"StaticMeshDescription",
-				"AssetRegistry"
-				// ... add private dependencies that you statically link with here ...	
+				"AssetRegistry",
+				"ImageCore"
+				// ... add private dependencies that you statically link with here ...
 			}
 			);
 		

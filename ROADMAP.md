@@ -30,6 +30,37 @@ commitment or a schedule - just a place these don't get lost between sessions.
 
 ## Terrain
 
+- **Heightmap/Stamp layers silently contributing zero height - a real bug, found once hands-on
+  testing was actually possible.** **Done.** Reported symptom: a Heightmap Layer showed no visible
+  terrain at Earth radius even with extreme `MinHeightMeters`/`MaxHeightMeters` values. Root cause:
+  `FSolarOrbzTextureHeightSampler::EnsureDecoded` (`SolarOrbzIcoSphere.cpp`, shared by both
+  `USolarOrbzHeightmapTerrainLayer` and `USolarOrbzStampTerrainLayer`) called
+  `FTextureSource::GetMipData(RawData, 0)` - a 2-arg call that only resolves against an old 3-arg
+  overload (`OutMipData, MipIndex, IImageWrapperModule* = nullptr`) which does NOT decompress
+  Source data stored PNG/JPEG-compressed on disk, a common default state for an imported texture -
+  it silently returns `false` for exactly that case. `EnsureDecoded` returning `false` leaves
+  `CachedWidth`/`CachedHeight` at 0, and `USolarOrbzHeightmapTerrainLayer::GetRawHeight` bails out
+  to a hardcoded `0.0f` the moment `EnsureDecoded` fails - **before `MinHeightMeters`/
+  `MaxHeightMeters` are ever read** - so the layer contributed exactly zero height regardless of how
+  extreme those settings were, matching the reported symptom precisely. This was written and
+  self-flagged as a risk (`// NOTE: the exact FTextureSource::GetMipData overload has shifted
+  across engine versions... adjust if 5.8's header differs`) back when none of this subsystem could
+  be compiled or run - exactly the kind of thing that discipline predicted would surface on first
+  real use, not earlier.
+  - Fix: switched to `FTextureSource::GetMipImage(FImage&, BlockIndex, LayerIndex, MipIndex)` -
+    Epic's own documented modern replacement for `GetMipData`, which decompresses Source data
+    internally - followed by `FImage::CopyTo(..., ERawImageFormat::R32F, RawImage.GammaSpace)` to
+    normalize any source pixel format (not just the 4 the old hand-rolled switch handled) into a
+    plain `float` array, preserving the source image's own gamma space (not forcing Linear) so an
+    already-correctly-imported heightmap (sRGB unchecked, the normal setting for non-color data)
+    round-trips through this conversion with the same numeric values as before - fixes the actual
+    decode bug without silently changing how an existing heightmap's pixel values map to height.
+    Added `ImageCore` to `SolarOrbz.Build.cs`'s private dependencies for `FImage`/`ERawImageFormat`.
+  - Both confirmed via web search against current UE5.8-era Epic documentation (`GetMipImage`'s and
+    `FImage::CopyTo`'s exact signatures), not assumed from memory - per this project's UE5.8-specific
+    documentation standard, and because this exact kind of unverified-API-shape mistake is what
+    caused the bug being fixed.
+
 - **Sea Level wiring for Noise, Planetary Noise, and Continent.** **Done.** Fixed a real gap:
   Planetary Noise Layer's doc comments already claimed to be sea-level-relative, but the code never
   actually read `ClimateSimulation.SeaLevel` - it only ever measured from the raw base radius,

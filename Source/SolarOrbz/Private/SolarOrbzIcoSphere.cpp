@@ -3,6 +3,7 @@
 #include "SolarOrbzIcoSphere.h"
 
 #include "Engine/Texture2D.h"
+#include "ImageCore.h"
 
 #include "SolarOrbzTerrainLayers.h"
 #include "SolarOrbzBiomeSystem.h"
@@ -49,63 +50,51 @@ bool FSolarOrbzTextureHeightSampler::EnsureDecoded(UTexture2D* Texture)
 		return false;
 	}
 
-	CachedWidth = Source.GetSizeX();
-	CachedHeight = Source.GetSizeY();
-	const ETextureSourceFormat Format = Source.GetFormat();
-
-	TArray64<uint8> RawData;
-	// NOTE: the exact FTextureSource::GetMipData overload has shifted across engine versions -
-	// this is a MipIndex-based accessor either way, adjust if 5.8's header differs.
-	if (!Source.GetMipData(RawData, 0))
+	// FTextureSource::GetMipImage (BlockIndex, LayerIndex, MipIndex), not the older GetMipData -
+	// this is a REAL FIX, not a style preference: a previous version of this function called
+	// GetMipData(RawData, 0), which only resolves against an old 3-arg overload
+	// (OutMipData, MipIndex, IImageWrapperModule* = nullptr) that does NOT decompress Source data
+	// that's stored PNG/JPEG-compressed on disk (a common, often default, state for an imported
+	// texture) - it silently returns false for exactly that case, which left CachedWidth/Height at
+	// 0 and made every subsequent SampleBilinear01 call return a flat 0.0 - i.e. the WHOLE
+	// heightmap evaluated to a single constant height (MinHeightMeters) everywhere, visually
+	// identical to no heightmap at all regardless of how extreme Min/MaxHeightMeters were set.
+	// GetMipImage decompresses Source data internally and is Epic's own documented replacement for
+	// GetMipData going forward - this is the actual, UE5.8-correct fix for that symptom, not a
+	// rewrite for its own sake.
+	FImage RawImage;
+	if (!Source.GetMipImage(RawImage, 0, 0, 0))
 	{
-		CachedWidth = CachedHeight = 0;
 		return false;
 	}
+
+	// Normalize to one known pixel format/gamma space regardless of the texture's actual source
+	// format (G8/G16/BGRA8/RGBA16F/RGBA32F/...) instead of hand-decoding each one - CopyTo is
+	// Epic's own tested format-conversion code, so this also stops being limited to only the 4
+	// formats the old switch statement happened to handle. DestGammaSpace is RawImage's OWN
+	// GammaSpace (not forced to Linear) specifically so a texture already treated as linear data
+	// (the normal, correct import setting for a non-color heightmap: sRGB unchecked) round-trips
+	// through this conversion with the exact same numeric values as before - this fixes the actual
+	// decode bug without silently changing how an existing, correctly-imported heightmap's pixel
+	// values map to height.
+	FImage LinearImage;
+	RawImage.CopyTo(LinearImage, ERawImageFormat::R32F, RawImage.GammaSpace);
+
+	CachedWidth = LinearImage.SizeX;
+	CachedHeight = LinearImage.SizeY;
 
 	const int64 PixelCount = (int64)CachedWidth * CachedHeight;
-	CachedHeights01.SetNumUninitialized(PixelCount);
-
-	switch (Format)
+	if (PixelCount <= 0 || LinearImage.RawData.Num() < PixelCount * (int64)sizeof(float))
 	{
-	case TSF_G8:
-	{
-		for (int64 i = 0; i < PixelCount; ++i)
-		{
-			CachedHeights01[i] = RawData[i] / 255.0f;
-		}
-		break;
-	}
-	case TSF_G16:
-	{
-		const uint16* Pixels = reinterpret_cast<const uint16*>(RawData.GetData());
-		for (int64 i = 0; i < PixelCount; ++i)
-		{
-			CachedHeights01[i] = Pixels[i] / 65535.0f;
-		}
-		break;
-	}
-	case TSF_BGRA8:
-	{
-		const uint8* Pixels = RawData.GetData();
-		for (int64 i = 0; i < PixelCount; ++i)
-		{
-			CachedHeights01[i] = Pixels[i * 4 + 0] / 255.0f;
-		}
-		break;
-	}
-	case TSF_RGBA16F:
-	{
-		const FFloat16* Pixels = reinterpret_cast<const FFloat16*>(RawData.GetData());
-		for (int64 i = 0; i < PixelCount; ++i)
-		{
-			CachedHeights01[i] = FMath::Clamp((float)Pixels[i * 4 + 0], 0.0f, 1.0f);
-		}
-		break;
-	}
-	default:
-		UE_LOG(LogTemp, Warning, TEXT("SolarOrbz: texture '%s' uses an unsupported source format - re-import as G8, G16, BGRA8 or RGBA16F."), *Texture->GetName());
 		CachedWidth = CachedHeight = 0;
 		return false;
+	}
+
+	CachedHeights01.SetNumUninitialized(PixelCount);
+	const float* Pixels = reinterpret_cast<const float*>(LinearImage.RawData.GetData());
+	for (int64 i = 0; i < PixelCount; ++i)
+	{
+		CachedHeights01[i] = Pixels[i];
 	}
 
 	return CachedWidth > 0 && CachedHeight > 0;
