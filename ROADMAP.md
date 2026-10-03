@@ -291,12 +291,15 @@ commitment or a schedule - just a place these don't get lost between sessions.
   actor, an explicit Phase-1-testing override, or a well-defined center-of-planet fallback - the
   resident-set manager itself gained a `SkirtDepth` constructor parameter so skirts actually run
   before each new chunk's component is created, the one existing file this final item needed to
-  touch). Every item 1-7 piece now exists and is wired together end to end - but "wired together"
-  explicitly does NOT mean "known to work": every engine-dependent piece in the chain has only been
-  checked by careful reading against this project's own patterns and Unreal's documented APIs, never
-  by compiling or pressing Play - see the design doc's own closing caveat on this item for why that
-  gap is real and expected, not glossed over. Still no baking/ASN_MK1 integration yet - both remain
-  separate, not-yet-started work. See
+  touch). Every item 1-7 piece now exists and is wired together end to end, and **the plugin compiles
+  clean as of `e5bfd66`** (the first real build caught one genuine bug - a declaration-order mistake
+  in `FSolarOrbzPentagonVertexNeighbors`, invisible to every verification pass up to that point since
+  none of them involved an actual compiler - fixed in that same commit). Compiling is NOT "known to
+  work" - this has not been played/rendered even once yet; see
+  `Docs/ChunkedPlanetTerrain_TestingGuide.md` for the first-playtest runbook (setup steps, a localized
+  test sequence, and a troubleshooting table covering the specific risk areas - winding, skirts,
+  viewer configuration, collision). Still no baking/ASN_MK1 integration yet - both remain separate,
+  not-yet-started work. See
   `Docs/ChunkedPlanetTerrain.md` for the full design, the phased CPU-first-then-GPU-compute plan, and
   the explicit list of what's deliberately not built yet - don't start the GPU-compute phase before
   the CPU-chunked streaming architecture is proven out.

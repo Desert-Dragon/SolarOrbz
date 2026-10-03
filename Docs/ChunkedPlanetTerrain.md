@@ -1,9 +1,13 @@
 # Chunked / Streaming Planet Terrain — Design
 
-**Status: design + first foundational piece (icosphere-based chunk math) only. Nothing here streams,
-LODs, or renders yet.** Written without a UE5.8 compiler available (see README's standing caveat on
-every other SolarOrbz doc) - read code comments for the same "verify before relying on this" flags
-`SolarOrbzIcoSphere.cpp` already uses for winding/orientation-sensitive math.
+**Status: the full Phase 1 streaming/residency pipeline (chunk addressing through the owning actor,
+all 7 "Phase 1, continued" checklist items below) exists and compiles clean (`e5bfd66`). It has NOT
+yet been played/rendered even once - everything was written and verified without a UE5.8 compiler
+available (see README's standing caveat on every other SolarOrbz doc), so treat "builds" and "known to
+work" as two separate claims.** First playtest: see `Docs/ChunkedPlanetTerrain_TestingGuide.md` for
+setup steps, a localized test sequence, and a troubleshooting table - read that before expecting a
+finished result. Read code comments throughout this subsystem for the same "verify before relying on
+this" flags `SolarOrbzIcoSphere.cpp` already uses for winding/orientation-sensitive math.
 
 **Revision note:** the first pass of this document and its foundational code used a cube-sphere
 chunking scheme (6 quadtree-subdivided cube faces). Superseded, by explicit request, in favor of
@@ -132,14 +136,16 @@ Phased plan, in order - **do not start Phase 2 before Phase 1 is proven to work*
 3. **Phase 3 (optional, only if Phase 2 isn't enough): Nanite-enabled chunk bakes**, per "Where Nanite
    actually fits" above, once chunk generation itself is fast and correct.
 
-## Phase 1, continued: the streaming/residency manager (plan, nothing built yet)
+## Phase 1, continued: the streaming/residency manager (all 7 items built - see "What's actually built so far" below for what that does and doesn't mean yet)
 
-Everything above this point answers "what is chunk X, and what's next to it." Nothing yet answers
-"which chunks should exist right now, and what happens as the viewer moves" - that's this piece. Plan
-only below; see the checklist for build order. Each numbered subsystem is written up so it can be
-built and verified independently, same discipline as addressing/generation/neighbor-finding above -
-anything non-trivial (point-location, the LOD-restriction fixpoint) gets a Python ground-truth check
-before any C++ is written, not after.
+Everything above this point answers "what is chunk X, and what's next to it." This section answers
+"which chunks should exist right now, and what happens as the viewer moves." The numbered list below
+is the original build plan, kept as-written for the build order/dependency reasoning it documents -
+each item now has a matching entry in "What's actually built so far," so treat the numbers here as a
+map of what exists, not a to-do list. **The plugin compiles clean as of commit `e5bfd66`, but has not
+yet been run/played even once** - see `Docs/ChunkedPlanetTerrain_TestingGuide.md` for the first-
+playtest runbook (setup steps, a localized test sequence, and a troubleshooting table) before
+expecting a finished result on the first try.
 
 1. **Point-location: "which chunk contains this world direction?"** Doesn't exist yet, and the
    streaming manager can't decide anything without it - it needs to know where the viewer actually is
