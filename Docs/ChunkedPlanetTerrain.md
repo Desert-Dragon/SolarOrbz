@@ -375,6 +375,39 @@ blocking Phase 1's icosphere-chunk-generation work starting in SolarOrbz itself 
   location machinery - confirming naive inputs really do violate the invariant (264 of 9,216 checked
   pairs) and that the same fixpoint algorithm, independently implemented, drives it to zero violations
   (0 of 10,737 pairs) while preserving the tiling property (0 gaps/overlaps across 4,500 samples).
+- **`FSolarOrbzChunkResidentSetDiff` / `FSolarOrbzChunkResidentSetManager`** (Phase 1, continued, item
+  5 - `SolarOrbzChunkResidentSetDiff.h/.cpp` and `SolarOrbzChunkResidentSetManager.h/.cpp`, new files)
+  - "keep a map of currently-resident `FSolarOrbzChunkAddress -> UProceduralMeshComponent` in sync with
+  what a viewer currently desires." Split into a pure half and an engine-dependent half, same "pure
+  part stays pure" pattern as `FSolarOrbzChunkLODPolicy`/`FSolarOrbzChunkResidencyWalker`:
+  `FSolarOrbzChunkResidentSetDiff::ComputeDiff` is a plain set-difference (`ToSpawn = Desired -
+  Previous`, `ToDespawn = Previous - Desired`) with no engine dependency at all, verified to this
+  project's normal strict bar (20,004 cases - 4 constructed scenarios plus a 20,000-trial randomized
+  fuzz test checking 6 partition properties at once, zero failures; independently re-verified
+  afterward with a second, separately-written fuzz test, 15,000 more trials, zero failures).
+  `FSolarOrbzChunkResidentSetManager::UpdateResidentSet` is the engine-dependent half: recomputes the
+  desired leaf-set (`GatherDesiredLeaves` + `ApplyNeighborDepthRestriction`), diffs it against the
+  resident map's keys, destroys components for `ToDespawn`, and creates components for `ToSpawn` -
+  split into two strictly separate phases to respect a hard constraint: `GenerateChunk` is pure CPU
+  work and safe to `ParallelFor`, but `NewObject<UProceduralMeshComponent>`/`RegisterComponent`/
+  `AttachToComponent`/`CreateMeshSection_LinearColor` all touch UObject/engine state and must run on
+  the game thread only - so Phase 1 parallel-generates every new chunk's mesh data into a plain array
+  with no UObject access anywhere in that lambda, and Phase 2 (strictly after Phase 1 completes)
+  sequentially creates one component per spawn, reading that array. `CreateMeshSection_LinearColor` is
+  called with the same parameter shape `ASolarOrbzIcoSphereActor::RegenerateMesh` already uses, with
+  an intentionally-empty vertex-color array (`GenerateChunk`'s output has no color data yet - biome-
+  color wiring for streamed chunks remains out of scope). Addresses present in both the old and new
+  desired sets are left completely untouched - no regeneration, no component churn - expected to be
+  the common case once a viewer stops moving. This engine-dependent half gets a deliberately different
+  and weaker verification bar than every pure piece above: there is no Python-equivalent ground truth
+  for "did NewObject construct a valid component," so it is held to a code-review-correctness bar only
+  (matching `RegenerateMesh`'s own established call shape, correct documented UE component-lifecycle
+  API ordering) and stated plainly as unverified-by-execution, same standing caveat as the rest of this
+  plugin but without the exhaustive-testing claim the pure pieces can make. Collision generation is
+  left off for every streamed chunk for now - flagged, not solved; a caller that needs the player to
+  actually stand on streamed terrain will need this revisited. No per-chunk spawn budget/
+  prioritization yet either - a single large viewer jump generates and creates every newly-needed
+  chunk in one `UpdateResidentSet` call, however many that is.
 
 **Known, deliberately out of scope for this pass** (do not assume these are solved):
 
@@ -396,13 +429,17 @@ blocking Phase 1's icosphere-chunk-generation work starting in SolarOrbz itself 
   for any Heightmap/Stamp layer sampling via UV. Rare in practice (most chunks are far from the seam),
   but real; same fix shape as the whole-sphere mesh's (duplicate/offset U per-triangle) would apply
   per-chunk, not implemented yet.
-- **No streaming manager, no baking/Nanite path, no ASN_MK1 integration.** Point-location (item 1),
-  the LOD policy (item 2), the unrestricted residency walk (item 3), and the restricted-quadtree
-  fixpoint (item 4) above exist now, but items 5-7 (resident-set lifecycle, skirts, and the owning
-  actor) don't yet - none of the pieces above are wired into anything that actually streams chunks in
-  or out. Also note item 4's own deliberate scope limit: it enforces the 1-level restriction across
-  ordinary edges only, not at the 12 pentagon vertices' corner-fan case (see that item's own write-up
-  for the measured bound this rests on).
+- **No baking/Nanite path, no ASN_MK1 integration, and still no OWNING ACTOR driving any of this.**
+  Point-location (item 1), the LOD policy (item 2), the unrestricted residency walk (item 3), the
+  restricted-quadtree fixpoint (item 4), and the resident-set diff/lifecycle manager (item 5) above
+  all exist now - `FSolarOrbzChunkResidentSetManager` can genuinely spawn/despawn real
+  `UProceduralMeshComponent`s for a given viewer position - but nothing yet calls it: items 6-7
+  (skirts, and `AASolarOrbzChunkedPlanetActor` to own an update cadence and actually call
+  `UpdateResidentSet` on a timer/interval) don't exist yet, so there is still no in-game path that
+  actually streams chunks in or out today. Also note item 4's own deliberate scope limit: it enforces
+  the 1-level restriction across ordinary edges only, not at the 12 pentagon vertices' corner-fan case
+  (see that item's own write-up for the measured bound this rests on); and item 5's own: no collision
+  on streamed chunks yet, and no per-chunk spawn budget for a large viewer jump.
 - **Triangulation winding is UNVERIFIED** - written without a compiler or renderer.
   `FSolarOrbzIcoSphereChunkGenerator::GenerateChunk`'s within-chunk grid triangulation applies the same
   "swap the last two corners" empirical fix `FSolarOrbzIcoSphereGenerator::FixUVSeamsAndFinalize`
