@@ -73,8 +73,9 @@
 //   large viewer jump/teleport) - every address in ToSpawn is generated and created in the same
 //   UpdateResidentSet call, however many that is. A frame-budget/queue system is explicitly later
 //   work, not built here (see the design doc's own "explicitly out of scope" list for this piece).
-// - No skirts/seam-stitching (item 6) - components are created from GenerateChunk's raw mesh data
-//   exactly as produced, with no boundary-vertex extension.
+// - Skirts (item 6, FSolarOrbzChunkSkirtBuilder::AppendSkirts) ARE now applied - see
+//   UpdateResidentSet's own Phase 1 comment below - but only the flat, non-distance-aware
+//   SkirtDepth this class is constructed with; no per-edge/mismatch-aware sizing.
 // - No update cadence/owning actor (item 7) - this class is a plain, non-UObject manager meant to be
 //   OWNED by something else (a future AASolarOrbzChunkedPlanetActor) that decides WHEN to call
 //   UpdateResidentSet; it has no Tick, timer, or interval logic of its own.
@@ -132,6 +133,12 @@ public:
 	 *                                    every newly created component. May be null (component then
 	 *                                    renders with the engine's default material, same fallback
 	 *                                    UMeshComponent::SetMaterial always has).
+	 * @param InSkirtDepth                Forwarded to FSolarOrbzChunkSkirtBuilder::AppendSkirts for
+	 *                                    every newly spawned chunk, run in Phase 1 (pure, parallel)
+	 *                                    right after GenerateChunk - see UpdateResidentSet's own
+	 *                                    comment. 0.0 is a well-defined "no skirt" default (every
+	 *                                    skirt vertex then coincides exactly with its original - see
+	 *                                    AppendSkirts' own header), not a special case to avoid.
 	 */
 	FSolarOrbzChunkResidentSetManager(
 		AActor* InOwningActor,
@@ -139,7 +146,8 @@ public:
 		const USolarOrbzTerrainLayerStack* InTerrainStack,
 		const FSolarOrbzClimateGrid* InClimateGridForMasking,
 		int32 InChunkResolution,
-		UMaterialInterface* InMaterial);
+		UMaterialInterface* InMaterial,
+		double InSkirtDepth = 0.0);
 
 	/** Destroys every still-resident component (see ClearAll) before this manager itself is torn down. */
 	~FSolarOrbzChunkResidentSetManager();
@@ -190,6 +198,7 @@ private:
 	const FSolarOrbzClimateGrid* ClimateGridForMasking = nullptr;
 	int32 ChunkResolution = 16;
 	UMaterialInterface* Material = nullptr;
+	double SkirtDepth = 0.0;
 
 	TMap<FSolarOrbzChunkAddress, TObjectPtr<UProceduralMeshComponent>> ResidentComponents;
 };

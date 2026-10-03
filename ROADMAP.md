@@ -251,7 +251,10 @@ commitment or a schedule - just a place these don't get lost between sessions.
   finder (`FSolarOrbzChunkAddress::GetEdgeNeighbor` - exhaustively verified outside the engine, depths
   0-6/all 20 faces/every edge, 327,660+ cases with zero failures, against a brute-force first attempt
   that was caught wrong and discarded - see the design doc's revision notes); neither lookup is yet
-  wired into any actual seam-stitching. **Streaming/residency manager, in progress**: point-location
+  wired into any actual seam-stitching. **Streaming/residency manager, all 7 checklist items now
+  built and wired together - NOT yet compiled, run, or rendered even once (no UE5.8 compiler
+  available in this environment the whole way through - see the design doc's own closing caveat on
+  this item).** Point-location
   (`FSolarOrbzChunkPointLocator::FindChunkContainingDirection` - point-in-spherical-triangle descent,
   verified independently twice outside the engine, 259,000+ then another 3,200+30 cases, zero
   failures) and the LOD policy (`FSolarOrbzChunkLODPolicy::ShouldSplit`/`ShouldMerge` - longest-edge/
@@ -281,10 +284,19 @@ commitment or a schedule - just a place these don't get lost between sessions.
   (`FSolarOrbzChunkSkirtBuilder::AppendSkirts` - `SolarOrbzChunkSkirtBuilder.h/.cpp` - a pure,
   additive post-process appending a thin inward-facing wall along each chunk's 3 boundary edges,
   checked across 6 Resolution values and multiple skirt depths against additivity/counts/no-
-  duplication/index-validity, zero failures); still planned, not built: a new
-  `AASolarOrbzChunkedPlanetActor` to actually own an update cadence and call all of the above -
-  nothing yet wires this up to run in-game - see the design doc's own "Phase 1, continued" section
-  for the full checklist. Still no baking/ASN_MK1 integration yet. See
+  duplication/index-validity, zero failures); and the owning actor is built too
+  (`AASolarOrbzChunkedPlanetActor` - `SolarOrbzChunkedPlanetActor.h/.cpp` - parallel to, not a
+  replacement for, `ASolarOrbzIcoSphereActor`; owns a repeating update timer, a
+  `FSolarOrbzChunkResidentSetManager` instance, and resolves a viewer position from an assigned
+  actor, an explicit Phase-1-testing override, or a well-defined center-of-planet fallback - the
+  resident-set manager itself gained a `SkirtDepth` constructor parameter so skirts actually run
+  before each new chunk's component is created, the one existing file this final item needed to
+  touch). Every item 1-7 piece now exists and is wired together end to end - but "wired together"
+  explicitly does NOT mean "known to work": every engine-dependent piece in the chain has only been
+  checked by careful reading against this project's own patterns and Unreal's documented APIs, never
+  by compiling or pressing Play - see the design doc's own closing caveat on this item for why that
+  gap is real and expected, not glossed over. Still no baking/ASN_MK1 integration yet - both remain
+  separate, not-yet-started work. See
   `Docs/ChunkedPlanetTerrain.md` for the full design, the phased CPU-first-then-GPU-compute plan, and
   the explicit list of what's deliberately not built yet - don't start the GPU-compute phase before
   the CPU-chunked streaming architecture is proven out.

@@ -436,6 +436,39 @@ blocking Phase 1's icosphere-chunk-generation work starting in SolarOrbz itself 
   "Winding UNVERIFIED without a renderer" caveat `GenerateChunk`'s own triangles already carry, no
   more and no less. `SkirtDepth` is a flat caller-chosen constant with no distance/mismatch-aware
   sizing yet - kept simple for Phase 1, see this item's own design-doc framing.
+- **`AASolarOrbzChunkedPlanetActor`** (Phase 1, continued, item 7 - `SolarOrbzChunkedPlanetActor.h/.cpp`,
+  new files) - the last item: the actor that actually OWNS an update cadence and wires items 1-6
+  together to run in-game. Everything before this item existed only as callable pieces with nothing
+  invoking them; this actor's own code is deliberately thin - own the properties, own a repeating
+  timer (`UpdateIntervalSeconds`, not every tick), own a `FSolarOrbzChunkResidentSetManager` instance
+  (constructed in `BeginPlay`, torn down in `EndPlay`), resolve a viewer position, call
+  `UpdateResidentSet`. `FSolarOrbzChunkResidentSetManager` itself was extended (a new optional
+  `SkirtDepth` constructor parameter, defaulting to `0.0` = no skirt) to call
+  `FSolarOrbzChunkSkirtBuilder::AppendSkirts` right after `GenerateChunk` inside its own existing
+  parallel Phase 1 (still pure, no UObject access - safe to stay inside that `ParallelFor`) - this is
+  the one existing file this item's integration needed to touch, since item 6 was built as a
+  standalone post-process with nothing previously calling it. New, parallel to
+  `ASolarOrbzIcoSphereActor` (not a replacement - the whole-sphere actor remains the right tool for a
+  bounded preview/bake radius). Properties mirror the whole-sphere actor's own shape
+  (`RadiusMeters`/`TerrainStack`/`BiomeStack`/`ClimateSimulation`/`Profile`) for parity, but only
+  `RadiusMeters` and `TerrainStack` are actually forwarded into chunk generation yet -
+  `BiomeStack`/`ClimateSimulation`/`Profile` are held for a future pass (no per-vertex color field on
+  chunk mesh data yet, no whole-planet climate grid built here, no ASN_MK1 gravity/atmosphere read
+  yet) and said so plainly rather than silently appearing wired up. Viewer position resolves in order:
+  an assigned `ViewerActor`'s world location, else an explicit `ViewerWorldPositionOverride` (the
+  design doc's own "just an explicit world position for Phase 1 testing" option), else a well-defined
+  (if not meaningful) fallback treating the viewer as sitting at the planet's own center, logged once
+  rather than every tick. Pure actor/engine wiring - held to the same code-review-only bar as item 5's
+  Part B (no Python-equivalent ground truth for "does a UE timer fire on schedule"), not compiled or
+  run (no UE5.8 compiler available). One real, worth-naming subtlety this item got right rather than
+  silently wrong: `ResidentSetManager` is a `TUniquePtr<FSolarOrbzChunkResidentSetManager>` to a type
+  only forward-declared in the actor's header, so the actor's destructor is explicitly declared and
+  defined out-of-line in the `.cpp` (where the full type is visible) rather than left implicit - an
+  implicitly-generated destructor instantiated from a context that only sees the forward declaration
+  would fail to compile against an incomplete type.
+  **With this item, every piece of the "Phase 1, continued" checklist exists and is wired together** -
+  see "Known, deliberately out of scope for this pass" immediately below for exactly what that does
+  and does not mean in practice (it does NOT mean compiled, run, or rendered even once).
 
 **Known, deliberately out of scope for this pass** (do not assume these are solved):
 
@@ -457,21 +490,27 @@ blocking Phase 1's icosphere-chunk-generation work starting in SolarOrbz itself 
   for any Heightmap/Stamp layer sampling via UV. Rare in practice (most chunks are far from the seam),
   but real; same fix shape as the whole-sphere mesh's (duplicate/offset U per-triangle) would apply
   per-chunk, not implemented yet.
-- **No baking/Nanite path, no ASN_MK1 integration, and still no OWNING ACTOR driving any of this.**
-  Point-location (item 1), the LOD policy (item 2), the unrestricted residency walk (item 3), the
-  restricted-quadtree fixpoint (item 4), the resident-set diff/lifecycle manager (item 5), and skirts
-  (item 6) above all exist now - `FSolarOrbzChunkResidentSetManager` can genuinely spawn/despawn real
-  `UProceduralMeshComponent`s for a given viewer position, and `FSolarOrbzChunkSkirtBuilder` can hide
-  the resulting LOD-boundary cracks - but nothing yet calls either one: item 7
-  (`AASolarOrbzChunkedPlanetActor` to own an update cadence and actually call `UpdateResidentSet` on
-  a timer/interval, with its generated chunks' mesh data run through `AppendSkirts` before being fed
-  to the resident-set manager) doesn't exist yet, so there is still no in-game path that actually
-  streams chunks in or out today. Also note item 4's own deliberate scope limit: it enforces the
-  1-level restriction across ordinary edges only, not at the 12 pentagon vertices' corner-fan case
-  (see that item's own write-up for the measured bound this rests on); item 5's own: no collision on
-  streamed chunks yet, and no per-chunk spawn budget for a large viewer jump; and item 6's own: flat,
-  non-distance-aware `SkirtDepth`, and winding that's only as confirmed as `GenerateChunk`'s own
-  (i.e. not confirmed at all without a renderer).
+- **The whole "Phase 1, continued" checklist (items 1-7) is now wired together end to end, but
+  "wired together" still means "never compiled, run, or rendered" - that gap is real, not a
+  formality.** `AASolarOrbzChunkedPlanetActor` ties point-location, the LOD policy, the residency
+  walk, the restricted-quadtree fixpoint, the resident-set diff/lifecycle manager, and skirts into an
+  actual in-game update loop - but every engine-dependent piece in that chain (the actor itself, the
+  resident-set manager, every `UProceduralMeshComponent`/`NewObject`/timer call anywhere in it) has
+  been checked only by careful reading against this project's own established patterns and Unreal's
+  documented APIs, never by actually building and pressing Play. The first real playtest is very
+  likely to surface something this reading-only review missed - that is the expected, normal cost of
+  building an entire subsystem without access to a compiler, not a sign anything here was done
+  carelessly. Treat "exists and is wired up" and "known to work" as two different claims throughout
+  this whole section. Specific known gaps on top of that general caveat: item 4's own deliberate
+  scope limit (1-level restriction across ordinary edges only, not the 12 pentagon vertices' corner-
+  fan case - see that item's own write-up for the measured bound this rests on); item 5's own (no
+  collision on streamed chunks yet, no per-chunk spawn budget for a large viewer jump); item 6's own
+  (flat, non-distance-aware `SkirtDepth`, and winding that's only as confirmed as `GenerateChunk`'s
+  own - i.e. not confirmed at all without a renderer); and item 7's own
+  (`BiomeStack`/`ClimateSimulation`/`Profile` held but not yet forwarded into chunk generation, no
+  frame-spread/async dispatch of a single `UpdateResidentSet` call). Still no baking/Nanite path and
+  no ASN_MK1 integration - both remain genuinely separate, not-yet-started pieces of work, not
+  blocked on anything above.
 - **Triangulation winding is UNVERIFIED** - written without a compiler or renderer.
   `FSolarOrbzIcoSphereChunkGenerator::GenerateChunk`'s within-chunk grid triangulation applies the same
   "swap the last two corners" empirical fix `FSolarOrbzIcoSphereGenerator::FixUVSeamsAndFinalize`

@@ -6,6 +6,7 @@
 #include "SolarOrbzChunkResidencyWalk.h"
 #include "SolarOrbzChunkRestrictedQuadtree.h"
 #include "SolarOrbzChunkLODPolicy.h"
+#include "SolarOrbzChunkSkirtBuilder.h"
 #include "ProceduralMeshComponent.h"
 #include "GameFramework/Actor.h"
 #include "Components/SceneComponent.h"
@@ -18,13 +19,15 @@ FSolarOrbzChunkResidentSetManager::FSolarOrbzChunkResidentSetManager(
 	const USolarOrbzTerrainLayerStack* InTerrainStack,
 	const FSolarOrbzClimateGrid* InClimateGridForMasking,
 	int32 InChunkResolution,
-	UMaterialInterface* InMaterial)
+	UMaterialInterface* InMaterial,
+	double InSkirtDepth)
 	: OwningActor(InOwningActor)
 	, Radius(InRadius)
 	, TerrainStack(InTerrainStack)
 	, ClimateGridForMasking(InClimateGridForMasking)
 	, ChunkResolution(InChunkResolution)
 	, Material(InMaterial)
+	, SkirtDepth(InSkirtDepth)
 {
 }
 
@@ -101,10 +104,14 @@ void FSolarOrbzChunkResidentSetManager::UpdateResidentSet(const FVector& ViewerW
 	// ================================================================================================
 	// GenerateChunk takes no AActor/UObject/UWorld reference (see its own header comment) - safe to
 	// ParallelFor across ToSpawn exactly the way ASolarOrbzIcoSphereActor::RegenerateMesh's own Pass
-	// A/B loops already parallelize pure per-vertex work in SolarOrbzIcoSphere.cpp. MeshDataForSpawn
-	// is indexed 1:1 with ToSpawn (MeshDataForSpawn[i] is ToSpawn[i]'s generated mesh) - each
-	// ParallelFor iteration writes only to its own index, so there is no shared mutable state between
-	// iterations and no UProceduralMeshComponent is created, touched, or even referenced in here.
+	// A/B loops already parallelize pure per-vertex work in SolarOrbzIcoSphere.cpp.
+	// FSolarOrbzChunkSkirtBuilder::AppendSkirts is likewise pure (no UObject/engine access - see its
+	// own header) and is run immediately after GenerateChunk, still inside the same parallel
+	// iteration, so every spawned chunk's mesh data already has its skirt geometry by the time Phase
+	// 2 below ever sees it. MeshDataForSpawn is indexed 1:1 with ToSpawn (MeshDataForSpawn[i] is
+	// ToSpawn[i]'s generated-and-skirted mesh) - each ParallelFor iteration writes only to its own
+	// index, so there is no shared mutable state between iterations and no UProceduralMeshComponent
+	// is created, touched, or even referenced in here.
 	TArray<FSolarOrbzIcoSphereMeshData> MeshDataForSpawn;
 	MeshDataForSpawn.SetNum(ToSpawn.Num());
 
@@ -117,6 +124,8 @@ void FSolarOrbzChunkResidentSetManager::UpdateResidentSet(const FVector& ViewerW
 			TerrainStack,
 			ClimateGridForMasking,
 			MeshDataForSpawn[Index]);
+
+		FSolarOrbzChunkSkirtBuilder::AppendSkirts(ChunkResolution, SkirtDepth, MeshDataForSpawn[Index]);
 	});
 
 	// ================================================================================================
