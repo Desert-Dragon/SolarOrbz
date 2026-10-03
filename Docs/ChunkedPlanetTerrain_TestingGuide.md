@@ -78,17 +78,20 @@ Right-click in the Content Browser → `Blueprint Class` → search for
 Why a Blueprint and not just placing the C++ class directly: every property on this
 actor is `EditAnywhere`, so you *can* configure a raw placed instance directly in the
 level's Details panel — but a Blueprint subclass gives you **Class Defaults** you can
-tweak once and have every level instance inherit, and more importantly lets you add
-a couple of small, test-only conveniences without touching C++ at all:
+tweak once and have every level instance inherit, and room to add one small,
+test-only convenience without touching C++:
 
-- An **Event Graph** node wired to a key press (e.g. `F5`) calling
-  `Update Chunks Now` — faster than finding the button in the Details panel while
-  PIE has focus, and works even if the Details panel isn't visible.
 - A **Timeline or simple Tick** moving `ViewerWorldPositionOverride` smoothly toward
   and away from the surface, if you want a repeatable "approach and retreat" motion
   for §3.2 without having to manually drag a vector field every few seconds. (Not
   required — manual dragging works fine too — but handy if you end up re-running
   this stage a lot.)
+
+The manual "force an update right now" control lives on the debug *pawn* instead
+(§1.4) — only Pawns/PlayerControllers receive input by default in UE5.8's Enhanced
+Input system, and this actor isn't a Pawn, so binding input directly on it would mean
+extra, unnecessary setup (`Auto Receive Input` plus its own Input Mapping Context)
+for a control the pawn can already provide by calling across to this actor.
 
 Drag one instance of `BP_ChunkedPlanetTest` into `L_ChunkedPlanetTest`. This is the
 instance you'll be editing throughout §2–§3.
@@ -138,43 +141,83 @@ Create a Blueprint subclass of `SpectatorPawn` (or `DefaultPawn`, either is fine
 `SpectatorPawn` has no collision, which is convenient given §0's reminder that the
 planet itself has none yet either) named `BP_ChunkDebugPawn`.
 
-In its Event Graph:
+In its Event Graph, exact nodes and pins (UE5.8 uses Enhanced Input by default — see
+§1.5 for the Input Action/Mapping Context assets this references):
 
-1. **On `BeginPlay`**: `Get All Actors Of Class` (`BP_ChunkedPlanetTest`) → store the
-   first result in a variable, e.g. `TargetPlanet` (object reference, type
-   `AASolarOrbzChunkedPlanetActor`). This is how the pawn finds "the" planet in a
-   test level that should only ever have one.
-2. **On `Event Tick`** (or, to reduce on-screen spam, a `Retriggerable Delay` loop
-   firing every 0.25–0.5s instead): call `Get Resident Chunk Count` on
-   `TargetPlanet`, and `Print String` it to screen (`Print to Screen` = true,
-   `Duration` ≈ the tick/delay interval so it doesn't visibly flicker, a fixed
-   `Text Color` so it's easy to spot). Also print `Get Actor Location` (this pawn's
-   own position) alongside it — correlating "where am I" with "how many chunks
-   exist right now" is the fastest way to notice when streaming has stopped
-   reacting to movement.
-3. **Bind a key** (`Input → Action Mappings`, see §1.5) to call
-   `Update Chunks Now` on `TargetPlanet` directly from the pawn — useful for forcing
-   an immediate recompute without waiting on `UpdateIntervalSeconds`, especially
-   while deliberately holding still at a boundary for §3.2's thrashing check.
-4. Optional but worth the five minutes: bind two more keys that nudge
-   `TargetPlanet → ViewerWorldPositionOverride` directly (if `bUseViewerWorldPositionOverride`
-   is true) by a fixed small step toward/away from the surface along whatever axis
-   you're testing on — gives you precise, repeatable single-step control for
-   straddling a split/merge boundary in §3.2, instead of trying to hover a mouse-
-   dragged flying camera exactly on a knife edge.
+1. **`Event BeginPlay`** does two things, chained one after the other (order between
+   them doesn't matter, they don't depend on each other):
+   - **Activate the input mapping** (needed once, so `Started`/`Triggered` events
+     fire at all from the mapping context built in §1.5): `Get Controller` (pure,
+     `Target` implicit self) → `Cast To PlayerController` (`Object` = `Get Controller`'s
+     output; exec continues on success, `Cast Failed` otherwise) → `Get Local Player`
+     (pure, `Target` = `As Player Controller`) → `Get Enhanced Input Local Player
+     Subsystem` (pure, `Target` = `Get Local Player`'s output) → **`Add Mapping
+     Context`** (exec node — `Target` = the subsystem, `Mapping Context` =
+     `IMC_ChunkDebug`, `Priority` = `0`).
+   - **Locate the planet**: `Get All Actors Of Class` (exec node, `Actor Class` =
+     `BP_ChunkedPlanetTest`, output `Out Actors` — an array) → `Get` (pure array
+     node, `Index` = `0`, takes `Out Actors`, outputs the first `Actor`) →
+     `Cast To BP_ChunkedPlanetTest` (`Object` = that `Get` node's output; exec
+     continues on success) → `Set TargetPlanet` (a new Object Reference variable,
+     type `AASolarOrbzChunkedPlanetActor` — value = `As BP Chunked Planet Test`).
+     This is how the pawn finds "the" planet in a test level that should only ever
+     have one.
+2. **`Event Tick`** (or, to reduce on-screen spam, a `Retriggerable Delay` loop —
+   `In`/`Duration` in, `Completed` exec out, wired back into its own `In` to repeat
+   every 0.25–0.5s): `Get Resident Chunk Count` (exec node, `Target` = `TargetPlanet`,
+   output `Return Value` — an `Int`) → `Print String` (`In String` = that `Return
+   Value` — UE4.27+/5.x auto-inserts a `Conv_IntToString` conversion node the moment
+   you drag the `Int` pin onto `Print String`'s `FString` input, so you don't build
+   that conversion by hand; `Print to Screen` = `true`, `Duration` ≈ the tick/delay
+   interval so it doesn't visibly flicker) → `Get Actor Location` (exec node,
+   `Target` implicit self, output `Return Value` — a `Vector`) → a second
+   `Print String` (`In String` = that `Vector`, same auto-inserted
+   `Conv_VectorToString`). Correlating "where am I" with "how many chunks exist
+   right now" is the fastest way to notice when streaming has stopped reacting to
+   movement.
+3. **`IA_ForceChunkUpdate`** (an `Enhanced Input Action Event` node, `Action` =
+   the `IA_ForceChunkUpdate` asset from §1.5) → its `Started` exec output (fires
+   once on press, unlike `Triggered` which fires every frame held) →
+   `Update Chunks Now` (exec node, `Target` = `TargetPlanet`) — forces an immediate
+   recompute without waiting on `UpdateIntervalSeconds`, especially useful while
+   deliberately holding still at a boundary for §3.2's thrashing check.
+4. Optional but worth the five minutes: two more Input Actions (e.g.
+   `IA_NudgeViewerIn`/`IA_NudgeViewerOut`) whose `Started` pins each feed
+   `Get TargetPlanet` → `Get Viewer World Position Override` (pure getter) →
+   a vector `+`/`-` node adding a small fixed offset → `Set Viewer World Position
+   Override` (`Target` = `TargetPlanet`, only meaningful while
+   `bUseViewerWorldPositionOverride` is true) — gives you precise, repeatable
+   single-step control for straddling a split/merge boundary in §3.2, instead of
+   trying to hover a mouse-dragged flying camera exactly on a knife edge.
 
 Set `L_ChunkedPlanetTest`'s World Settings → `Default Pawn Class` to
 `BP_ChunkDebugPawn` (or just manually possess one placed in the level) so PIE drops
 you into it automatically.
 
-### 1.5 Input bindings
+### 1.5 Input bindings (Enhanced Input — UE5.8's default, not the legacy Action Mappings system)
 
-In `Project Settings → Engine → Input → Action Mappings`, add whatever you bound in
-§1.4 — e.g. an action named `ForceChunkUpdate` bound to `F5`. (If your project
-already has a fly-camera speed control bound via the default `SpectatorPawn`
-behavior — scroll wheel or comma/period cycles through its built-in speed steps —
-you don't need to rebuild that; it's stock engine behavior on `SpectatorPawn`
-already, mentioned here only so you don't duplicate it.)
+UE5.8 projects use the Enhanced Input plugin by default, not the older
+`Project Settings → Engine → Input → Action Mappings` list — that legacy system
+still technically works, but Enhanced Input is what new projects actually use, so
+that's what §1.4's graphs are built against. Two new assets, both plain
+right-click-in-Content-Browser creates:
+
+1. **`IA_ForceChunkUpdate`** — right-click → `Input` → `Input Action`. Leave
+   `Value Type` at its default (`Digital (bool)` — a plain pressed/released signal
+   is all this needs).
+2. If you added §1.4 step 4's optional nudge controls, two more the same way:
+   `IA_NudgeViewerIn` / `IA_NudgeViewerOut` (also `Digital (bool)`).
+3. **`IMC_ChunkDebug`** — right-click → `Input` → `Input Mapping Context`. Open it,
+   add a mapping for each Input Action above to a key (e.g. `IA_ForceChunkUpdate` →
+   `F5`).
+4. This is the `Mapping Context` §1.4 step 1's `Add Mapping Context` node activates
+   at `BeginPlay` — without that call, the keys you bound here do nothing, since
+   creating the mapping context asset alone doesn't register it with anything.
+
+(If your project already has a fly-camera speed control bound via the default
+`SpectatorPawn` behavior — scroll wheel or comma/period cycles through its built-in
+speed steps — you don't need to rebuild that; it's stock engine behavior on
+`SpectatorPawn` already, mentioned here only so you don't duplicate it.)
 
 ---
 
