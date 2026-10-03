@@ -132,6 +132,73 @@ Phased plan, in order - **do not start Phase 2 before Phase 1 is proven to work*
 3. **Phase 3 (optional, only if Phase 2 isn't enough): Nanite-enabled chunk bakes**, per "Where Nanite
    actually fits" above, once chunk generation itself is fast and correct.
 
+## Phase 1, continued: the streaming/residency manager (plan, nothing built yet)
+
+Everything above this point answers "what is chunk X, and what's next to it." Nothing yet answers
+"which chunks should exist right now, and what happens as the viewer moves" - that's this piece. Plan
+only below; see the checklist for build order. Each numbered subsystem is written up so it can be
+built and verified independently, same discipline as addressing/generation/neighbor-finding above -
+anything non-trivial (point-location, the LOD-restriction fixpoint) gets a Python ground-truth check
+before any C++ is written, not after.
+
+1. **Point-location: "which chunk contains this world direction?"** Doesn't exist yet, and the
+   streaming manager can't decide anything without it - it needs to know where the viewer actually is
+   in chunk-space before it can pick a resident set. Shape: a point-in-spherical-triangle test to find
+   which of the 20 base faces contains a given unit direction, then the same test recursively against
+   each of the 4 children (via `GetChildren`'s corners) to descend to a target depth, or until a
+   caller-supplied "stop here" predicate (the LOD policy below) says this node is fine as a leaf.
+2. **LOD policy: "what depth should a given chunk be, for a viewer at this position?"** A pure
+   function, no engine/actor dependencies - given a chunk's approximate world-space size (radius *
+   angular span at its depth) and distance from the viewer to the chunk (nearest point or centroid is
+   fine for Phase 1), decide split/stay. Doesn't need to be perfect - directionally correct (closer or
+   bigger-on-screen => deeper) is enough to prove the architecture; tuning the exact threshold is a
+   later pass once something is actually on screen to look at.
+3. **Quadtree residency walk (unrestricted).** Starting from the 20 roots, recursively apply the LOD
+   policy: split while it says to, stop (this is a candidate resident leaf) when it doesn't, hard-stop
+   at `FSolarOrbzChunkAddress::MaxDepth` regardless. Produces a naive desired leaf-set with no
+   constraint on how much neighboring leaves' depths can differ yet.
+4. **Restricted-quadtree fixpoint (the actual reason `GetEdgeNeighbor` got built first).** Real-time
+   terrain LOD systems universally cap how much a resident chunk's depth can differ from its
+   neighbors' (usually 1 level) - skip this and the seam-hiding step below has to handle arbitrarily
+   large cracks instead of always-one-level ones, which is a much harder problem. Pass: for every
+   candidate leaf, check its 3 edge-neighbors (`GetEdgeNeighbor`) and its corners' pentagon-vertex
+   neighbors where applicable (`GetPentagonVertexNeighbors` - decide during implementation whether
+   Phase 1 actually needs the vertex-fan case enforced, or whether skirts alone make it moot); if a
+   neighbor is shallower by more than 1 level, force-split it (which may itself now violate the
+   constraint against ITS OWN neighbors - iterate to a fixpoint, same as every other implementation of
+   this well-known constraint).
+5. **Resident-set diffing + chunk lifecycle.** Keep a map of currently-resident
+   `FSolarOrbzChunkAddress -> UProceduralMeshComponent`. Each update: recompute the desired leaf-set
+   (1-4 above), diff against what's currently resident, spawn newly-needed chunks
+   (`FSolarOrbzIcoSphereChunkGenerator::GenerateChunk`, `ParallelFor`'d across the newly-needed set the
+   same way `ASolarOrbzIcoSphereActor::RegenerateMesh` now parallelizes its own per-vertex work),
+   despawn/destroy no-longer-needed ones, leave unchanged chunks alone (this should be the common case
+   once the viewer stops moving - don't regenerate chunks that don't need it).
+6. **Skirts, not true edge-stitching, for Phase 1's seam hiding.** With neighbor depth capped to a
+   1-level difference, the remaining crack at every differing-LOD edge is small and bounded - the
+   standard cheap fix (used broadly in terrain engines) is a "skirt": extend each chunk's boundary
+   vertices inward/downward by a fixed amount so any gap is hidden by a near-vertical wall instead of
+   showing through. Real vertex-welding (actually matching densities across the edge) is more correct
+   and explicitly deferred - skirts first, because they're simple, proven, and don't block anything
+   else in this list.
+7. **`AASolarOrbzChunkedPlanetActor` (new, parallel to `ASolarOrbzIcoSphereActor`, not a replacement).**
+   Owns the same kind of references the preview actor does (Radius, `TerrainStack`/`BiomeStack`/
+   `ClimateSimulation`/`Profile`), plus a registered viewer (a camera manager reference, or just an
+   explicit world position for Phase 1 testing) and an interval-driven (not necessarily every-tick -
+   residency doesn't need to recompute every frame) update calling into 1-6 above.
+
+**Explicitly out of scope for this piece, same as everything else in this doc** - don't assume any of
+these are solved once the above lands:
+- Real vertex-stitching across differing-LOD edges (skirts only, see item 6).
+- Any per-chunk budget/prioritization for spawning many chunks in one update (a sudden large viewer
+  jump - e.g. teleport, not just normal flight - could request many chunks at once; a frame-budget/
+  queue system is real future work, not built here).
+- Floating-origin/world-rebasing at true planetary distances - inherited from `ASolarOrbzIcoSphereActor`
+  itself (see its own header), not solved or worsened by this piece.
+- Baking/Nanite (Phase 3) and compute-shader generation (Phase 2) - unchanged from the phasing above.
+- ASN_MK1 integration - still next, see below, now genuinely blocked on this piece existing first
+  rather than on SolarOrbz work.
+
 ## ASN_MK1 integration (not yet started)
 
 `all-systems-nominal`'s `AASNPlanetActor`/`UASNPlanetGravityComponent` currently assume a planet is

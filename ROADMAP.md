@@ -251,8 +251,12 @@ commitment or a schedule - just a place these don't get lost between sessions.
   finder (`FSolarOrbzChunkAddress::GetEdgeNeighbor` - exhaustively verified outside the engine, depths
   0-6/all 20 faces/every edge, 327,660+ cases with zero failures, against a brute-force first attempt
   that was caught wrong and discarded - see the design doc's revision notes); neither lookup is yet
-  wired into any actual seam-stitching; no
-  streaming/LOD-seam handling/baking/ASN_MK1 integration yet. See
+  wired into any actual seam-stitching. **Next up (planned, not built): the streaming/residency
+  manager** - point-location (which chunk contains a given world direction), an LOD policy, the
+  restricted-quadtree (max 1-level neighbor difference) fixpoint pass using `GetEdgeNeighbor`,
+  resident-chunk spawn/despawn, skirts for seam-hiding, and a new `AASolarOrbzChunkedPlanetActor` to
+  own all of it - see the design doc's own "Phase 1, continued" section for the full checklist. Still
+  no baking/ASN_MK1 integration yet. See
   `Docs/ChunkedPlanetTerrain.md` for the full design, the phased CPU-first-then-GPU-compute plan, and
   the explicit list of what's deliberately not built yet - don't start the GPU-compute phase before
   the CPU-chunked streaming architecture is proven out.
