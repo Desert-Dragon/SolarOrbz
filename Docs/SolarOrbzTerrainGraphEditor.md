@@ -1,10 +1,14 @@
 # SolarOrbz Terrain Graph Editor — Design
 
-**Status: design + Phase 1 (data model) only. No graph UI exists yet - double-clicking a
+**Status: Phase 1 (data model) implemented. No graph UI exists yet - double-clicking a
 `USolarOrbzTerrainLayerStack` asset still opens the generic property editor until Phase 2 lands.**
 Written without a UE5.8 compiler available (see every other SolarOrbz doc's standing caveat) -
-`UAssetDefinition`/`GetMipImage`-class facts below were checked against current documentation before
-being written as fact, per this repo's own UE5.8-specific documentation standard (`CLAUDE.md`).
+`UAssetDefinition`/`GetMipImage`/`UEdGraph`-class facts below were checked against current
+documentation before being written as fact, per this repo's own UE5.8-specific documentation
+standard (`CLAUDE.md`); Phase 1's code (`SolarOrbzTerrainGraph.h`/`.cpp`) is therefore at this
+repo's "review-only" verification bar - checked by careful reading against those documented APIs,
+not compiled or run, same as `AASolarOrbzChunkedPlanetActor`/`FSolarOrbzChunkResidentSetManager` in
+the chunked-terrain work.
 
 ## Why this exists
 
@@ -53,36 +57,47 @@ expose it meaningfully, and that's a bigger, separate design question, not a gra
 
 ## Architecture, phased
 
-### Phase 1 - data model (this pass)
+### Phase 1 - data model (implemented, `SolarOrbzTerrainGraph.h`/`.cpp` + additions to
+`SolarOrbzTerrainLayers.h`/`.cpp`)
 
-- `FGuid USolarOrbzTerrainLayer::EditorNodeId` (new field on the existing base class, lazily
-  generated via an accessor - does not affect `GetRawHeight`/`Bake`/anything evaluation-related).
+- `FGuid USolarOrbzTerrainLayer::EditorNodeId` (new field on the existing base class) +
+  `EnsureEditorNodeId()` (lazily assigns a new Guid if not already valid) - does not affect
+  `GetRawHeight`/`Bake`/anything evaluation-related.
 - `TMap<FGuid, FVector2D> USolarOrbzTerrainLayerStack::EditorNodePositions` (new field, editor-only
-  layout memory).
+  layout memory) and `TObjectPtr<USolarOrbzTerrainGraph> USolarOrbzTerrainLayerStack::TerrainGraph`
+  (new field, `Transient, DuplicateTransient`) + `GetOrCreateTerrainGraph()` (builds/returns it,
+  calling `RebuildFromLayers()` on first access).
 - `USolarOrbzTerrainGraphNode : UEdGraphNode` - ONE generic node class, not one subclass per layer
   type. It owns a direct reference to the real layer instance from `Layers` (`UPROPERTY()
   TObjectPtr<USolarOrbzTerrainLayer> Layer` - the SAME object, not a copy, so editing the node's
   properties via the Details panel edits the real asset data with no sync step needed), exposes one
   Height-In and one Height-Out pin (except the fixed Start/Output sentinel nodes), and its title/
-  tooltip are derived from the wrapped layer's class (`GetDisplayNameText`/the class's own
-  `DisplayName` meta, e.g. "Noise Layer", "Heightmap Layer" - already defined on every concrete
-  layer class today). This is also why adding a brand new `USolarOrbzTerrainLayer` subclass later
-  needs ZERO new graph-side code - the "Add Node" menu (Phase 2) enumerates layer subclasses via
-  reflection, not a hardcoded list.
-- `USolarOrbzTerrainGraphSchema : UEdGraphSchema` - enforces the chain shape (Height-In accepts
-  exactly one connection, Height-Out connects to exactly one neighbor's Height-In, no other pin
-  types exist in this graph).
-- `USolarOrbzTerrainGraph : UEdGraph` - owned transiently by the stack asset
-  (`UPROPERTY(Transient, DuplicateTransient) TObjectPtr<USolarOrbzTerrainGraph> TerrainGraph` on
-  `USolarOrbzTerrainLayerStack`, built on first access, never serialized). Two directions:
-  - `RebuildFromLayers()` - walks `Layers` in order, creates one `USolarOrbzTerrainGraphNode` per
-    entry (reusing `EditorNodePositions` for layout, defaulting to an evenly-spaced row for any
-    layer with no saved position yet - e.g. a stack authored before this existed), wires them in a
-    chain between the fixed Start/Output nodes.
+  tooltip are derived from the wrapped layer's class (`UClass::GetDisplayNameText()`, which reads
+  the class's own `DisplayName` meta, e.g. "Noise Layer", "Heightmap Layer" - already defined on
+  every concrete layer class today). This is also why adding a brand new `USolarOrbzTerrainLayer`
+  subclass later needs ZERO new graph-side code - the "Add Node" menu (Phase 2) enumerates layer
+  subclasses via reflection, not a hardcoded list.
+- `USolarOrbzTerrainGraphSchema : UEdGraphSchema` - overrides `CanCreateConnection` to enforce the
+  chain shape: a Height-In/Height-Out pin connects to exactly one neighbor, and dragging a new wire
+  onto a pin that already has one replaces it (`CONNECT_RESPONSE_BREAK_OTHERS_A/B/AB`) rather than
+  allowing a second - the same posture Blueprint's own K2 schema takes with input pins.
+- `USolarOrbzTerrainGraph : UEdGraph` - owned transiently by the stack asset (see
+  `TerrainGraph`/`GetOrCreateTerrainGraph()` above), built on first access, never serialized. Two
+  directions:
+  - `RebuildFromLayers()` - discards whatever nodes the graph currently has, then walks `Layers` in
+    order, creates one `USolarOrbzTerrainGraphNode` per entry (reusing `EditorNodePositions` for
+    layout, defaulting to an evenly-spaced row for any layer with no saved position yet - e.g. a
+    stack authored before this existed), wires them in a chain between the fixed Start/Output nodes.
   - `CompileToLayers()` - walks the chain from Start to Output, writes the visited nodes' `Layer`
     references into `Layers` in that order (this is what actually "applies" a reorder/add/remove
     made in the graph back onto the real asset data) and snapshots each visited node's current
     canvas position into `EditorNodePositions`.
+
+Nothing calls `GetOrCreateTerrainGraph()` yet - without Phase 2's editor toolkit, this is dead code
+reachable only from C++/the future editor, not from anything a user can trigger today. It compiles
+against documented UE5.8 `UEdGraph`/`UEdGraphNode`/`UEdGraphSchema` APIs (Engine module, already a
+`SolarOrbz.Build.cs` dependency - no Build.cs change was needed for this phase) but has not been run
+in-editor, per the review-only bar noted above.
 
 ### Phase 2 - the actual editor UI (not started)
 
@@ -115,7 +130,8 @@ expose it meaningfully, and that's a bigger, separate design question, not a gra
 
 ## Known limitations / out of scope for this pass
 
-- No graph UI yet - Phase 1 only. A stack asset still opens the generic editor until Phase 2 lands.
+- No graph UI yet - Phase 1 (data model) only. A stack asset still opens the generic editor until
+  Phase 2 lands, and nothing calls `GetOrCreateTerrainGraph()` today.
 - `UEdGraph`/`UEdGraphNode`/`SGraphEditor`-class code is engine-dependent UObject/Slate machinery,
   the same "review-only" verification bar as `AASolarOrbzChunkedPlanetActor`/
   `FSolarOrbzChunkResidentSetManager` in the chunked-terrain work - there is no Python-equivalent

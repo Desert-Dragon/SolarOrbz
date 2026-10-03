@@ -6,6 +6,7 @@
 #include "SolarOrbzBiomeSystem.h"
 #include "SolarOrbzLatLongGrid.h"
 #include "SolarOrbzProfiles.h"
+#include "SolarOrbzTerrainGraph.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogSolarOrbzErosion, Log, All);
 DEFINE_LOG_CATEGORY_STATIC(LogSolarOrbzTerrace, Log, All);
@@ -19,6 +20,16 @@ DEFINE_LOG_CATEGORY_STATIC(LogSolarOrbzNoise, Log, All);
 // ================================================================================================
 // USolarOrbzTerrainLayerStack
 // ================================================================================================
+USolarOrbzTerrainGraph* USolarOrbzTerrainLayerStack::GetOrCreateTerrainGraph()
+{
+	if (!TerrainGraph)
+	{
+		TerrainGraph = NewObject<USolarOrbzTerrainGraph>(this, NAME_None, RF_Transient);
+		TerrainGraph->RebuildFromLayers(this);
+	}
+	return TerrainGraph;
+}
+
 void USolarOrbzTerrainLayerStack::ApplyPlanetaryContext(const USolarOrbzPlanetProfile* Profile, float SeaLevelCm) const
 {
 	CachedSeaLevelCmForMasking = SeaLevelCm;

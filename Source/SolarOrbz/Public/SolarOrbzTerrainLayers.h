@@ -9,6 +9,7 @@
 #include "CoreMinimal.h"
 #include "UObject/Object.h"
 #include "Templates/Function.h"
+#include "Misc/Guid.h"
 #include "Engine/DataAsset.h"
 #include "SolarOrbzIcoSphere.h"
 #include "SolarOrbzTerrainLayers.generated.h"
@@ -16,6 +17,7 @@
 class UTexture2D;
 class USolarOrbzPlanetProfile;
 class USolarOrbzBiomeMask;
+class USolarOrbzTerrainGraph;
 
 // ================================================================================================
 // ESolarOrbzTerrainBlendMode / USolarOrbzTerrainLayer - the base class every layer below derives
@@ -122,6 +124,26 @@ public:
 	 * @param UV             The mesh's spherical UV at this point (matches FSolarOrbzIcoSphereMeshData::UVs).
 	 */
 	virtual float GetRawHeight(const FVector& UnitDirection, const FVector2D& UV) const { return 0.0f; }
+
+	/**
+	 * Stable identity for the Terrain Graph Editor only (see Docs/SolarOrbzTerrainGraphEditor.md) -
+	 * "which saved node position belongs to which layer", so a saved layout survives reordering/
+	 * inserting/removing layers in a way a plain array index would not. Never read by GetRawHeight/
+	 * Bake/ApplyPlanetaryContext/anything evaluation-related. Invalid (FGuid::IsValid() == false)
+	 * until EnsureEditorNodeId() is called - a freshly-created layer (e.g. a default-constructed
+	 * Instanced entry, or one added via the graph's future "Add Node" menu) has no id yet.
+	 */
+	UPROPERTY()
+	FGuid EditorNodeId;
+
+	/** Assigns a new Guid if EditorNodeId isn't already valid. Safe to call repeatedly - a no-op once assigned. */
+	void EnsureEditorNodeId()
+	{
+		if (!EditorNodeId.IsValid())
+		{
+			EditorNodeId = FGuid::NewGuid();
+		}
+	}
 };
 
 // ================================================================================================
@@ -141,6 +163,34 @@ class SOLARORBZ_API USolarOrbzTerrainLayerStack : public UPrimaryDataAsset
 public:
 	UPROPERTY(EditAnywhere, Instanced, Category = "SolarOrbz|Terrain")
 	TArray<TObjectPtr<USolarOrbzTerrainLayer>> Layers;
+
+	/**
+	 * Editor-only layout memory for the Terrain Graph Editor (see
+	 * Docs/SolarOrbzTerrainGraphEditor.md) - keyed by each layer's EditorNodeId, not array index, so
+	 * a saved node arrangement survives reordering/inserting/removing layers. Everything else about
+	 * the graph (which nodes exist, their order, their properties) is already fully determined by
+	 * Layers itself and needs no separate storage here.
+	 */
+	UPROPERTY()
+	TMap<FGuid, FVector2D> EditorNodePositions;
+
+	/**
+	 * Transient view over Layers for the Terrain Graph Editor - built on first access by
+	 * GetOrCreateTerrainGraph(), never serialized, never read by EvaluateHeight/Bake/
+	 * ApplyPlanetaryContext/anything evaluation-related (only Layers is).
+	 */
+	UPROPERTY(Transient, DuplicateTransient)
+	TObjectPtr<USolarOrbzTerrainGraph> TerrainGraph;
+
+	/**
+	 * Returns the transient Terrain Graph Editor view over Layers, building and populating it via
+	 * USolarOrbzTerrainGraph::RebuildFromLayers() on first call. Does NOT refresh an already-built
+	 * graph on subsequent calls - call TerrainGraph->RebuildFromLayers(this) directly to force a
+	 * refresh (e.g. after something outside the graph itself changed Layers). Never read by
+	 * EvaluateHeight/Bake/ApplyPlanetaryContext/anything evaluation-related - Layers remains the only
+	 * thing those ever see.
+	 */
+	USolarOrbzTerrainGraph* GetOrCreateTerrainGraph();
 
 	/**
 	 * Call once per regenerate, before PrepareLayers() - forwards Profile and Sea Level to every
