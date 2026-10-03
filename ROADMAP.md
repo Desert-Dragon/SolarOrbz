@@ -247,7 +247,11 @@ commitment or a schedule - just a place these don't get lost between sessions.
   superseded an earlier cube-sphere-based version, see the design doc's revision note) written, plus
   the pentagon-vertex ("5-valent") neighbor lookup for the 12 permanently-5-valent base icosahedron
   vertices (`FSolarOrbzChunkAddress::IsAnchoredAtOriginalVertex`/`GetPentagonVertexNeighbors` - checked
-  independently against the real 20-face table, not yet wired into any actual seam-stitching); no
+  independently against the real 20-face table), plus the general (valence-6) same-depth edge-neighbor
+  finder (`FSolarOrbzChunkAddress::GetEdgeNeighbor` - exhaustively verified outside the engine, depths
+  0-6/all 20 faces/every edge, 327,660+ cases with zero failures, against a brute-force first attempt
+  that was caught wrong and discarded - see the design doc's revision notes); neither lookup is yet
+  wired into any actual seam-stitching; no
   streaming/LOD-seam handling/baking/ASN_MK1 integration yet. See
   `Docs/ChunkedPlanetTerrain.md` for the full design, the phased CPU-first-then-GPU-compute plan, and
   the explicit list of what's deliberately not built yet - don't start the GPU-compute phase before

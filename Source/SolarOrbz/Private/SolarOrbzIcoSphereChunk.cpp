@@ -7,6 +7,160 @@
 
 DEFINE_LOG_CATEGORY_STATIC(LogSolarOrbzChunk, Log, All);
 
+// ================================================================================================
+// GetEdgeNeighbor's lookup tables - see that function's own header comment for how these were
+// derived and verified (exhaustively, against real geodesic positions, outside the engine). Kept in
+// this anonymous namespace since nothing outside GetEdgeNeighbor itself should need them directly.
+// ================================================================================================
+namespace
+{
+	// For child index 0-3 and one of its edges: true if that edge is INTERNAL (shared with a
+	// specific sibling within the same 4-way split, not the parent) - OutSiblingChild/OutSiblingEdge
+	// name that sibling and which of ITS OWN edges is the same physical edge (always the OPPOSITE
+	// 2-point order - i.e. "direction-reversed" relative to this child's naming of it, same as every
+	// other internal transition verified; GetEdgeNeighbor's caller flips its accumulated "which end"
+	// flags on every internal match for exactly this reason, not just on a cross-base-face jump).
+	bool TryGetInternalNeighbor(int32 ChildIndex, ESolarOrbzChunkEdge Edge, int32& OutSiblingChild, ESolarOrbzChunkEdge& OutSiblingEdge)
+	{
+		switch (ChildIndex)
+		{
+		case 0:
+			if (Edge == ESolarOrbzChunkEdge::BC) { OutSiblingChild = 3; OutSiblingEdge = ESolarOrbzChunkEdge::CA; return true; }
+			break;
+		case 1:
+			if (Edge == ESolarOrbzChunkEdge::BC) { OutSiblingChild = 3; OutSiblingEdge = ESolarOrbzChunkEdge::AB; return true; }
+			break;
+		case 2:
+			if (Edge == ESolarOrbzChunkEdge::BC) { OutSiblingChild = 3; OutSiblingEdge = ESolarOrbzChunkEdge::BC; return true; }
+			break;
+		case 3:
+			if (Edge == ESolarOrbzChunkEdge::AB) { OutSiblingChild = 1; OutSiblingEdge = ESolarOrbzChunkEdge::BC; return true; }
+			if (Edge == ESolarOrbzChunkEdge::BC) { OutSiblingChild = 2; OutSiblingEdge = ESolarOrbzChunkEdge::BC; return true; }
+			if (Edge == ESolarOrbzChunkEdge::CA) { OutSiblingChild = 0; OutSiblingEdge = ESolarOrbzChunkEdge::BC; return true; }
+			break;
+		default:
+			break;
+		}
+		return false;
+	}
+
+	// For a corner child (0,1,2 - a center child's edges are always internal, never boundary) and
+	// one of its two boundary edges: which of the PARENT's 3 edges it's half of, and whether it's the
+	// half nearer the parent edge's FIRST or SECOND named endpoint (AB=(A,B), BC=(B,C), CA=(C,A), in
+	// that order - "first"/"second" refers to position in that pair).
+	bool TryGetBoundaryParentEdge(int32 ChildIndex, ESolarOrbzChunkEdge Edge, ESolarOrbzChunkEdge& OutParentEdge, bool& bOutNearFirst)
+	{
+		switch (ChildIndex)
+		{
+		case 0:
+			if (Edge == ESolarOrbzChunkEdge::AB) { OutParentEdge = ESolarOrbzChunkEdge::AB; bOutNearFirst = true; return true; }
+			if (Edge == ESolarOrbzChunkEdge::CA) { OutParentEdge = ESolarOrbzChunkEdge::CA; bOutNearFirst = false; return true; }
+			break;
+		case 1:
+			if (Edge == ESolarOrbzChunkEdge::AB) { OutParentEdge = ESolarOrbzChunkEdge::BC; bOutNearFirst = true; return true; }
+			if (Edge == ESolarOrbzChunkEdge::CA) { OutParentEdge = ESolarOrbzChunkEdge::AB; bOutNearFirst = false; return true; }
+			break;
+		case 2:
+			if (Edge == ESolarOrbzChunkEdge::AB) { OutParentEdge = ESolarOrbzChunkEdge::CA; bOutNearFirst = true; return true; }
+			if (Edge == ESolarOrbzChunkEdge::CA) { OutParentEdge = ESolarOrbzChunkEdge::BC; bOutNearFirst = false; return true; }
+			break;
+		default:
+			break;
+		}
+		return false;
+	}
+
+	// Inverse of TryGetBoundaryParentEdge: given a parent edge + which end, which child touches it and
+	// which of THAT CHILD's own edges is the continuation (needed if descent continues another level).
+	void GetDescendChild(ESolarOrbzChunkEdge ParentEdge, bool bNearFirst, int32& OutChild, ESolarOrbzChunkEdge& OutChildEdge)
+	{
+		switch (ParentEdge)
+		{
+		case ESolarOrbzChunkEdge::AB:
+			if (bNearFirst) { OutChild = 0; OutChildEdge = ESolarOrbzChunkEdge::AB; }
+			else { OutChild = 1; OutChildEdge = ESolarOrbzChunkEdge::CA; }
+			break;
+		case ESolarOrbzChunkEdge::BC:
+			if (bNearFirst) { OutChild = 1; OutChildEdge = ESolarOrbzChunkEdge::AB; }
+			else { OutChild = 2; OutChildEdge = ESolarOrbzChunkEdge::CA; }
+			break;
+		default: // CA
+			if (bNearFirst) { OutChild = 2; OutChildEdge = ESolarOrbzChunkEdge::AB; }
+			else { OutChild = 0; OutChildEdge = ESolarOrbzChunkEdge::CA; }
+			break;
+		}
+	}
+
+	struct FSolarOrbzFaceEdgeCrossing
+	{
+		int32 OtherFace = INDEX_NONE;
+		int32 OtherEdgeIndex = INDEX_NONE;
+	};
+
+	// Builds, once, the 20x3 table of "which other face/edge is across this face's edge E" from
+	// GetBaseIcosahedron's own data - not a hardcoded magic table, so it can't drift from the vertex/
+	// face data it's derived from. Every one of the 30 shared edges is traversed in OPPOSITE vertex
+	// order by its two faces (checked here, not assumed) - an expected property of any consistently
+	// outward-wound closed triangle mesh, which is exactly what BuildBaseIcosahedron's RawFaces is.
+	const TArray<FSolarOrbzFaceEdgeCrossing>& GetFaceEdgeCrossingTable()
+	{
+		static const TArray<FSolarOrbzFaceEdgeCrossing> Table = []()
+		{
+			TArray<FVector> BaseVertices;
+			TArray<FIntVector> BaseFaces;
+			FSolarOrbzIcoSphereGenerator::GetBaseIcosahedron(BaseVertices, BaseFaces);
+
+			auto PairKey = [](int32 A, int32 B) -> uint64
+			{
+				const int32 Lo = FMath::Min(A, B), Hi = FMath::Max(A, B);
+				return (((uint64)Lo) << 32) | (uint32)Hi;
+			};
+
+			// key -> list of (face, edge index, directed first vertex, directed second vertex)
+			TMap<uint64, TArray<TTuple<int32, int32, int32, int32>>> EdgeOwners;
+			for (int32 Face = 0; Face < BaseFaces.Num(); ++Face)
+			{
+				const FIntVector& F = BaseFaces[Face];
+				const int32 Verts[3] = { F.X, F.Y, F.Z };
+				for (int32 E = 0; E < 3; ++E)
+				{
+					const int32 Va = Verts[E];
+					const int32 Vb = Verts[(E + 1) % 3];
+					EdgeOwners.FindOrAdd(PairKey(Va, Vb)).Add(MakeTuple(Face, E, Va, Vb));
+				}
+			}
+
+			TArray<FSolarOrbzFaceEdgeCrossing> Result;
+			Result.SetNum(BaseFaces.Num() * 3);
+			for (int32 Face = 0; Face < BaseFaces.Num(); ++Face)
+			{
+				const FIntVector& F = BaseFaces[Face];
+				const int32 Verts[3] = { F.X, F.Y, F.Z };
+				for (int32 E = 0; E < 3; ++E)
+				{
+					const int32 Va = Verts[E];
+					const int32 Vb = Verts[(E + 1) % 3];
+					const TArray<TTuple<int32, int32, int32, int32>>& Owners = EdgeOwners[PairKey(Va, Vb)];
+					checkf(Owners.Num() == 2, TEXT("SolarOrbz Chunk: base icosahedron edge (%d,%d) touched by %d faces, expected exactly 2."), Va, Vb, Owners.Num());
+
+					const TTuple<int32, int32, int32, int32>& OtherEntry = (Owners[0].Get<0>() == Face) ? Owners[1] : Owners[0];
+					const int32 OtherVa = OtherEntry.Get<2>();
+					const int32 OtherVb = OtherEntry.Get<3>();
+					checkf(OtherVa == Vb && OtherVb == Va,
+						TEXT("SolarOrbz Chunk: base icosahedron edge (%d,%d) shared by faces %d/%d in the SAME direction - expected always reversed for a consistently-wound closed mesh."),
+						Va, Vb, Face, OtherEntry.Get<0>());
+
+					Result[Face * 3 + E] = { OtherEntry.Get<0>(), OtherEntry.Get<1>() };
+				}
+			}
+
+			return Result;
+		}();
+
+		return Table;
+	}
+}
+
 FSolarOrbzChunkAddress FSolarOrbzChunkAddress::GetParent() const
 {
 	if (Depth <= 0)
@@ -165,6 +319,88 @@ bool FSolarOrbzChunkAddress::GetPentagonVertexNeighbors(FSolarOrbzPentagonVertex
 	}
 
 	return true;
+}
+
+void FSolarOrbzChunkAddress::GetEdgeNeighbor(ESolarOrbzChunkEdge Edge, FSolarOrbzChunkAddress& OutNeighbor) const
+{
+	int32 WorkDepth = Depth;
+	uint64 WorkPathBits = PathBits;
+	ESolarOrbzChunkEdge CurEdge = Edge;
+	int32 CurFace = BaseFaceIndex;
+
+	// "Near first"/"near second" flags collected while ascending, outermost-last (i.e. in the order
+	// we ascended) - applied in reverse (outermost-first) while descending back down. Flipped
+	// wholesale on every internal-sibling match AND every cross-face jump, both of which were
+	// verified to always reverse the edge's traversal direction (see this function's header comment).
+	TArray<bool> AscendFlagsNearFirst;
+
+	int32 RefDepth = INDEX_NONE;
+	uint64 RefPathBits = 0;
+
+	for (;;)
+	{
+		if (WorkDepth <= 0)
+		{
+			const FSolarOrbzFaceEdgeCrossing& Crossing = GetFaceEdgeCrossingTable()[CurFace * 3 + (int32)CurEdge];
+			CurFace = Crossing.OtherFace;
+			CurEdge = (ESolarOrbzChunkEdge)Crossing.OtherEdgeIndex;
+			for (int32 i = 0; i < AscendFlagsNearFirst.Num(); ++i)
+			{
+				AscendFlagsNearFirst[i] = !AscendFlagsNearFirst[i];
+			}
+			RefDepth = 0;
+			RefPathBits = 0;
+			break;
+		}
+
+		const int32 LastChild = (int32)((WorkPathBits >> (2 * (WorkDepth - 1))) & 0x3);
+
+		int32 SiblingChild;
+		ESolarOrbzChunkEdge SiblingEdge;
+		if (TryGetInternalNeighbor(LastChild, CurEdge, SiblingChild, SiblingEdge))
+		{
+			const uint64 ParentBits = (WorkDepth > 1) ? (WorkPathBits & ((uint64(1) << (2 * (WorkDepth - 1))) - 1)) : 0;
+			RefDepth = WorkDepth;
+			RefPathBits = ParentBits | (((uint64)SiblingChild) << (2 * (WorkDepth - 1)));
+			CurEdge = SiblingEdge;
+			for (int32 i = 0; i < AscendFlagsNearFirst.Num(); ++i)
+			{
+				AscendFlagsNearFirst[i] = !AscendFlagsNearFirst[i];
+			}
+			break;
+		}
+
+		ESolarOrbzChunkEdge ParentEdge;
+		bool bNearFirst;
+		if (!TryGetBoundaryParentEdge(LastChild, CurEdge, ParentEdge, bNearFirst))
+		{
+			// Unreachable: every (child, edge) combination is either internal or boundary.
+			checkf(false, TEXT("SolarOrbz Chunk: GetEdgeNeighbor - child %d edge %d matched neither internal nor boundary."), LastChild, (int32)CurEdge);
+			OutNeighbor = *this;
+			return;
+		}
+
+		AscendFlagsNearFirst.Add(bNearFirst);
+		WorkDepth -= 1;
+		WorkPathBits = (WorkDepth > 0) ? (WorkPathBits & ((uint64(1) << (2 * WorkDepth)) - 1)) : 0;
+		CurEdge = ParentEdge;
+	}
+
+	int32 ResultDepth = RefDepth;
+	uint64 ResultPathBits = RefPathBits;
+	for (int32 i = AscendFlagsNearFirst.Num() - 1; i >= 0; --i)
+	{
+		int32 ChildToDescend;
+		ESolarOrbzChunkEdge ChildEdge;
+		GetDescendChild(CurEdge, AscendFlagsNearFirst[i], ChildToDescend, ChildEdge);
+		ResultPathBits |= ((uint64)ChildToDescend) << (2 * ResultDepth);
+		ResultDepth += 1;
+		CurEdge = ChildEdge;
+	}
+
+	checkf(ResultDepth == Depth, TEXT("SolarOrbz Chunk: GetEdgeNeighbor produced depth %d, expected %d."), ResultDepth, Depth);
+
+	OutNeighbor = FSolarOrbzChunkAddress(CurFace, ResultDepth, ResultPathBits);
 }
 
 void FSolarOrbzIcoSphereChunkGenerator::GenerateChunk(

@@ -21,6 +21,20 @@
 class USolarOrbzTerrainLayerStack;
 struct FSolarOrbzClimateGrid;
 
+/**
+ * Names a chunk's 3 edges using GetCornerUnitDirections' own corner order (AB = between OutA and
+ * OutB, etc.) - the same naming FSolarOrbzIcoSphereGenerator::SubdivideOnce's child-split comments
+ * already use. Ordinal values (0,1,2) are used directly as an edge INDEX in a couple of internal
+ * lookup tables - keep that order if this ever needs touching.
+ */
+UENUM(BlueprintType)
+enum class ESolarOrbzChunkEdge : uint8
+{
+	AB,
+	BC,
+	CA,
+};
+
 /** Result of FSolarOrbzChunkAddress::GetPentagonVertexNeighbors - see that function's own comment. */
 struct SOLARORBZ_API FSolarOrbzPentagonVertexNeighbors
 {
@@ -114,6 +128,38 @@ struct SOLARORBZ_API FSolarOrbzChunkAddress
 	 * later once the general (valence-6) neighbor system already exists and assumes 6 everywhere.
 	 */
 	bool GetPentagonVertexNeighbors(FSolarOrbzPentagonVertexNeighbors& OutNeighbors) const;
+
+	/**
+	 * General same-depth edge-neighbor finding - "the chunk across this edge", for any edge at any
+	 * depth, crossing a base-face boundary via the icosahedron's own edge adjacency when needed. This
+	 * is the piece GetPentagonVertexNeighbors above explicitly deferred (that one only covers the 12
+	 * original vertices; this covers every ordinary edge, including ones that happen to touch a
+	 * pentagon vertex at one endpoint - the EDGE itself is still an ordinary 2-chunk boundary even
+	 * when one of its endpoints is 5-valent).
+	 *
+	 * Algorithm: walk up the quadtree from this chunk while Edge keeps landing on a "boundary" side
+	 * (shared with the parent, not a sibling) - see SubdivideOnce's child-split comment for which of
+	 * each child's 3 edges are internal (shared with a specific sibling) vs boundary (half of a
+	 * parent edge). Once the edge resolves to either a direct sibling match or the base-face root
+	 * (crossing to the adjacent face via its own matching edge, always reversed-direction - verified
+	 * directly against GetBaseIcosahedron's table, not assumed), walk back down picking, at each
+	 * level, whichever child sits on the same side of the (possibly now-relabeled) edge.
+	 *
+	 * Exhaustively verified outside the engine against this struct's own GetCornerUnitDirections (the
+	 * authoritative, already-shipped geodesic position function) before being written here: every
+	 * (face, depth, path, edge) combination for depths 0-6 across all 20 base faces (327,660+ cases)
+	 * confirmed the returned neighbor shares exactly 2 of its 3 corners with the query chunk, plus
+	 * randomized spot checks to depth 20 - see Docs/ChunkedPlanetTerrain.md's revision notes. Written
+	 * without a UE5.8 compiler available, same standing caveat as everything else in this plugin -
+	 * the ALGORITHM itself was checked rigorously; this specific C++ transcription of it was not run.
+	 *
+	 * @param Edge  Which of this chunk's 3 edges to find the neighbor across.
+	 * @param OutNeighbor  The same-depth chunk sharing that edge. Always succeeds (every edge at
+	 *                     every depth has exactly one same-depth neighbor in this topology) - no
+	 *                     bool return, unlike GetPentagonVertexNeighbors which can legitimately not
+	 *                     apply to a given chunk.
+	 */
+	void GetEdgeNeighbor(ESolarOrbzChunkEdge Edge, FSolarOrbzChunkAddress& OutNeighbor) const;
 };
 
 /**

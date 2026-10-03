@@ -65,11 +65,18 @@ second, independent geometric basis:
   `GetPentagonVertexNeighbors` (see "What's actually built so far" below) resolve, for a chunk whose own
   corner sits exactly at one of the 12 points, the other same-depth chunks (one per other base face)
   sharing it - verified independently against the real 20-face table (all 12 vertices confirmed
-  touched by exactly 5 faces, both the simple all-same-slot case and a mixed-slot case). Still not
-  wired into any actual seam-stitching (no general, valence-6 neighbor-finding exists yet either - see
-  "known out of scope" below) - this is the special-case primitive the general system will need to
-  call, built first so it isn't discovered/reverse-engineered after the general system already assumes
-  6 everywhere.
+  touched by exactly 5 faces, both the simple all-same-slot case and a mixed-slot case). **The general
+  (valence-6, non-pentagon) edge-neighbor finder now exists too** -
+  `FSolarOrbzChunkAddress::GetEdgeNeighbor`, exhaustively verified (depths 0-6, every base face, every
+  edge - 327,660+ cases, zero failures) against this struct's own already-shipped
+  `GetCornerUnitDirections` before being ported to C++; see "What's actually built so far" below for
+  how a first attempt at this (another flat-grid shortcut) was caught failing and discarded the same
+  way the cube-sphere topology itself was. Pentagon-vertex chunks are still correctly handled by
+  `GetEdgeNeighbor` for their EDGES (an edge touching a 5-valent vertex at one endpoint is still an
+  ordinary 2-chunk boundary) - `GetPentagonVertexNeighbors` answers a different question ("every chunk
+  touching this exact point," useful for the vertex-fan case seam-stitching will eventually need, not
+  just edge-by-edge continuity). Neither is wired into any actual seam-stitching yet - see "known out
+  of scope" below.
 
 ## Where Nanite actually fits
 
@@ -170,20 +177,51 @@ blocking Phase 1's icosphere-chunk-generation work starting in SolarOrbz itself 
   and a mixed-slot case where they don't) - see the commit history for the verification script; all 12
   vertices confirmed exactly 5-valent, both test shapes matched by hand. **Lookup only** - nothing
   consumes this yet to actually stitch geometry.
+- **`FSolarOrbzChunkAddress::GetEdgeNeighbor`** (the general, non-pentagon edge-neighbor finder,
+  `SolarOrbzIcoSphereChunk.h/.cpp`) - "the same-depth chunk across this edge," for any edge at any
+  depth, crossing a base-face boundary via `GetBaseIcosahedron`'s own data when needed. Standard
+  quadtree neighbor-finding (Samet-style ascend-to-a-resolvable-ancestor, then descend back down),
+  generalized to a triangular 4-child (3 corner + 1 center) split instead of a square one.
+  - **A first attempt at this failed, and that failure is worth recording.** The first design tried a
+    flat `(Row, Column, Up/Down-orientation)` grid addressing scheme instead of a path - modeled on
+    how the (now-abandoned) cube-sphere version addressed chunks - specifically to get O(1) neighbor
+    arithmetic instead of a recursive walk. Brute-force verification against this struct's own
+    `GetCornerUnitDirections` caught that it was wrong: this project's actual subdivision
+    (`SubdivideOnce`, and `GetCornerUnitDirections`) re-normalizes onto the sphere at **every** split
+    level, while a flat grid only interpolates once across the root corners - the two agree exactly
+    through depth 1, then silently diverge. Caught before being committed; nothing broken was ever
+    shipped.
+  - **The actual, shipped algorithm works directly on `PathBits`**, no parallel coordinate system.
+    Every (child index, edge) combination is either **internal** (shared with one specific sibling
+    within the same 4-way split - e.g. a corner child's "BC" edge is always shared with the center
+    child) or **boundary** (half of the parent's corresponding edge, nearer one specific parent
+    corner). Ascending while the edge keeps resolving as boundary, then descending back down once it
+    resolves to a sibling (or the base-face root, requiring a cross-face jump via
+    `GetBaseIcosahedron`'s edge-adjacency), finds the same-depth neighbor. One non-obvious thing the
+    first few iterations got wrong and brute-force verification caught each time: **both an
+    internal-sibling match and a cross-face jump reverse the edge's traversal direction** (confirmed
+    directly - every one of the 30 shared base-face edges is traversed in opposite vertex order by its
+    two faces, and every corner-child/center-child internal pairing likewise faces opposite ways) -
+    miss flipping the accumulated "which side" bookkeeping at either kind of transition and the
+    descent lands one sibling off from the real answer.
+  - **Verification: exhaustive, not spot-checked, before any of this was ported to C++.** Every
+    `(base face, depth, path, edge)` combination for depths 0-6 across all 20 base faces (327,660+
+    cases) checked that the computed neighbor shares exactly 2 of its 3 corners with the query chunk,
+    using this struct's own already-shipped `GetCornerUnitDirections` as ground truth - zero failures.
+    Random spot checks extended that to depth 20 (300 cases per depth, also zero failures). The C++
+    lookup tables were then cross-checked entry-by-entry against the verified Python source before
+    being treated as done. Same standing caveat as everything else in this plugin: the *algorithm* was
+    checked rigorously outside the engine; this specific C++ transcription of it has not been compiled
+    or run.
 
 **Known, deliberately out of scope for this pass** (do not assume these are solved):
 
-- **No neighbor/LOD-seam stitching yet**, still - the pentagon-vertex lookup above is the special-case
-  primitive that kind of stitching will need, not the stitching itself. Two adjacent chunks at different
-  quadtree depths will show a visible crack/T-junction where their edge vertex densities don't match - a
-  well-known, well-solved problem (skirts, edge morphing, or simply never letting neighboring resident
-  chunks differ by more than one LOD level), just not implemented here. Don't stream mixed-LOD neighbors
-  in yet.
-- **No general (valence-6, non-pentagon) neighbor-finding either.** Finding "the chunk across this edge"
-  for an ordinary interior or base-face-boundary edge needs its own table (which of the 30 shared edges
-  between the 20 base faces connects to which, and in what orientation/flip) - not built yet, and not
-  the same problem `GetPentagonVertexNeighbors` solves (that one is specifically about the 12 vertices,
-  not edges in general).
+- **No neighbor/LOD-seam stitching yet.** `GetPentagonVertexNeighbors` and `GetEdgeNeighbor` above are
+  both lookup primitives - nothing yet consumes either to actually stitch geometry. Two adjacent
+  chunks at different quadtree depths will show a visible crack/T-junction where their edge vertex
+  densities don't match - a well-known, well-solved problem (skirts, edge morphing, or simply never
+  letting neighboring resident chunks differ by more than one LOD level), just not implemented here.
+  Don't stream mixed-LOD neighbors in yet.
 - **Distortion is a smaller concern here than the cube-sphere version had, but not zero.** Barycentric
   interpolation across a base triangle's 3 corners, re-normalized per vertex, is the same kind of
   geodesic subdivision `SubdivideOnce` already performs for the whole mesh - a long-established,
