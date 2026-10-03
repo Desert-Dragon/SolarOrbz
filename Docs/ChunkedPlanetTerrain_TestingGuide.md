@@ -111,9 +111,13 @@ Create a new Material, `M_SolarOrbz_WindingDebug`:
    node palette — it's a built-in Unreal material expression that outputs `1.0` for
    a face Unreal is rendering as "front" and `-1.0` for one it's rendering as
    "back," which is exactly the frontface/backface distinction winding controls).
-3. Remap that from `[-1, 1]` to `[0, 1]`: `Add` 1.0, then `Multiply` by 0.5 (or just
-   use a `Lerp` node directly with `Two Sided Sign` as Alpha — Unreal will clamp/
-   remap sensibly either way, but the explicit remap is clearer to read later).
+3. Remap that from `[-1, 1]` to `[0, 1]` with a **`Remap Value Range`** node
+   (`UMaterialExpressionRemapValueRange`, present in UE5.8's node palette — search
+   "Remap"): `Input Range Min` = `-1`, `Input Range Max` = `1`, `Target Range Min`
+   = `0`, `Target Range Max` = `1`. (Equivalent to chaining `Add` 1.0 then
+   `Multiply` 0.5 by hand, or just feeding `Two Sided Sign` straight into a `Lerp`'s
+   Alpha and letting Unreal's own clamping sort it out — `Remap Value Range` is the
+   single node that does it explicitly, so use that one.)
 4. Feed that into a `Lerp` between two `Constant3Vector` colors — green (e.g.
    `(0, 1, 0)`) for Alpha = 1 (front), red (e.g. `(1, 0, 0)`) for Alpha = 0 (back).
 5. Plug the `Lerp` output into **Emissive Color**.

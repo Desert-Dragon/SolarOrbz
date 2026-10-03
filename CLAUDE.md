@@ -1,5 +1,22 @@
 # Working notes for Claude Code on this repo
 
+## Engine target: UE5.8
+
+The user builds this project against **UE5.8** specifically (not "UE5" generically).
+Write all documentation — testing/playtest guides, design docs, Artifacts, editor
+instructions — oriented to that exact version:
+
+- State editor steps, node names, and menu paths as fact for UE5.8, not hedged
+  ("if your version has this node"). Verify a specific claim (e.g. "this node
+  exists," "this API's signature is...") with a web search before writing it as
+  fact if not already confirmed earlier in the session, rather than guessing or
+  carrying a generic cross-version hedge forward out of caution.
+- If something genuinely did change across versions in a way that matters (a node
+  renamed, an API deprecated), say so explicitly and say what UE5.8 actually uses
+  — don't silently write the old/generic version.
+- This doesn't block writing something that's also true of other engine versions;
+  it just means don't hedge or genericize when a UE5.8-specific fact is checkable.
+
 ## Subsystem documentation gets mirrored as an Artifact
 
 Whenever a substantive subsystem doc gets created or meaningfully updated —
