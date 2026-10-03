@@ -408,6 +408,34 @@ blocking Phase 1's icosphere-chunk-generation work starting in SolarOrbz itself 
   actually stand on streamed terrain will need this revisited. No per-chunk spawn budget/
   prioritization yet either - a single large viewer jump generates and creates every newly-needed
   chunk in one `UpdateResidentSet` call, however many that is.
+- **`FSolarOrbzChunkSkirtBuilder::AppendSkirts`** (Phase 1, continued, item 6 -
+  `SolarOrbzChunkSkirtBuilder.h/.cpp`, new files) - "extend each chunk's boundary vertices inward by
+  a fixed amount so the remaining small/bounded crack at a differing-LOD edge (now capped to 1 level
+  by item 4) is hidden by a near-vertical wall instead of showing through." A pure, ADDITIVE
+  post-process on an already-generated chunk's `FSolarOrbzIcoSphereMeshData` - does not touch
+  `GenerateChunk` itself, does not need a chunk's address/corners, only the mesh data plus the same
+  `Resolution` value it was generated at (re-deriving, not re-exporting, `GenerateChunk`'s own
+  `PointIndex(I,J) = I*(I+1)/2 + J` triangular-grid indexing to identify the 3 ordered boundary vertex
+  lists: AB from `WeightC==0`, BC from `WeightA==0`, CA from `WeightB==0`). Each of the 3 shared
+  corners appears in two of those lists, so a `TMap`-backed lazy-create-or-reuse cache ensures each
+  original boundary vertex gets exactly ONE skirt counterpart (not two, which would leave a gap right
+  at the corner) - new skirt position = original position minus the vertex's own FINAL (already
+  smooth-recomputed) normal times `SkirtDepth`, using the normal rather than the radial-from-center
+  direction so it stays correct once terrain displacement means a vertex isn't exactly on the ideal
+  sphere any more. For each boundary segment, a quad (2 triangles) connects the original edge to its
+  skirt counterpart. This is really an indexing/array-manipulation algorithm wearing mesh-generation
+  clothing, so (unlike item 5's engine-dependent half) MOST of it genuinely is checkable without a
+  compiler: a standalone Python reimplementation was checked across Resolution = 1/2/4/8/16/32 and
+  multiple `SkirtDepth` values including 0.0, against additivity (original arrays byte-for-byte
+  unchanged), exact boundary-vertex count (3×Resolution, confirming no double-count at shared
+  corners), exact new-triangle count (6×Resolution), exact per-vertex skirt-offset distance, no
+  duplicate/orphan skirt vertices (cross-checked against an independently re-derived boundary set),
+  and triangle index validity (in-range, no degenerate/repeated-index triangle) - zero failures at
+  every Resolution/depth combination. The new skirt triangles' winding is picked for internal
+  consistency only and is explicitly NOT independently confirmed correct - the same standing
+  "Winding UNVERIFIED without a renderer" caveat `GenerateChunk`'s own triangles already carry, no
+  more and no less. `SkirtDepth` is a flat caller-chosen constant with no distance/mismatch-aware
+  sizing yet - kept simple for Phase 1, see this item's own design-doc framing.
 
 **Known, deliberately out of scope for this pass** (do not assume these are solved):
 
@@ -431,15 +459,19 @@ blocking Phase 1's icosphere-chunk-generation work starting in SolarOrbz itself 
   per-chunk, not implemented yet.
 - **No baking/Nanite path, no ASN_MK1 integration, and still no OWNING ACTOR driving any of this.**
   Point-location (item 1), the LOD policy (item 2), the unrestricted residency walk (item 3), the
-  restricted-quadtree fixpoint (item 4), and the resident-set diff/lifecycle manager (item 5) above
-  all exist now - `FSolarOrbzChunkResidentSetManager` can genuinely spawn/despawn real
-  `UProceduralMeshComponent`s for a given viewer position - but nothing yet calls it: items 6-7
-  (skirts, and `AASolarOrbzChunkedPlanetActor` to own an update cadence and actually call
-  `UpdateResidentSet` on a timer/interval) don't exist yet, so there is still no in-game path that
-  actually streams chunks in or out today. Also note item 4's own deliberate scope limit: it enforces
-  the 1-level restriction across ordinary edges only, not at the 12 pentagon vertices' corner-fan case
-  (see that item's own write-up for the measured bound this rests on); and item 5's own: no collision
-  on streamed chunks yet, and no per-chunk spawn budget for a large viewer jump.
+  restricted-quadtree fixpoint (item 4), the resident-set diff/lifecycle manager (item 5), and skirts
+  (item 6) above all exist now - `FSolarOrbzChunkResidentSetManager` can genuinely spawn/despawn real
+  `UProceduralMeshComponent`s for a given viewer position, and `FSolarOrbzChunkSkirtBuilder` can hide
+  the resulting LOD-boundary cracks - but nothing yet calls either one: item 7
+  (`AASolarOrbzChunkedPlanetActor` to own an update cadence and actually call `UpdateResidentSet` on
+  a timer/interval, with its generated chunks' mesh data run through `AppendSkirts` before being fed
+  to the resident-set manager) doesn't exist yet, so there is still no in-game path that actually
+  streams chunks in or out today. Also note item 4's own deliberate scope limit: it enforces the
+  1-level restriction across ordinary edges only, not at the 12 pentagon vertices' corner-fan case
+  (see that item's own write-up for the measured bound this rests on); item 5's own: no collision on
+  streamed chunks yet, and no per-chunk spawn budget for a large viewer jump; and item 6's own: flat,
+  non-distance-aware `SkirtDepth`, and winding that's only as confirmed as `GenerateChunk`'s own
+  (i.e. not confirmed at all without a renderer).
 - **Triangulation winding is UNVERIFIED** - written without a compiler or renderer.
   `FSolarOrbzIcoSphereChunkGenerator::GenerateChunk`'s within-chunk grid triangulation applies the same
   "swap the last two corners" empirical fix `FSolarOrbzIcoSphereGenerator::FixUVSeamsAndFinalize`

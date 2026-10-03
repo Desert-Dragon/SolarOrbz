@@ -277,10 +277,14 @@ commitment or a schedule - just a place these don't get lost between sessions.
   (20,004 then another 15,000 fuzzed cases, zero failures both times), plus a real
   `UProceduralMeshComponent` spawn/despawn manager that can actually create and destroy chunk geometry
   for a given viewer position, with mesh generation strictly parallelized separately from game-
-  thread-only component creation); still planned, not built: skirts for seam-hiding, and a new
-  `AASolarOrbzChunkedPlanetActor` to actually own an update cadence and call it - nothing yet wires
-  this up to run in-game - see the design doc's own "Phase 1, continued" section for the full
-  checklist. Still no baking/ASN_MK1 integration yet. See
+  thread-only component creation); skirts for seam-hiding are built too
+  (`FSolarOrbzChunkSkirtBuilder::AppendSkirts` - `SolarOrbzChunkSkirtBuilder.h/.cpp` - a pure,
+  additive post-process appending a thin inward-facing wall along each chunk's 3 boundary edges,
+  checked across 6 Resolution values and multiple skirt depths against additivity/counts/no-
+  duplication/index-validity, zero failures); still planned, not built: a new
+  `AASolarOrbzChunkedPlanetActor` to actually own an update cadence and call all of the above -
+  nothing yet wires this up to run in-game - see the design doc's own "Phase 1, continued" section
+  for the full checklist. Still no baking/ASN_MK1 integration yet. See
   `Docs/ChunkedPlanetTerrain.md` for the full design, the phased CPU-first-then-GPU-compute plan, and
   the explicit list of what's deliberately not built yet - don't start the GPU-compute phase before
   the CPU-chunked streaming architecture is proven out.
