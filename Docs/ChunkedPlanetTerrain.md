@@ -280,6 +280,44 @@ blocking Phase 1's icosphere-chunk-generation work starting in SolarOrbz itself 
     being treated as done. Same standing caveat as everything else in this plugin: the *algorithm* was
     checked rigorously outside the engine; this specific C++ transcription of it has not been compiled
     or run.
+- **`FSolarOrbzChunkPointLocator::FindChunkContainingDirection`** (Phase 1, continued, item 1 -
+  `SolarOrbzChunkPointLocation.h/.cpp`, new files) - "which chunk at depth D contains this world
+  direction?" Point-in-spherical-triangle test (`Dot(Cross(A,B),P) >= 0` on all 3 edges - a single
+  fixed sign works for every triangle this project produces, no opposite-corner comparison needed,
+  since `GetBaseIcosahedron`/`GetCornerUnitDirections` never vary their CCW-from-outside winding) to
+  classify into one of the 20 base faces, then the same test recursively against `GetChildren`'s 4
+  children to descend to the target depth. Boundary ties (a point exactly on a shared edge) resolve by
+  first-match-wins in ascending index order - arbitrary but deterministic, which is all a zero-width
+  boundary needs. Verified independently twice: the implementing agent's own Python ground truth
+  (259,000+ cases: winding-sign check, exhaustive depth-0-5 round-trip, random depth 6-20 sampling,
+  explicit boundary tie-break checks - zero failures), then re-derived and re-checked from scratch
+  again afterward (not reusing the agent's scripts) with a harsher random-interior-point round-trip
+  across depths 0-18 (3,200 cases) plus all 30 shared base-face edge midpoints - zero failures both
+  times. No LOD-aware early-stop yet (always walks to exactly `TargetDepth`) - see its header for why
+  that's deliberately deferred to the LOD policy below.
+- **`FSolarOrbzChunkLODPolicy`** (Phase 1, continued, item 2 - `SolarOrbzChunkLODPolicy.h/.cpp`, new
+  files) - "should this one chunk split (or merge back), for a viewer at this position?" A pure,
+  engine-free function: `(chunk's longest edge) / (nearest of: distance to each of its 3 corners,
+  distance to its centroid re-projected onto the sphere)`, compared against a tunable threshold
+  (`FSolarOrbzChunkLODSettings`, default `SplitScreenSizeRatio = 1.0`). Longest edge (not
+  shortest/average) because a thin sliver chunk near a pentagon vertex still needs splitting if even
+  one edge is huge on screen; nearest-of-corners-and-centroid (not corners alone) because a viewer
+  near the interior of a still-large, still-shallow chunk can be far from all 3 corners yet genuinely
+  close to the surface. Hysteresis via two separate thresholds/functions (`ShouldSplit` at the higher
+  `SplitScreenSizeRatio`, `ShouldMerge` at the lower `MergeScreenSizeRatio = 0.75`) rather than one
+  function compared both ways - the gap between them is what actually stops a chunk sitting at the
+  boundary from flickering every update; a remaining gap (sustained oscillation across that gap over
+  many updates needs per-chunk resident state + an update cadence) is explicitly left for the residency
+  manager (item 5), not solved here. This is a tuned heuristic, not an exact topological claim, so the
+  verification bar is different from the neighbor-finding work above: checked by hand-computed ratios
+  across the realistic range (Earth-like radius, depths 0-24, viewer altitudes from a 400 km orbit down
+  to 1.8 m eye height) confirming the default threshold lands in a sane middle ground (settles at Depth
+  23 standing on the ground, Depth 5 in low orbit - neither "wants MaxDepth with no margin" nor "stays
+  shallow"), re-derived independently afterward against a from-scratch Python port of the exact same
+  formula - every quoted ratio matched to the reported precision, plus monotonicity (ratio strictly
+  increases as viewer approaches a fixed chunk; strictly decreases with depth at a fixed viewer
+  position) held with zero failures across the full practical range. Not wired into any tree walk yet -
+  that's items 3/4.
 
 **Known, deliberately out of scope for this pass** (do not assume these are solved):
 
@@ -301,8 +339,10 @@ blocking Phase 1's icosphere-chunk-generation work starting in SolarOrbz itself 
   for any Heightmap/Stamp layer sampling via UV. Rare in practice (most chunks are far from the seam),
   but real; same fix shape as the whole-sphere mesh's (duplicate/offset U per-triangle) would apply
   per-chunk, not implemented yet.
-- **No streaming manager, no LOD-selection-by-camera-distance, no baking/Nanite path, no ASN_MK1
-  integration.** All of "Phase 1" above beyond the chunk generator itself.
+- **No streaming manager, no baking/Nanite path, no ASN_MK1 integration.** Point-location (item 1) and
+  the LOD policy (item 2) above exist now, but items 3-7 (the actual tree walk, the neighbor-depth
+  restriction, resident-set lifecycle, skirts, and the owning actor) don't yet - neither piece above is
+  wired into anything that streams chunks in or out.
 - **Triangulation winding is UNVERIFIED** - written without a compiler or renderer.
   `FSolarOrbzIcoSphereChunkGenerator::GenerateChunk`'s within-chunk grid triangulation applies the same
   "swap the last two corners" empirical fix `FSolarOrbzIcoSphereGenerator::FixUVSeamsAndFinalize`

@@ -251,9 +251,14 @@ commitment or a schedule - just a place these don't get lost between sessions.
   finder (`FSolarOrbzChunkAddress::GetEdgeNeighbor` - exhaustively verified outside the engine, depths
   0-6/all 20 faces/every edge, 327,660+ cases with zero failures, against a brute-force first attempt
   that was caught wrong and discarded - see the design doc's revision notes); neither lookup is yet
-  wired into any actual seam-stitching. **Next up (planned, not built): the streaming/residency
-  manager** - point-location (which chunk contains a given world direction), an LOD policy, the
-  restricted-quadtree (max 1-level neighbor difference) fixpoint pass using `GetEdgeNeighbor`,
+  wired into any actual seam-stitching. **Streaming/residency manager, in progress**: point-location
+  (`FSolarOrbzChunkPointLocator::FindChunkContainingDirection` - point-in-spherical-triangle descent,
+  verified independently twice outside the engine, 259,000+ then another 3,200+30 cases, zero
+  failures) and the LOD policy (`FSolarOrbzChunkLODPolicy::ShouldSplit`/`ShouldMerge` - longest-edge/
+  nearest-distance ratio with hysteresis, checked against hand-computed depth/distance numbers then
+  independently re-derived, zero discrepancies) are both built now
+  (`SolarOrbzChunkPointLocation.h/.cpp`, `SolarOrbzChunkLODPolicy.h/.cpp`); still planned, not built:
+  the restricted-quadtree (max 1-level neighbor difference) fixpoint pass using `GetEdgeNeighbor`,
   resident-chunk spawn/despawn, skirts for seam-hiding, and a new `AASolarOrbzChunkedPlanetActor` to
   own all of it - see the design doc's own "Phase 1, continued" section for the full checklist. Still
   no baking/ASN_MK1 integration yet. See
