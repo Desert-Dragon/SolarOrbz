@@ -262,9 +262,16 @@ commitment or a schedule - just a place these don't get lost between sessions.
   `SolarOrbzChunkResidencyWalk.h/.cpp` - recursively applies the LOD policy from the 20 base faces to
   produce a naive desired leaf-set; verified twice independently outside the engine, 20,000+ coverage/
   overlap samples and 4,000+ leaves checked for nesting/`MaxDepth` compliance each time, zero
-  failures); still planned, not built: the restricted-quadtree (max 1-level neighbor difference)
-  fixpoint pass using `GetEdgeNeighbor` (the walk's own output can still have arbitrarily large
-  neighbor-depth differences), resident-chunk spawn/despawn, skirts for seam-hiding, and a new
+  failures), and so is the restricted-quadtree fixpoint
+  (`FSolarOrbzChunkRestrictedQuadtree::ApplyNeighborDepthRestriction` -
+  `SolarOrbzChunkRestrictedQuadtree.h/.cpp` - force-splits leaves that are too shallow next to a deep
+  same-depth edge-neighbor via `GetEdgeNeighbor`, the actual reason that function got built first, so
+  no two adjacent leaves differ by more than 1 depth level; deliberately does NOT separately restrict
+  the 12 pentagon vertices' corner-fan case, a measured-not-assumed call - worst observed same-point
+  spread stayed at 2 levels across adversarial tests even without a dedicated pass; verified twice
+  outside the engine, 238,245+ then another 10,737+ (leaf, edge) pairs checked for the neighbor-depth
+  invariant, zero failures both times, tiling re-confirmed with zero gaps/overlaps after fixing up);
+  still planned, not built: resident-chunk spawn/despawn, skirts for seam-hiding, and a new
   `AASolarOrbzChunkedPlanetActor` to own all of it - see the design doc's own "Phase 1, continued"
   section for the full checklist. Still no baking/ASN_MK1 integration yet. See
   `Docs/ChunkedPlanetTerrain.md` for the full design, the phased CPU-first-then-GPU-compute plan, and

@@ -340,7 +340,41 @@ blocking Phase 1's icosphere-chunk-generation work starting in SolarOrbz itself 
   samples across 5 scenarios and 4,435 leaves, again zero gaps/overlaps/nested-pairs/`MaxDepth`
   violations, plus a 4-point monotonicity sweep with zero violations). This is the NAIVE,
   *unrestricted* walk only - two adjacent output leaves can differ by an arbitrary number of depth
-  levels; capping that to 1 level is item 4, next.
+  levels; capping that to 1 level is item 4, below.
+- **`FSolarOrbzChunkRestrictedQuadtree::ApplyNeighborDepthRestriction`** (Phase 1, continued, item 4 -
+  `SolarOrbzChunkRestrictedQuadtree.h/.cpp`, new files) - the standard restricted-quadtree fixpoint
+  (used identically by CDLOD-style terrain LOD systems), and the actual reason `GetEdgeNeighbor` got
+  built before any of this streaming-manager work started. Takes `GatherDesiredLeaves`'s naive,
+  unrestricted output and force-splits whichever leaves are too shallow next to a deep same-depth
+  edge-neighbor until every leaf's 3 edge-neighbors are within 1 depth level of its own. Algorithm: a
+  `TSet<FSolarOrbzChunkAddress>` leaf set plus a FIFO worklist seeded with every leaf; for each popped
+  leaf and each of its 3 edges, `GetEdgeNeighbor` gives the same-depth neighbor address, and
+  `FindCoveringLeafDepth` (a new public helper - walks `GetParent()` upward checking set membership at
+  each step) finds the depth of whichever leaf actually covers that neighbor address today; if that
+  covering leaf is more than 1 level shallower than the chunk asking, it gets force-split into its 4
+  children (regardless of what the LOD policy itself would have wanted there - the restriction can
+  only ever request *more* detail than the raw heuristic, never less, which is the expected and
+  accepted trade for this item), and both the new children and the original leaf are re-queued.
+  Terminates because every split permanently reduces a bounded "depth debt" and `MaxDepth` caps how
+  deep any single region can go. **Pentagon-vertex (5-valent) corners are deliberately NOT given a
+  dedicated restriction pass** - only the 3 ordinary edges (`GetEdgeNeighbor`) are enforced, not
+  `GetPentagonVertexNeighbors`'s corner-fan case; measured directly (not assumed) across several
+  adversarial test inputs including a deliberately extreme 8-level forced mismatch at a pentagon
+  vertex, edge-only restriction already keeps the worst same-point depth spread among the up-to-5
+  wedges at any of the 12 original vertices to 2 levels, never more - judged not worth a dedicated
+  pass given skirts (item 6) need to absorb a point discontinuity anyway and a point mismatch is a far
+  smaller artifact than an edge-long crack. A topological/combinatorial correctness claim, held to the
+  strict bar: verified by the implementing agent (4 adversarial/realistic naive leaf sets including a
+  uniform one-face-vs-rest 6-level and 8-level mismatch, a 5-face checkerboard pattern, and a real
+  `GatherDesiredLeaves`-derived input; 238,245 (leaf, edge) pairs checked for the neighbor-depth
+  invariant with zero failures, a post-fixpoint tiling re-check with zero gaps/overlaps across 9,300
+  samples plus a 34.9M-pair structural nesting check with zero violations, and zero `MaxDepth`
+  overruns) and independently re-verified afterward using a genuinely different method - not a
+  transcription of `GetEdgeNeighbor`'s path-ascend/descend algorithm, but a geometric
+  nudge-across-the-edge-then-point-locate approach built on this project's already-verified point-
+  location machinery - confirming naive inputs really do violate the invariant (264 of 9,216 checked
+  pairs) and that the same fixpoint algorithm, independently implemented, drives it to zero violations
+  (0 of 10,737 pairs) while preserving the tiling property (0 gaps/overlaps across 4,500 samples).
 
 **Known, deliberately out of scope for this pass** (do not assume these are solved):
 
@@ -363,11 +397,12 @@ blocking Phase 1's icosphere-chunk-generation work starting in SolarOrbz itself 
   but real; same fix shape as the whole-sphere mesh's (duplicate/offset U per-triangle) would apply
   per-chunk, not implemented yet.
 - **No streaming manager, no baking/Nanite path, no ASN_MK1 integration.** Point-location (item 1),
-  the LOD policy (item 2), and the unrestricted residency walk (item 3) above exist now, but items 4-7
-  (the neighbor-depth restriction, resident-set lifecycle, skirts, and the owning actor) don't yet -
-  none of the pieces above are wired into anything that actually streams chunks in or out, and the
-  walk's own output can still have arbitrarily large depth differences between adjacent leaves until
-  item 4 lands.
+  the LOD policy (item 2), the unrestricted residency walk (item 3), and the restricted-quadtree
+  fixpoint (item 4) above exist now, but items 5-7 (resident-set lifecycle, skirts, and the owning
+  actor) don't yet - none of the pieces above are wired into anything that actually streams chunks in
+  or out. Also note item 4's own deliberate scope limit: it enforces the 1-level restriction across
+  ordinary edges only, not at the 12 pentagon vertices' corner-fan case (see that item's own write-up
+  for the measured bound this rests on).
 - **Triangulation winding is UNVERIFIED** - written without a compiler or renderer.
   `FSolarOrbzIcoSphereChunkGenerator::GenerateChunk`'s within-chunk grid triangulation applies the same
   "swap the last two corners" empirical fix `FSolarOrbzIcoSphereGenerator::FixUVSeamsAndFinalize`
