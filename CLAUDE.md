@@ -42,6 +42,30 @@ corresponding Artifact version, not just the committed Markdown.
   mirror it only if asked. If this scoping call is wrong, the user will say
   so; adjust from there.
 
+## Editor plugin toolbar/menu entries must use an explicit, unique Name
+
+This plugin's `SolarOrbzEditor.cpp` (`FSolarOrbzModule::RegisterMenus`) registers a toolbar button
+and a `Window` menu entry into Level Editor extension points shared by every other plugin in the
+containing project (`LevelEditor.LevelEditorToolBar.PlayToolBar` → section `PluginTools`, and
+`LevelEditor.MainMenu.Window` → section `WindowLayout`). A real bug (found via hands-on use, not a
+compile error) came from another plugin in that project (`ASNMechLab`, in the sibling
+`all-systems-nominal` repo) sharing two unmodified Epic plugin-template defaults with this one: the
+same placeholder toolbar icon, and - the actual cause of entries *disappearing*, not just looking
+alike - the same command-derived entry Name (`UI_COMMAND`'s internal name is the literal C++
+identifier, e.g. `OpenPluginWindow`; `TCommands`' `BindingContext` does NOT namespace this for
+`FToolMenuEntry` purposes). Two plugins' entries landing on the same implicit Name in the same
+shared section collide silently - whichever module's `RegisterMenus()` happened to run last (module
+load order, not stable across editor sessions) was the only one left visible, in both the toolbar
+and the Window menu at once. See this repo's own `ROADMAP.md` (under "Planetary / World") for the
+full diagnosis, and `all-systems-nominal/Wiki/ASNMechLabEditor.md`'s "Toolbar/Window menu entry
+collisions" section for the other side of it.
+
+Both are already fixed here (`Resources/SolarOrbzButtonIcon.svg`; an explicit
+`FName("SolarOrbz_OpenPluginWindow")` passed at both registration sites). If this module's toolbar/
+menu registration is ever touched again: keep both of those explicit, and never let a toolbar icon
+or an entry Name fall back to an unmodified template default when it shares a Level Editor extension
+point with other plugins - which these two always do.
+
 ### Current doc → Artifact mapping
 
 | Doc | Artifact URL |

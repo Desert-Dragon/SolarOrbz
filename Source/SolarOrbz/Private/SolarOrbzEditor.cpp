@@ -10,7 +10,8 @@
 
 #include "SolarOrbzIcoSphere.h"
 #include "SolarOrbzPlanetSpawnerGraph.h"
-#include "SolarOrbzPlanetCatalogRow.h"
+#include "SolarOrbzTerrainGraph.h"
+#include "SolarOrbzTerrainLayers.h"
 
 #include "LevelEditor.h"
 #include "Widgets/Docking/SDockTab.h"
@@ -21,7 +22,6 @@
 
 #include "Editor.h"
 #include "Engine/World.h"
-#include "Engine/DataTable.h"
 #include "Widgets/SBoxPanel.h"
 #include "Widgets/Layout/SSeparator.h"
 #include "Widgets/Input/SButton.h"
@@ -30,9 +30,7 @@
 #include "GraphEditor.h"
 #include "PropertyEditorModule.h"
 #include "IDetailsView.h"
-#include "PropertyCustomizationHelpers.h"
 #include "Framework/Commands/UICommandList.h"
-#include "AssetRegistry/AssetData.h"
 
 // ================================================================================================
 // FSolarOrbzStyle
@@ -151,6 +149,8 @@ void SSolarOrbzMainPanel::Construct(const FArguments& InArgs)
 	SpawnerGraph.Reset(NewObject<USolarOrbzPlanetSpawnerGraph>(GetTransientPackage(), NAME_None, RF_Transient));
 	SpawnerGraph->BuildFixedLayout();
 
+	SpawnerGraph->AddOnGraphChangedHandler(FOnGraphChanged::FDelegate::CreateSP(this, &SSolarOrbzMainPanel::HandleSpawnerGraphChanged));
+
 	SGraphEditor::FGraphEditorEvents GraphEvents;
 	GraphEvents.OnSelectionChanged = SGraphEditor::FOnSelectionChanged::CreateSP(this, &SSolarOrbzMainPanel::HandleGraphSelectionChanged);
 
@@ -171,36 +171,19 @@ void SSolarOrbzMainPanel::Construct(const FArguments& InArgs)
 		[
 			SNew(SVerticalBox)
 
-			// --- Planet Catalog ---
-			+ SVerticalBox::Slot().AutoHeight()
+			// --- Planet graph toolbar: grows the embedded terrain chain below ---
+			+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 0.0f, 0.0f, 4.0f)
 			[
-				MakeSectionHeader(LOCTEXT("CatalogHeader", "Planet Catalog (optional)"))
-			]
-
-			+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 2.0f)
-			[
-				MakeLabeledRow(LOCTEXT("CatalogTableLabel", "Data Table"),
-					SNew(SObjectPropertyEntryBox)
-					.AllowedClass(UDataTable::StaticClass())
-					.ObjectPath_Lambda([this]() { return CatalogDataTable.IsValid() ? CatalogDataTable->GetPathName() : FString(); })
-					.OnObjectChanged(this, &SSolarOrbzMainPanel::OnCatalogDataTableChanged)
-				)
-			]
-
-			+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 4.0f, 0.0f, 8.0f)
-			[
-				SNew(SComboButton)
-				.IsEnabled_Lambda([this]() { return CatalogDataTable.IsValid(); })
-				.OnGetMenuContent(this, &SSolarOrbzMainPanel::BuildApplyRowMenu)
-				.ButtonContent()
+				SNew(SHorizontalBox)
+				+ SHorizontalBox::Slot().AutoWidth()
 				[
-					SNew(STextBlock).Text(LOCTEXT("ApplyRowButton", "Apply Catalog Row"))
+					SNew(SComboButton)
+					.OnGetMenuContent(this, &SSolarOrbzMainPanel::BuildAddLayerMenu)
+					.ButtonContent()
+					[
+						SNew(STextBlock).Text(LOCTEXT("AddLayerButton", "Add Layer"))
+					]
 				]
-			]
-
-			+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 0.0f, 0.0f, 8.0f)
-			[
-				SNew(SSeparator)
 			]
 
 			// --- Planet module graph + Details ---
@@ -289,42 +272,45 @@ void SSolarOrbzMainPanel::Construct(const FArguments& InArgs)
 	];
 }
 
-void SSolarOrbzMainPanel::OnCatalogDataTableChanged(const FAssetData& NewAssetData)
+TSharedRef<SWidget> SSolarOrbzMainPanel::BuildAddLayerMenu()
 {
-	UDataTable* NewTable = Cast<UDataTable>(NewAssetData.GetAsset());
-	CatalogDataTable.Reset(NewTable);
-	UE_LOG(LogSolarOrbzPlanetSpawner, Log, TEXT("Catalog Data Table set to %s"), NewTable ? *NewTable->GetName() : TEXT("(none)"));
-}
+	TArray<UClass*> LayerClasses;
+	GetDerivedClasses(USolarOrbzTerrainLayer::StaticClass(), LayerClasses, true);
+	// TArray<T*>::Sort wraps the predicate in TDereferenceWrapper, which always dereferences the
+	// pointers before calling it - so the predicate takes the pointee type (UClass&), not UClass*.
+	LayerClasses.Sort([](const UClass& A, const UClass& B)
+	{
+		return A.GetDisplayNameText().CompareTo(B.GetDisplayNameText()) < 0;
+	});
 
-TSharedRef<SWidget> SSolarOrbzMainPanel::BuildApplyRowMenu()
-{
 	TSharedRef<SVerticalBox> MenuBox = SNew(SVerticalBox);
 
-	if (CatalogDataTable.IsValid())
+	for (UClass* LayerClass : LayerClasses)
 	{
-		TArray<FName> RowNames = CatalogDataTable->GetRowNames();
-		for (const FName& RowName : RowNames)
+		if (!LayerClass || LayerClass->HasAnyClassFlags(CLASS_Abstract))
 		{
-			MenuBox->AddSlot()
-				.AutoHeight()
-				.Padding(2.0f)
-				[
-					SNew(SButton)
-					.OnClicked_Lambda([this, RowName]()
-					{
-						ApplyCatalogRow(RowName);
-						return FReply::Handled();
-					})
-					[
-						SNew(STextBlock).Text(FText::FromName(RowName))
-					]
-				];
+			continue;
 		}
 
-		if (RowNames.Num() == 0)
-		{
-			UE_LOG(LogSolarOrbzPlanetSpawner, Warning, TEXT("BuildApplyRowMenu: %s has no rows"), *CatalogDataTable->GetName());
-		}
+		MenuBox->AddSlot()
+			.AutoHeight()
+			.Padding(2.0f)
+			[
+				SNew(SButton)
+				.OnClicked_Lambda([this, LayerClass]()
+				{
+					AddLayerOfClass(LayerClass);
+					return FReply::Handled();
+				})
+				[
+					SNew(STextBlock).Text(LayerClass->GetDisplayNameText())
+				]
+			];
+	}
+
+	if (LayerClasses.Num() == 0)
+	{
+		UE_LOG(LogSolarOrbzPlanetSpawner, Warning, TEXT("BuildAddLayerMenu: GetDerivedClasses found no concrete USolarOrbzTerrainLayer subclasses - the Add Layer menu will be empty"));
 	}
 
 	return SNew(SBox)
@@ -334,66 +320,28 @@ TSharedRef<SWidget> SSolarOrbzMainPanel::BuildApplyRowMenu()
 		];
 }
 
-void SSolarOrbzMainPanel::ApplyCatalogRow(FName RowName)
+void SSolarOrbzMainPanel::AddLayerOfClass(UClass* LayerClass)
 {
-	if (!CatalogDataTable.IsValid() || !SpawnerGraph)
+	if (!SpawnerGraph || !SpawnerGraph->EmbeddedTerrainStack || !LayerClass)
 	{
-		UE_LOG(LogSolarOrbzPlanetSpawner, Warning, TEXT("ApplyCatalogRow: called with no Data Table assigned - ignoring"));
+		UE_LOG(LogSolarOrbzPlanetSpawner, Warning, TEXT("AddLayerOfClass: called with no spawner graph/stack (%d) or a null class (%d) - ignoring"), SpawnerGraph && SpawnerGraph->EmbeddedTerrainStack ? 1 : 0, LayerClass != nullptr);
 		FSlateApplication::Get().DismissAllMenus();
 		return;
 	}
 
-	const FSolarOrbzPlanetCatalogRow* Row = CatalogDataTable->FindRow<FSolarOrbzPlanetCatalogRow>(RowName, TEXT("SSolarOrbzMainPanel::ApplyCatalogRow"));
-	if (!Row)
-	{
-		UE_LOG(LogSolarOrbzPlanetSpawner, Warning, TEXT("ApplyCatalogRow: row %s not found in %s"), *RowName.ToString(), *CatalogDataTable->GetName());
-		FSlateApplication::Get().DismissAllMenus();
-		return;
-	}
+	USolarOrbzTerrainLayerStack* Stack = SpawnerGraph->EmbeddedTerrainStack;
+	Stack->Modify();
 
-	if (USolarOrbzPlanetBaseSphereConfig* BaseSphere = SpawnerGraph->BaseSphereConfig)
-	{
-		BaseSphere->RadiusMeters = Row->RadiusMeters;
-		BaseSphere->VerticesPerMeter = Row->VerticesPerMeter;
-		BaseSphere->MaxSubdivisions = Row->MaxSubdivisions;
-		BaseSphere->bEnablePreviewCollision = Row->bEnablePreviewCollision;
-	}
+	USolarOrbzTerrainLayer* NewLayer = NewObject<USolarOrbzTerrainLayer>(Stack, LayerClass, NAME_None, RF_Transactional);
+	NewLayer->EnsureEditorNodeId();
+	Stack->Layers.Add(NewLayer);
 
-	// Soft refs left unset in the row mean "no override" - skip rather than clear an existing assignment.
-	if (!Row->TerrainStack.IsNull())
-	{
-		if (USolarOrbzPlanetTerrainModule* TerrainModule = SpawnerGraph->TerrainModule)
-		{
-			TerrainModule->TerrainStack = Row->TerrainStack.LoadSynchronous();
-		}
-	}
-	if (!Row->BiomeStack.IsNull())
-	{
-		if (USolarOrbzPlanetBiomeModule* BiomeModule = SpawnerGraph->BiomeModule)
-		{
-			BiomeModule->BiomeStack = Row->BiomeStack.LoadSynchronous();
-		}
-	}
-	if (!Row->ClimateSimulation.IsNull())
-	{
-		if (USolarOrbzPlanetClimateModule* ClimateModule = SpawnerGraph->ClimateModule)
-		{
-			ClimateModule->ClimateSimulation = Row->ClimateSimulation.LoadSynchronous();
-		}
-	}
-	if (!Row->Profile.IsNull())
-	{
-		if (USolarOrbzPlanetProfileModule* ProfileModule = SpawnerGraph->ProfileModule)
-		{
-			ProfileModule->Profile = Row->Profile.LoadSynchronous();
-		}
-	}
+	UE_LOG(LogSolarOrbzPlanetSpawner, Log, TEXT("AddLayerOfClass: added a %s to the embedded terrain chain (now %d layer(s))"), *LayerClass->GetName(), Stack->Layers.Num());
 
-	UE_LOG(LogSolarOrbzPlanetSpawner, Log, TEXT("ApplyCatalogRow: applied row %s from %s"), *RowName.ToString(), *CatalogDataTable->GetName());
-
-	if (DetailsView.IsValid())
+	SpawnerGraph->RebuildEmbeddedTerrainChain();
+	if (GraphEditorWidget.IsValid())
 	{
-		DetailsView->ForceRefresh();
+		GraphEditorWidget->NotifyGraphChanged();
 	}
 
 	FSlateApplication::Get().DismissAllMenus();
@@ -411,14 +359,35 @@ void SSolarOrbzMainPanel::HandleGraphSelectionChanged(const TSet<UObject*>& NewS
 				SelectedConfigs.Add(Node->ModuleConfig);
 			}
 		}
+		else if (USolarOrbzTerrainGraphNode* TerrainNode = Cast<USolarOrbzTerrainGraphNode>(Selected))
+		{
+			if (TerrainNode->Layer)
+			{
+				SelectedConfigs.Add(TerrainNode->Layer);
+			}
+		}
 	}
 
-	UE_LOG(LogSolarOrbzPlanetSpawner, Verbose, TEXT("HandleGraphSelectionChanged: %d node(s) selected, %d editable module(s)"), NewSelection.Num(), SelectedConfigs.Num());
+	UE_LOG(LogSolarOrbzPlanetSpawner, Verbose, TEXT("HandleGraphSelectionChanged: %d node(s) selected, %d editable object(s)"), NewSelection.Num(), SelectedConfigs.Num());
 
 	if (DetailsView.IsValid())
 	{
 		DetailsView->SetObjects(SelectedConfigs);
 	}
+}
+
+void SSolarOrbzMainPanel::HandleSpawnerGraphChanged(const FEdGraphEditAction& Action)
+{
+	if (!SpawnerGraph || SpawnerGraph->IsRebuildingTerrainChain())
+	{
+		// RebuildEmbeddedTerrainChain() itself adds/removes nodes through the normal API, which
+		// broadcasts here too - compiling mid-rebuild would write a half-built chain back into
+		// EmbeddedTerrainStack->Layers. See IsRebuildingTerrainChain()'s own comment.
+		return;
+	}
+
+	UE_LOG(LogSolarOrbzPlanetSpawner, Verbose, TEXT("HandleSpawnerGraphChanged: graph edited, compiling embedded terrain chain"));
+	SpawnerGraph->CompileEmbeddedTerrainChain();
 }
 
 FReply SSolarOrbzMainPanel::OnGenerateClicked()
@@ -461,10 +430,11 @@ FReply SSolarOrbzMainPanel::OnGenerateClicked()
 		Actor->MaxSubdivisions = BaseSphere->MaxSubdivisions;
 		Actor->bEnablePreviewCollision = BaseSphere->bEnablePreviewCollision;
 
-		if (const USolarOrbzPlanetTerrainModule* TerrainModule = SpawnerGraph->TerrainModule)
-		{
-			Actor->TerrainStack = TerrainModule->TerrainStack;
-		}
+		// Defensive: make sure the chain currently shown on the canvas is what gets baked, even if
+		// some edit landed without going through HandleSpawnerGraphChanged (e.g. programmatic change).
+		SpawnerGraph->CompileEmbeddedTerrainChain();
+		Actor->TerrainStack = SpawnerGraph->EmbeddedTerrainStack;
+
 		if (const USolarOrbzPlanetBiomeModule* BiomeModule = SpawnerGraph->BiomeModule)
 		{
 			Actor->BiomeStack = BiomeModule->BiomeStack;

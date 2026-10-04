@@ -9,56 +9,51 @@ documentation standard - but honest "this is new code, tell me if it doesn't do 
 
 ## 1. Placing a planet
 
-The Terrain Graph Editor edits a `USolarOrbzTerrainLayerStack` asset, but that asset does nothing on
-its own - it has to be assigned to a planet actor (`ASolarOrbzIcoSphereActor`) before you can see
-what it does. That assignment now happens through the SolarOrbz panel's own graph - see
-`Docs/SolarOrbzPlanetSpawnerGraph.md` for why it's a fixed star-shaped layout rather than a chain
-like the Terrain Graph Editor's. If you already have a planet placed with a stack assigned, skip to
-§2.
+A terrain recipe needs a planet actor (`ASolarOrbzIcoSphereActor`) before you can see what it does.
+That's what the SolarOrbz panel's own graph is for - see `Docs/SolarOrbzPlanetSpawnerGraph.md` for
+why it's two different topologies sharing one canvas: a fixed layout for Base Sphere/Biome/Climate/
+Profile, and a fully-editable embedded terrain chain that works exactly like the standalone Terrain
+Graph Editor described in the rest of this guide. If you already have a planet placed with terrain
+layers assigned, skip to §2.
 
 **Open the panel:** **Window → SolarOrbz**, or the **SolarOrbz** button on the Level Editor toolbar
 next to Play.
 
-**Reading the graph:** five module nodes - **Base Sphere**, **Terrain Stack**, **Biome Stack**,
-**Climate Simulation**, **Profile** - each wired to a **Planet** sentinel. These connections are
-fixed; there's nothing to rewire here (unlike the Terrain Graph Editor's chain). Click a node, its
-fields fill the Details panel to the right - exactly the "select a node, edit the real object, no
-sync step" pattern the Terrain Graph Editor uses.
+**Reading the graph:** the canvas has two rows. The top row is four fixed module nodes - **Base
+Sphere**, **Biome Stack**, **Climate Simulation**, **Profile** - each wired to a **Planet**
+sentinel; these connections are fixed, nothing to rewire there. The row below is the embedded
+**terrain chain** - **Start → [layer nodes] → Output** - which you edit exactly like §3-§7 of this
+guide describe for the standalone editor (same Add Layer button, same reconnect-to-reorder, same
+Delete). Click any node, its fields fill the Details panel to the right - the same "select a node,
+edit the real object, no sync step" pattern throughout this plugin.
 
 | Node | Fields | What they do |
 |---|---|---|
 | **Base Sphere** | `Radius Meters`, `Vertices Per Meter`, `Max Subdivisions`, `Preview Collision` | Radius in meters (Earth is ~6,371,000, no upper limit - performance is the only ceiling). Vertices Per Meter is a density target, clamped by Max Subdivisions (hard-clamped at 11; keep it low, 6-9, for live editing - this actor is for a bounded preview/bake radius, not a full streaming planet). Preview Collision is off by default - add collision later on the baked mesh instead. |
-| **Terrain Stack** | `Terrain Stack` | **Assign your `USolarOrbzTerrainLayerStack` here** - this is the asset the rest of this guide edits. |
-| **Biome Stack** | `Biome Stack` | Optional - biome-specific detail layered on top of Terrain Stack. |
+| **Biome Stack** | `Biome Stack` | Optional - biome-specific detail layered on top of the terrain chain below. |
 | **Climate Simulation** | `Climate Simulation` | Optional - feeds real temperature/moisture into biome masks. |
 | **Profile** | `Profile` | Optional - a Planet/Star/Asteroid Profile asset; drives gravity, atmosphere, landmass counts. |
+| **Start / [layer] / Output** | whatever that layer type exposes | The terrain recipe itself - add layers with the **Add Layer** button above the canvas (same button, same reflection-driven dropdown as the standalone editor's §4). There's no separate Terrain Stack asset to assign here; the chain you build **is** the recipe. |
 
 **Generating the preview:** click **Generate / Update Preview** below the graph. The first click
-spawns an actor labeled `SolarOrbzIcoSphere` into the level and selects it, reading every node's
-current values; later clicks update that same actor instead of spawning another. Unlike placing the
-actor directly and editing its Details panel, nothing here regenerates live as you type - Generate
-is always the step that actually applies the graph to the actor.
-
-**Filling it in from a catalog row (optional, the fast path):** above the graph, assign a
-**Data Table** of `FSolarOrbzPlanetCatalogRow` rows, then click **Apply Catalog Row** and pick a row
-by name. This writes the row's Radius/Vertices Per Meter/Max Subdivisions/Collision into Base
-Sphere unconditionally, and writes Terrain Stack/Biome Stack/Climate Simulation/Profile only where
-the row actually specifies one (an empty cell leaves that node's existing assignment alone, rather
-than clearing it) - then refreshes the Details panel so an already-open node's new values show up
-immediately. Building the Data Table: Content Browser → Import a `.csv` → Row Struct =
-`FSolarOrbzPlanetCatalogRow`. A Biome Stack (or Terrain Stack/Climate Simulation/Profile) cell needs
-that asset's **full path** - e.g. a prebuilt biome stack named `ASN_BIOME_DESERT` goes in as
-`/Game/SolarOrbz/Biomes/ASN_BIOME_DESERT.ASN_BIOME_DESERT` - the engine's own CSV→DataTable import
-resolves that into the reference automatically. See the design doc for the full column list.
+spawns an actor labeled `SolarOrbzIcoSphere` into the level and selects it, reading every fixed
+node's current values and compiling the terrain chain into it; later clicks update that same actor
+instead of spawning another. Unlike placing the actor directly and editing its Details panel,
+nothing here regenerates live as you type - Generate is always the step that actually applies the
+graph to the actor.
 
 Once a preview looks right, **Bake To Static Mesh** (further down the same panel) writes it out to
 a `UStaticMesh` asset at the **Package Path**/**Asset Name** you set there - that's the actual
 deliverable for building solar-system assets.
 
-The graph only holds staged values in memory for as long as the SolarOrbz panel stays open - closing
-the tab and reopening it rebuilds a fresh, empty graph (same as the old flat panel losing its typed-in
-Radius/etc. on reopen). Click Generate before closing the panel if you want a staged-but-not-yet-
-generated planet to survive; once generated, the values live on the actor itself and are safe.
+The graph - fixed modules **and** the terrain chain - only holds staged values in memory for as long
+as the SolarOrbz panel stays open: closing the tab and reopening it rebuilds a fresh, empty graph
+(same as the old flat panel losing its typed-in Radius/etc. on reopen). Click Generate before
+closing the panel if you want a staged-but-not-yet-generated planet to survive; once generated, the
+values live on the actor itself and are safe. If you want a terrain recipe to outlive one planet
+(reuse it on another), build it as a real `USolarOrbzTerrainLayerStack` asset in the standalone
+Terrain Graph Editor instead (§2 on) and assign that asset directly on the actor's Details panel -
+this embedded chain doesn't save to its own asset.
 
 ## 2. Opening a Terrain Layer Stack
 
@@ -154,8 +149,8 @@ persistence, not about "committing" the graph edits.
 Open **Window → Developer Tools → Output Log** and filter for `LogSolarOrbzTerrainGraph` - every
 rebuild, compile-back-into-`Layers`, connection decision, and toolkit action logs there, including
 warnings for the cases most likely to actually go wrong. (For the planet spawner graph in §1 instead,
-filter for `LogSolarOrbzPlanetSpawner` - it logs the Data Table/Apply Row path and Generate clicks
-the same way.)
+filter for `LogSolarOrbzPlanetSpawner` - it logs the embedded terrain chain's own rebuild/compile,
+Add Layer, and Generate clicks the same way.)
 
 | Symptom | What to check in the log |
 |---|---|

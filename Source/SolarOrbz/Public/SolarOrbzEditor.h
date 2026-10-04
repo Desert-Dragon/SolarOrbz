@@ -17,8 +17,6 @@ class FToolBarBuilder;
 class FMenuBuilder;
 class ASolarOrbzIcoSphereActor;
 class USolarOrbzPlanetSpawnerGraph;
-class UDataTable;
-struct FAssetData;
 class SGraphEditor;
 class IDetailsView;
 
@@ -70,10 +68,10 @@ public:
 };
 
 // ================================================================================================
-// SSolarOrbzMainPanel - Main Slate panel: a fixed node graph (Docs/SolarOrbzPlanetSpawnerGraph.md)
-// for staging a planet's base information - Base Sphere/Terrain Stack/Biome Stack/Climate
-// Simulation/Profile, each its own selectable node feeding a "Planet" sentinel - plus an optional
-// Planet Catalog Data Table to fill those nodes from a prebuilt row, live preview spawning, and
+// SSolarOrbzMainPanel - Main Slate panel: one node graph (Docs/SolarOrbzPlanetSpawnerGraph.md) for
+// staging a planet - fixed Base Sphere/Biome Stack/Climate Simulation/Profile module nodes feeding
+// a "Planet" sentinel, plus the embedded terrain layer chain (Start -> Layer -> ... -> Output,
+// grown with the "Add Layer" button) living on the same canvas - next to live preview spawning and
 // bake-to-static-mesh. This is the content dropped into the plugin's docking tab from
 // FSolarOrbzModule::OnSpawnPluginTab below.
 // ================================================================================================
@@ -94,20 +92,21 @@ private:
 	TSharedPtr<SGraphEditor> GraphEditorWidget;
 	TSharedPtr<IDetailsView> DetailsView;
 
-	// --- Optional: a DataTable of FSolarOrbzPlanetCatalogRow, to fill the graph above from a
-	// prebuilt row instead of authoring every field by hand. ---
-	TStrongObjectPtr<UDataTable> CatalogDataTable;
-
 	FString BakePackagePath = TEXT("/Game/SolarOrbz/Meshes");
 	FString BakeAssetName = TEXT("SM_IcoSphere");
 
 	TWeakObjectPtr<ASolarOrbzIcoSphereActor> PreviewActor;
 
-	void OnCatalogDataTableChanged(const FAssetData& NewAssetData);
-	TSharedRef<SWidget> BuildApplyRowMenu();
-	void ApplyCatalogRow(FName RowName);
+	/** Reflection-driven over non-abstract USolarOrbzTerrainLayer subclasses, mirroring FSolarOrbzTerrainGraphEditorToolkit::BuildAddLayerMenu - adding a new layer type needs zero new code here either. */
+	TSharedRef<SWidget> BuildAddLayerMenu();
+
+	/** Appends a new instance of LayerClass to SpawnerGraph->EmbeddedTerrainStack->Layers and rebuilds the embedded chain to show it. */
+	void AddLayerOfClass(UClass* LayerClass);
 
 	void HandleGraphSelectionChanged(const TSet<UObject*>& NewSelection);
+
+	/** Fired by SpawnerGraph on every add/remove/reconnect, including ones RebuildEmbeddedTerrainChain() itself makes - guarded by SpawnerGraph->IsRebuildingTerrainChain() so only genuine interactive edits reach CompileEmbeddedTerrainChain(). */
+	void HandleSpawnerGraphChanged(const struct FEdGraphEditAction& Action);
 
 	FReply OnGenerateClicked();
 	FReply OnBakeClicked();

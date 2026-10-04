@@ -346,25 +346,41 @@ commitment or a schedule - just a place these don't get lost between sessions.
     UE5.8-specific documentation/verification standard.
 
 - **Planet Spawner Graph.** **Done.** Requested directly: turn the SolarOrbz dock tab's flat
-  "enter Radius, click Generate" panel into a node graph like the Terrain Graph Editor's, plus let
-  a CSV row fill in a planet's base info (radius, biomes, etc.) automatically. Full design in
-  `Docs/SolarOrbzPlanetSpawnerGraph.md` (mirrored as an Artifact per `CLAUDE.md`'s subsystem-doc
-  policy). Unlike the Terrain Graph Editor's chain, a planet's modules (Base Sphere/Terrain Stack/
-  Biome Stack/Climate Simulation/Profile) have no real order between them, so this graph is a fixed,
-  non-editable layout - five module nodes wired to a single "Planet" sentinel, not a reorderable
-  chain. New files `SolarOrbzPlanetSpawnerGraph.h`/`.cpp` (five small transient `UObject` module
-  configs + `USolarOrbzPlanetSpawnerGraphNode`/`Schema`/`Graph`, `LogSolarOrbzPlanetSpawner`
-  category) and `SolarOrbzPlanetCatalogRow.h` (`FSolarOrbzPlanetCatalogRow : FTableRowBase`, importable
-  from a `.csv` via Content Browser, object-reference columns as `TSoftObjectPtr` - a biome column
-  points at a prebuilt `USolarOrbzBiomeStack` asset by full path, e.g. `ASN_BIOME_DESERT`). Rewired
-  `SSolarOrbzMainPanel` (`SolarOrbzEditor.h`/`.cpp`) to host an `SGraphEditor`+`IDetailsView` split
-  (same selection-follows-Details pattern as the Terrain Graph Editor's toolkit) plus a Data
-  Table/Apply Row toolbar section; `SpawnerGraph` is held via `TStrongObjectPtr` since the panel is
-  a Slate widget, not a `UObject`, so there's no `UPROPERTY` chain to anchor the graph's GC root the
-  way the Terrain Graph Editor's is anchored by the asset it edits. No Build.cs change needed -
-  `SObjectPropertyEntryBox`/`UDataTable`/`SGraphEditor` all live in already-depended-on modules.
-  Written and reviewed against documented UE5.8 APIs (verified via web search), not compiled or
-  run - review-only, same bar as the rest of this plugin's editor-only code.
+  "enter Radius, click Generate" panel into a node graph like the Terrain Graph Editor's. Full
+  design in `Docs/SolarOrbzPlanetSpawnerGraph.md` (mirrored as an Artifact per `CLAUDE.md`'s
+  subsystem-doc policy). Unlike the Terrain Graph Editor's chain, a planet's fixed modules (Base
+  Sphere/Biome Stack/Climate Simulation/Profile) have no real order between them, so that part of
+  the graph is a fixed, non-editable layout - four module nodes wired to a single "Planet"
+  sentinel, not a reorderable chain. New files `SolarOrbzPlanetSpawnerGraph.h`/`.cpp` (four small
+  transient `UObject` module configs + `USolarOrbzPlanetSpawnerGraphNode`/`Schema`/`Graph`,
+  `LogSolarOrbzPlanetSpawner` category). Rewired `SSolarOrbzMainPanel` (`SolarOrbzEditor.h`/`.cpp`)
+  to host an `SGraphEditor`+`IDetailsView` split (same selection-follows-Details pattern as the
+  Terrain Graph Editor's toolkit). No Build.cs change needed - `SGraphEditor` lives in an
+  already-depended-on module. Written and reviewed against documented UE5.8 APIs (verified via web
+  search), not compiled or run - review-only, same bar as the rest of this plugin's editor-only
+  code.
+
+  **Pivot: CSV catalog thrown out for an embedded terrain chain.** A first pass added
+  `SolarOrbzPlanetCatalogRow.h` (`FSolarOrbzPlanetCatalogRow : FTableRowBase`, importable from a
+  `.csv`) plus a `USolarOrbzPlanetTerrainModule` node referencing an external
+  `USolarOrbzTerrainLayerStack`. Both were removed - deleted the catalog row file entirely, deleted
+  the Terrain module class - in favor of embedding the real terrain-layer authoring chain (the same
+  Start→Layer→…→Output mechanism the standalone Terrain Graph Editor uses, noise layers included)
+  directly into this graph's own canvas, reusing `USolarOrbzTerrainGraphNode` as-is since it's
+  graph-agnostic. `USolarOrbzPlanetSpawnerGraph` gained `EmbeddedTerrainStack`/
+  `EmbeddedTerrainStartNode`/`EmbeddedTerrainOutputNode` plus `RebuildEmbeddedTerrainChain()`/
+  `CompileEmbeddedTerrainChain()` - duplicates of `USolarOrbzTerrainGraph`'s own
+  `RebuildFromLayers()`/`CompileToLayers()`, with the one necessary difference that they filter
+  `Nodes` by type before touching anything, since this graph's fixed module/Planet nodes share the
+  same `Nodes` array and can't be wiped the way the standalone graph safely wipes its own. The
+  schema (`CanCreateConnection`) now branches on pin category: `ModulePinCategory` stays
+  disallow-always, `HeightPinCategory` gets the standalone schema's same
+  single-connection/replace-on-reconnect behavior. The panel swapped its Data Table/Apply Row
+  section for an "Add Layer" combo button mirroring the standalone toolkit's
+  `BuildAddLayerMenu()`/`AddLayerOfClass()` exactly, and `OnGenerateClicked` now compiles the
+  embedded chain and assigns it straight onto the preview actor's `TerrainStack` field. Biome Stack
+  deliberately stays an external asset reference, unchanged - only Terrain had the ordered-chain
+  shape worth inlining.
 
 - **Chunked/streaming planet terrain** - the actual fix for ground-level detail at true planetary
   radius that every entry above flags as out of scope for the single-mesh `ASolarOrbzIcoSphereActor`.
