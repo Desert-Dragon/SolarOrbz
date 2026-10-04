@@ -51,6 +51,7 @@ corresponding Artifact version, not just the committed Markdown.
 | `Docs/ChunkedPlanetTerrain_TestingGuide.md` | https://claude.ai/artifact/26AT6jRtgk3v3o7qa3cZUv (Chunked Terrain Playtest Runbook) |
 | `Docs/SolarOrbzTerrainGraphEditor.md` | https://claude.ai/artifact/79qFnMtpN95TsvT9iZxCgj (Terrain Graph Editor Design) |
 | `Docs/SolarOrbzTerrainGraphEditor_UsageGuide.md` | https://claude.ai/artifact/BprPEaMNDusrRVAYzhsu27 (Terrain Graph Editor Usage Guide) |
+| `Docs/SolarOrbzPlanetSpawnerGraph.md` | https://claude.ai/artifact/2R4w4wHFvUZzV2LYsWyxoJ (Planet Spawner Graph Design) |
 
 Add a row here whenever a new subsystem doc gets its own Artifact mirror. A doc can have more than
 one companion Artifact (e.g. a full design-doc mirror plus a separate interactive checklist built

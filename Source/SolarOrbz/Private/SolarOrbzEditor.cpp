@@ -9,22 +9,30 @@
 #include "Styling/SlateStyleMacros.h"
 
 #include "SolarOrbzIcoSphere.h"
+#include "SolarOrbzPlanetSpawnerGraph.h"
+#include "SolarOrbzPlanetCatalogRow.h"
 
 #include "LevelEditor.h"
 #include "Widgets/Docking/SDockTab.h"
 #include "Widgets/Layout/SBox.h"
+#include "Widgets/Layout/SSplitter.h"
 #include "Widgets/Text/STextBlock.h"
 #include "ToolMenus.h"
 
 #include "Editor.h"
 #include "Engine/World.h"
+#include "Engine/DataTable.h"
 #include "Widgets/SBoxPanel.h"
 #include "Widgets/Layout/SSeparator.h"
-#include "Widgets/Layout/SUniformGridPanel.h"
-#include "Widgets/Input/SSpinBox.h"
-#include "Widgets/Input/SCheckBox.h"
 #include "Widgets/Input/SButton.h"
+#include "Widgets/Input/SComboButton.h"
 #include "Widgets/Input/SEditableTextBox.h"
+#include "GraphEditor.h"
+#include "PropertyEditorModule.h"
+#include "IDetailsView.h"
+#include "PropertyCustomizationHelpers.h"
+#include "Framework/Commands/UICommandList.h"
+#include "AssetRegistry/AssetData.h"
 
 // ================================================================================================
 // FSolarOrbzStyle
@@ -136,6 +144,22 @@ void SSolarOrbzMainPanel::Construct(const FArguments& InArgs)
 {
 	using namespace SolarOrbzUI;
 
+	SpawnerGraph.Reset(NewObject<USolarOrbzPlanetSpawnerGraph>(GetTransientPackage(), NAME_None, RF_Transient));
+	SpawnerGraph->BuildFixedLayout();
+
+	SGraphEditor::FGraphEditorEvents GraphEvents;
+	GraphEvents.OnSelectionChanged = SGraphEditor::FOnSelectionChanged::CreateSP(this, &SSolarOrbzMainPanel::HandleGraphSelectionChanged);
+
+	GraphEditorWidget = SNew(SGraphEditor)
+		.AdditionalCommands(MakeShared<FUICommandList>())
+		.GraphToEdit(SpawnerGraph.Get())
+		.GraphEvents(GraphEvents);
+
+	FPropertyEditorModule& PropertyEditorModule = FModuleManager::LoadModuleChecked<FPropertyEditorModule>("PropertyEditor");
+	FDetailsViewArgs DetailsArgs;
+	DetailsArgs.bAllowSearch = true;
+	DetailsView = PropertyEditorModule.CreateDetailView(DetailsArgs);
+
 	ChildSlot
 	[
 		SNew(SBox)
@@ -143,60 +167,57 @@ void SSolarOrbzMainPanel::Construct(const FArguments& InArgs)
 		[
 			SNew(SVerticalBox)
 
-			// --- IcoSphere parameters ---
+			// --- Planet Catalog ---
 			+ SVerticalBox::Slot().AutoHeight()
 			[
-				MakeSectionHeader(LOCTEXT("ParamsHeader", "IcoSphere Parameters"))
+				MakeSectionHeader(LOCTEXT("CatalogHeader", "Planet Catalog (optional)"))
 			]
 
 			+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 2.0f)
 			[
-				MakeLabeledRow(LOCTEXT("RadiusLabel", "Radius (m)"),
-					SNew(SSpinBox<double>)
-					.MinValue(0.01)
-					.MinSliderValue(1.0)
-					.MaxSliderValue(1000000.0) // slider convenience range (1,000 km) - typing goes further, no hard ceiling
-					.Delta(1.0)
-					.Value_Lambda([this]() { return RadiusMeters; })
-					.OnValueChanged_Lambda([this](double NewValue) { RadiusMeters = NewValue; })
+				MakeLabeledRow(LOCTEXT("CatalogTableLabel", "Data Table"),
+					SNew(SObjectPropertyEntryBox)
+					.AllowedClass(UDataTable::StaticClass())
+					.ObjectPath_Lambda([this]() { return CatalogDataTable.IsValid() ? CatalogDataTable->GetPathName() : FString(); })
+					.OnObjectChanged(this, &SSolarOrbzMainPanel::OnCatalogDataTableChanged)
 				)
 			]
 
-			+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 2.0f)
+			+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 4.0f, 0.0f, 8.0f)
 			[
-				MakeLabeledRow(LOCTEXT("DensityLabel", "Vertices / Meter"),
-					SNew(SSpinBox<float>)
-					.MinValue(0.001f)
-					.MinSliderValue(0.01f)
-					.MaxSliderValue(20.0f) // slider convenience range - typing goes further, no hard ceiling
-					.Delta(0.05f)
-					.Value_Lambda([this]() { return VerticesPerMeter; })
-					.OnValueChanged_Lambda([this](float NewValue) { VerticesPerMeter = NewValue; })
-				)
+				SNew(SComboButton)
+				.IsEnabled_Lambda([this]() { return CatalogDataTable.IsValid(); })
+				.OnGetMenuContent(this, &SSolarOrbzMainPanel::BuildApplyRowMenu)
+				.ButtonContent()
+				[
+					SNew(STextBlock).Text(LOCTEXT("ApplyRowButton", "Apply Catalog Row"))
+				]
 			]
 
-			+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 2.0f)
+			+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 0.0f, 0.0f, 8.0f)
 			[
-				MakeLabeledRow(LOCTEXT("MaxSubdivLabel", "Max Subdivisions"),
-					SNew(SSpinBox<int32>)
-					.MinValue(0)
-					.MinSliderValue(0)
-					.MaxSliderValue(10) // slider convenience range - typing goes further, no hard ceiling (watch the stats line!)
-					.Value_Lambda([this]() { return MaxSubdivisions; })
-					.OnValueChanged_Lambda([this](int32 NewValue) { MaxSubdivisions = NewValue; })
-				)
+				SNew(SSeparator)
 			]
 
-			+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 2.0f)
+			// --- Planet module graph + Details ---
+			+ SVerticalBox::Slot().FillHeight(1.0f).Padding(0.0f, 0.0f, 0.0f, 8.0f)
 			[
-				MakeLabeledRow(LOCTEXT("CollisionLabel", "Preview Collision"),
-					SNew(SCheckBox)
-					.IsChecked_Lambda([this]() { return bEnablePreviewCollision ? ECheckBoxState::Checked : ECheckBoxState::Unchecked; })
-					.OnCheckStateChanged_Lambda([this](ECheckBoxState NewState) { bEnablePreviewCollision = (NewState == ECheckBoxState::Checked); })
-				)
+				SNew(SBox)
+				.MinDesiredHeight(260.0f)
+				[
+					SNew(SSplitter)
+					+ SSplitter::Slot().Value(0.65f)
+					[
+						GraphEditorWidget.ToSharedRef()
+					]
+					+ SSplitter::Slot().Value(0.35f)
+					[
+						DetailsView.ToSharedRef()
+					]
+				]
 			]
 
-			+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 8.0f, 0.0f, 4.0f)
+			+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 0.0f, 0.0f, 4.0f)
 			[
 				SNew(SHorizontalBox)
 				+ SHorizontalBox::Slot().FillWidth(1.0f).Padding(0.0f, 0.0f, 4.0f, 0.0f)
@@ -264,8 +285,146 @@ void SSolarOrbzMainPanel::Construct(const FArguments& InArgs)
 	];
 }
 
+void SSolarOrbzMainPanel::OnCatalogDataTableChanged(const FAssetData& NewAssetData)
+{
+	UDataTable* NewTable = Cast<UDataTable>(NewAssetData.GetAsset());
+	CatalogDataTable.Reset(NewTable);
+	UE_LOG(LogSolarOrbzPlanetSpawner, Log, TEXT("Catalog Data Table set to %s"), NewTable ? *NewTable->GetName() : TEXT("(none)"));
+}
+
+TSharedRef<SWidget> SSolarOrbzMainPanel::BuildApplyRowMenu()
+{
+	TSharedRef<SVerticalBox> MenuBox = SNew(SVerticalBox);
+
+	if (CatalogDataTable.IsValid())
+	{
+		TArray<FName> RowNames = CatalogDataTable->GetRowNames();
+		for (const FName& RowName : RowNames)
+		{
+			MenuBox->AddSlot()
+				.AutoHeight()
+				.Padding(2.0f)
+				[
+					SNew(SButton)
+					.OnClicked_Lambda([this, RowName]()
+					{
+						ApplyCatalogRow(RowName);
+						return FReply::Handled();
+					})
+					[
+						SNew(STextBlock).Text(FText::FromName(RowName))
+					]
+				];
+		}
+
+		if (RowNames.Num() == 0)
+		{
+			UE_LOG(LogSolarOrbzPlanetSpawner, Warning, TEXT("BuildApplyRowMenu: %s has no rows"), *CatalogDataTable->GetName());
+		}
+	}
+
+	return SNew(SBox)
+		.Padding(2.0f)
+		[
+			MenuBox
+		];
+}
+
+void SSolarOrbzMainPanel::ApplyCatalogRow(FName RowName)
+{
+	if (!CatalogDataTable.IsValid() || !SpawnerGraph)
+	{
+		UE_LOG(LogSolarOrbzPlanetSpawner, Warning, TEXT("ApplyCatalogRow: called with no Data Table assigned - ignoring"));
+		FSlateApplication::Get().DismissAllMenus();
+		return;
+	}
+
+	const FSolarOrbzPlanetCatalogRow* Row = CatalogDataTable->FindRow<FSolarOrbzPlanetCatalogRow>(RowName, TEXT("SSolarOrbzMainPanel::ApplyCatalogRow"));
+	if (!Row)
+	{
+		UE_LOG(LogSolarOrbzPlanetSpawner, Warning, TEXT("ApplyCatalogRow: row %s not found in %s"), *RowName.ToString(), *CatalogDataTable->GetName());
+		FSlateApplication::Get().DismissAllMenus();
+		return;
+	}
+
+	if (USolarOrbzPlanetBaseSphereConfig* BaseSphere = SpawnerGraph->BaseSphereConfig)
+	{
+		BaseSphere->RadiusMeters = Row->RadiusMeters;
+		BaseSphere->VerticesPerMeter = Row->VerticesPerMeter;
+		BaseSphere->MaxSubdivisions = Row->MaxSubdivisions;
+		BaseSphere->bEnablePreviewCollision = Row->bEnablePreviewCollision;
+	}
+
+	// Soft refs left unset in the row mean "no override" - skip rather than clear an existing assignment.
+	if (!Row->TerrainStack.IsNull())
+	{
+		if (USolarOrbzPlanetTerrainModule* TerrainModule = SpawnerGraph->TerrainModule)
+		{
+			TerrainModule->TerrainStack = Row->TerrainStack.LoadSynchronous();
+		}
+	}
+	if (!Row->BiomeStack.IsNull())
+	{
+		if (USolarOrbzPlanetBiomeModule* BiomeModule = SpawnerGraph->BiomeModule)
+		{
+			BiomeModule->BiomeStack = Row->BiomeStack.LoadSynchronous();
+		}
+	}
+	if (!Row->ClimateSimulation.IsNull())
+	{
+		if (USolarOrbzPlanetClimateModule* ClimateModule = SpawnerGraph->ClimateModule)
+		{
+			ClimateModule->ClimateSimulation = Row->ClimateSimulation.LoadSynchronous();
+		}
+	}
+	if (!Row->Profile.IsNull())
+	{
+		if (USolarOrbzPlanetProfileModule* ProfileModule = SpawnerGraph->ProfileModule)
+		{
+			ProfileModule->Profile = Row->Profile.LoadSynchronous();
+		}
+	}
+
+	UE_LOG(LogSolarOrbzPlanetSpawner, Log, TEXT("ApplyCatalogRow: applied row %s from %s"), *RowName.ToString(), *CatalogDataTable->GetName());
+
+	if (DetailsView.IsValid())
+	{
+		DetailsView->ForceRefresh();
+	}
+
+	FSlateApplication::Get().DismissAllMenus();
+}
+
+void SSolarOrbzMainPanel::HandleGraphSelectionChanged(const TSet<UObject*>& NewSelection)
+{
+	TArray<UObject*> SelectedConfigs;
+	for (UObject* Selected : NewSelection)
+	{
+		if (USolarOrbzPlanetSpawnerGraphNode* Node = Cast<USolarOrbzPlanetSpawnerGraphNode>(Selected))
+		{
+			if (Node->ModuleConfig)
+			{
+				SelectedConfigs.Add(Node->ModuleConfig);
+			}
+		}
+	}
+
+	UE_LOG(LogSolarOrbzPlanetSpawner, Verbose, TEXT("HandleGraphSelectionChanged: %d node(s) selected, %d editable module(s)"), NewSelection.Num(), SelectedConfigs.Num());
+
+	if (DetailsView.IsValid())
+	{
+		DetailsView->SetObjects(SelectedConfigs);
+	}
+}
+
 FReply SSolarOrbzMainPanel::OnGenerateClicked()
 {
+	if (!SpawnerGraph || !SpawnerGraph->BaseSphereConfig)
+	{
+		UE_LOG(LogSolarOrbzPlanetSpawner, Error, TEXT("OnGenerateClicked: spawner graph not built - this should never happen"));
+		return FReply::Handled();
+	}
+
 	if (!PreviewActor.IsValid() && GEditor)
 	{
 		if (UWorld* World = GEditor->GetEditorWorldContext().World())
@@ -292,10 +451,30 @@ FReply SSolarOrbzMainPanel::OnGenerateClicked()
 
 	if (ASolarOrbzIcoSphereActor* Actor = PreviewActor.Get())
 	{
-		Actor->RadiusMeters = RadiusMeters;
-		Actor->VerticesPerMeter = VerticesPerMeter;
-		Actor->MaxSubdivisions = MaxSubdivisions;
-		Actor->bEnablePreviewCollision = bEnablePreviewCollision;
+		const USolarOrbzPlanetBaseSphereConfig* BaseSphere = SpawnerGraph->BaseSphereConfig;
+		Actor->RadiusMeters = BaseSphere->RadiusMeters;
+		Actor->VerticesPerMeter = BaseSphere->VerticesPerMeter;
+		Actor->MaxSubdivisions = BaseSphere->MaxSubdivisions;
+		Actor->bEnablePreviewCollision = BaseSphere->bEnablePreviewCollision;
+
+		if (const USolarOrbzPlanetTerrainModule* TerrainModule = SpawnerGraph->TerrainModule)
+		{
+			Actor->TerrainStack = TerrainModule->TerrainStack;
+		}
+		if (const USolarOrbzPlanetBiomeModule* BiomeModule = SpawnerGraph->BiomeModule)
+		{
+			Actor->BiomeStack = BiomeModule->BiomeStack;
+		}
+		if (const USolarOrbzPlanetClimateModule* ClimateModule = SpawnerGraph->ClimateModule)
+		{
+			Actor->ClimateSimulation = ClimateModule->ClimateSimulation;
+		}
+		if (const USolarOrbzPlanetProfileModule* ProfileModule = SpawnerGraph->ProfileModule)
+		{
+			Actor->Profile = ProfileModule->Profile;
+		}
+
+		UE_LOG(LogSolarOrbzPlanetSpawner, Log, TEXT("OnGenerateClicked: regenerating %s (Radius=%f m)"), *Actor->GetName(), BaseSphere->RadiusMeters);
 		Actor->RegenerateMesh();
 
 		if (GEditor)

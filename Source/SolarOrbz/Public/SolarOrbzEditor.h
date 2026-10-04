@@ -11,10 +11,16 @@
 #include "Styling/SlateStyle.h"
 #include "Framework/Commands/Commands.h"
 #include "Widgets/SCompoundWidget.h"
+#include "UObject/StrongObjectPtr.h"
 
 class FToolBarBuilder;
 class FMenuBuilder;
 class ASolarOrbzIcoSphereActor;
+class USolarOrbzPlanetSpawnerGraph;
+class UDataTable;
+struct FAssetData;
+class SGraphEditor;
+class IDetailsView;
 
 // ================================================================================================
 // FSolarOrbzStyle - Slate style set (icons, brushes) for the plugin's toolbar button.
@@ -64,8 +70,11 @@ public:
 };
 
 // ================================================================================================
-// SSolarOrbzMainPanel - Main Slate panel: parametric icosphere controls, live preview spawning,
-// and bake-to-static-mesh. This is the content dropped into the plugin's docking tab from
+// SSolarOrbzMainPanel - Main Slate panel: a fixed node graph (Docs/SolarOrbzPlanetSpawnerGraph.md)
+// for staging a planet's base information - Base Sphere/Terrain Stack/Biome Stack/Climate
+// Simulation/Profile, each its own selectable node feeding a "Planet" sentinel - plus an optional
+// Planet Catalog Data Table to fill those nodes from a prebuilt row, live preview spawning, and
+// bake-to-static-mesh. This is the content dropped into the plugin's docking tab from
 // FSolarOrbzModule::OnSpawnPluginTab below.
 // ================================================================================================
 class SOLARORBZ_API SSolarOrbzMainPanel : public SCompoundWidget
@@ -77,16 +86,28 @@ public:
 	void Construct(const FArguments& InArgs);
 
 private:
-	// --- Staged parameters, pushed onto the preview actor when Generate is pressed. ---
-	double RadiusMeters = 1000.0;
-	float VerticesPerMeter = 1.0f;
-	int32 MaxSubdivisions = 6;
-	bool bEnablePreviewCollision = false;
+	// --- The fixed planet-module graph: owned here via a strong ref since there's no asset or
+	// other UPROPERTY chain to anchor it (it's pure in-memory editor scratch state for the next
+	// Generate/Apply Row click, same lifetime as this panel). ---
+	TStrongObjectPtr<USolarOrbzPlanetSpawnerGraph> SpawnerGraph;
+
+	TSharedPtr<SGraphEditor> GraphEditorWidget;
+	TSharedPtr<IDetailsView> DetailsView;
+
+	// --- Optional: a DataTable of FSolarOrbzPlanetCatalogRow, to fill the graph above from a
+	// prebuilt row instead of authoring every field by hand. ---
+	TStrongObjectPtr<UDataTable> CatalogDataTable;
 
 	FString BakePackagePath = TEXT("/Game/SolarOrbz/Meshes");
 	FString BakeAssetName = TEXT("SM_IcoSphere");
 
 	TWeakObjectPtr<ASolarOrbzIcoSphereActor> PreviewActor;
+
+	void OnCatalogDataTableChanged(const FAssetData& NewAssetData);
+	TSharedRef<SWidget> BuildApplyRowMenu();
+	void ApplyCatalogRow(FName RowName);
+
+	void HandleGraphSelectionChanged(const TSet<UObject*>& NewSelection);
 
 	FReply OnGenerateClicked();
 	FReply OnBakeClicked();

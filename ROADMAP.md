@@ -309,6 +309,27 @@ commitment or a schedule - just a place these don't get lost between sessions.
 
 ## Planetary / World
 
+- **Planet Spawner Graph.** **Done.** Requested directly: turn the SolarOrbz dock tab's flat
+  "enter Radius, click Generate" panel into a node graph like the Terrain Graph Editor's, plus let
+  a CSV row fill in a planet's base info (radius, biomes, etc.) automatically. Full design in
+  `Docs/SolarOrbzPlanetSpawnerGraph.md` (mirrored as an Artifact per `CLAUDE.md`'s subsystem-doc
+  policy). Unlike the Terrain Graph Editor's chain, a planet's modules (Base Sphere/Terrain Stack/
+  Biome Stack/Climate Simulation/Profile) have no real order between them, so this graph is a fixed,
+  non-editable layout - five module nodes wired to a single "Planet" sentinel, not a reorderable
+  chain. New files `SolarOrbzPlanetSpawnerGraph.h`/`.cpp` (five small transient `UObject` module
+  configs + `USolarOrbzPlanetSpawnerGraphNode`/`Schema`/`Graph`, `LogSolarOrbzPlanetSpawner`
+  category) and `SolarOrbzPlanetCatalogRow.h` (`FSolarOrbzPlanetCatalogRow : FTableRowBase`, importable
+  from a `.csv` via Content Browser, object-reference columns as `TSoftObjectPtr` - a biome column
+  points at a prebuilt `USolarOrbzBiomeStack` asset by full path, e.g. `ASN_BIOME_DESERT`). Rewired
+  `SSolarOrbzMainPanel` (`SolarOrbzEditor.h`/`.cpp`) to host an `SGraphEditor`+`IDetailsView` split
+  (same selection-follows-Details pattern as the Terrain Graph Editor's toolkit) plus a Data
+  Table/Apply Row toolbar section; `SpawnerGraph` is held via `TStrongObjectPtr` since the panel is
+  a Slate widget, not a `UObject`, so there's no `UPROPERTY` chain to anchor the graph's GC root the
+  way the Terrain Graph Editor's is anchored by the asset it edits. No Build.cs change needed -
+  `SObjectPropertyEntryBox`/`UDataTable`/`SGraphEditor` all live in already-depended-on modules.
+  Written and reviewed against documented UE5.8 APIs (verified via web search), not compiled or
+  run - review-only, same bar as the rest of this plugin's editor-only code.
+
 - **Chunked/streaming planet terrain** - the actual fix for ground-level detail at true planetary
   radius that every entry above flags as out of scope for the single-mesh `ASolarOrbzIcoSphereActor`.
   Design + first foundational piece (an icosphere-based chunk addressing/mesh generation, built
