@@ -613,11 +613,32 @@ void FSolarOrbzModule::RegisterMenus()
 	// Owner will be used for cleanup in call to UToolMenus::UnregisterOwner
 	FToolMenuOwnerScoped OwnerScoped(this);
 
+	// Both entries below are given an explicit, project-unique Name rather than letting it default
+	// to the command's own internal name ("OpenPluginWindow" - the literal C++ identifier UI_COMMAND
+	// stringifies, shared by any other plugin built from the same Editor Standalone Window template
+	// that didn't rename its own command variable - this project's ASNMechLab editor module is one).
+	// LevelEditor.MainMenu.Window's "WindowLayout" section and
+	// LevelEditor.LevelEditorToolBar.PlayToolBar's "PluginTools" section are both shared by every
+	// plugin that extends them, so two plugins' entries landing on the same implicit Name in the
+	// same section collide - whichever module's RegisterMenus() runs last (module load order, which
+	// isn't stable across editor sessions) is the one left visible there, in both the Window menu and
+	// the toolbar at once, which is exactly the "the button disappears/flips to the other plugin's"
+	// symptom this was causing. An explicit Name makes this entry's slot SolarOrbz's alone, regardless
+	// of what any other current or future plugin's own command happens to be called.
+	static const FName EntryName(TEXT("SolarOrbz_OpenPluginWindow"));
+
 	{
 		UToolMenu* Menu = UToolMenus::Get()->ExtendMenu("LevelEditor.MainMenu.Window");
 		{
 			FToolMenuSection& Section = Menu->FindOrAddSection("WindowLayout");
-			Section.AddMenuEntryWithCommandList(FSolarOrbzCommands::Get().OpenPluginWindow, PluginCommands);
+			Section.AddMenuEntryWithCommandList(
+				FSolarOrbzCommands::Get().OpenPluginWindow,
+				PluginCommands,
+				TAttribute<FText>(),
+				TAttribute<FText>(),
+				TAttribute<FSlateIcon>(),
+				NAME_None,
+				EntryName);
 		}
 	}
 
@@ -626,7 +647,9 @@ void FSolarOrbzModule::RegisterMenus()
 		{
 			FToolMenuSection& Section = ToolbarMenu->FindOrAddSection("PluginTools");
 			{
-				FToolMenuEntry& Entry = Section.AddEntry(FToolMenuEntry::InitToolBarButton(FSolarOrbzCommands::Get().OpenPluginWindow));
+				FToolMenuEntry NewEntry = FToolMenuEntry::InitToolBarButton(FSolarOrbzCommands::Get().OpenPluginWindow);
+				NewEntry.Name = EntryName;
+				FToolMenuEntry& Entry = Section.AddEntry(NewEntry);
 				Entry.SetCommandList(PluginCommands);
 			}
 		}

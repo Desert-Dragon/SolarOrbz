@@ -309,6 +309,42 @@ commitment or a schedule - just a place these don't get lost between sessions.
 
 ## Planetary / World
 
+- **SolarOrbz toolbar button/Window menu entry intermittently showing ASNMechLab's instead - a
+  real registration collision, found via hands-on use.** **Done.** Reported symptom: reopening the
+  editor sometimes shows the MechLab Loadout Validator when clicking what the user expects to be the
+  SolarOrbz button/menu entry, and which plugin "wins" flips between sessions. Root cause, confirmed
+  by reading both plugins' editor modules side by side (`SolarOrbzEditor.cpp` here,
+  `ASNMechLabEditor.cpp` in the sibling `all-systems-nominal` repo's `Plugins/ASNMechLab`): both were
+  built from Epic's Editor Standalone Window plugin template and neither renamed two template
+  defaults that only matter when two such plugins coexist in one project. First, both left the
+  template's own `PlaceholderButtonIcon.svg` unmodified, so the two toolbar buttons were visually
+  identical - fixed previously by giving SolarOrbz its own icon
+  (`Resources/SolarOrbzButtonIcon.svg`). Second, and the actual cause of entries *disappearing*
+  rather than just looking alike: both plugins' `UI_COMMAND(OpenPluginWindow, ...)` macro stringifies
+  the literal C++ identifier `OpenPluginWindow` as the command's internal name - the `TCommands`
+  `BindingContext` ("SolarOrbz" vs "ASNMechLabEditor") only scopes the keybinding editor's display,
+  not the `FToolMenuEntry` Name used inside a shared menu section. Both plugins register their
+  button into the identical `LevelEditor.LevelEditorToolBar.PlayToolBar` → `PluginTools` section and
+  their Window-menu item into the identical `LevelEditor.MainMenu.Window` → `WindowLayout` section,
+  so both entries landed on the same implicit Name (`"OpenPluginWindow"`) in the same section -
+  whichever module's `RegisterMenus()` ran last (module load order, not stable across editor
+  sessions) was the one left visible there, in the toolbar and the Window menu simultaneously,
+  matching the reported symptom exactly.
+  - Fix: `FSolarOrbzModule::RegisterMenus()` now passes an explicit, project-unique
+    `FName("SolarOrbz_OpenPluginWindow")` as the entry Name at both registration sites - the
+    toolbar button (set directly on the `FToolMenuEntry` returned by `InitToolBarButton` before
+    `Section.AddEntry`) and the Window menu item (via `AddMenuEntryWithCommandList`'s
+    `InNameOverride` parameter, confirmed via its real signature rather than assumed). This makes
+    SolarOrbz's slot in both shared sections collision-proof regardless of what any other current or
+    future plugin's own command happens to be called - it no longer matters that `ASNMechLab` (out
+    of scope for this repo - lives in `all-systems-nominal`) has the identical problem on its own
+    side; fixing it there would need the same treatment in its own `ASNMechLabEditor.cpp`.
+  - Both the icon-identity and the entry-Name-collision facts were confirmed by directly reading
+    `all-systems-nominal/Plugins/ASNMechLab/Source/ASNMechLabEditor/`'s own source, not assumed -
+    and the exact `AddMenuEntryWithCommandList` signature (which parameter is the Name override, and
+    where in the parameter list) was verified via web search before being used, per this project's
+    UE5.8-specific documentation/verification standard.
+
 - **Planet Spawner Graph.** **Done.** Requested directly: turn the SolarOrbz dock tab's flat
   "enter Radius, click Generate" panel into a node graph like the Terrain Graph Editor's, plus let
   a CSV row fill in a planet's base info (radius, biomes, etc.) automatically. Full design in
