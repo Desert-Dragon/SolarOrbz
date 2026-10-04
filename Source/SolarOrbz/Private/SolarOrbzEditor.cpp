@@ -71,7 +71,11 @@ TSharedRef< FSlateStyleSet > FSolarOrbzStyle::Create()
 	TSharedRef< FSlateStyleSet > Style = MakeShareable(new FSlateStyleSet("SolarOrbzStyle"));
 	Style->SetContentRoot(IPluginManager::Get().FindPlugin("SolarOrbz")->GetBaseDir() / TEXT("Resources"));
 
-	Style->Set("SolarOrbz.OpenPluginWindow", new IMAGE_BRUSH_SVG(TEXT("PlaceholderButtonIcon"), Icon20x20));
+	// A distinct icon, not Epic's shared template placeholder - another plugin in this project
+	// (ASNMechLab) left its own toolbar button on that same unmodified placeholder too, and both
+	// buttons land in the same "LevelEditor.LevelEditorToolBar.PlayToolBar" / "PluginTools" section,
+	// so two identical-looking icons there made it easy to click the wrong one.
+	Style->Set("SolarOrbz.OpenPluginWindow", new IMAGE_BRUSH_SVG(TEXT("SolarOrbzButtonIcon"), Icon20x20));
 
 	return Style;
 }
