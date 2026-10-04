@@ -7,7 +7,53 @@ clean against UE5.8 as of this writing. Nothing below has been exercised hands-o
 as genuinely unverified (not UE5.8-version hedges - those are resolved facts per this repo's
 documentation standard - but honest "this is new code, tell me if it doesn't do what's described").
 
-## 1. Opening a Terrain Layer Stack
+## 1. Placing a planet
+
+The Terrain Graph Editor edits a `USolarOrbzTerrainLayerStack` asset, but that asset does nothing on
+its own - it has to be assigned to a planet actor (`ASolarOrbzIcoSphereActor`) before you can see
+what it does. If you already have one placed with a stack assigned, skip to §2.
+
+**A. Via the SolarOrbz panel (quickest first pass)**
+
+1. **Window → SolarOrbz**, or the **SolarOrbz** button on the Level Editor toolbar next to Play,
+   opens the plugin's own dock tab.
+2. Set **Radius (m)**, **Vertices Per Meter**, **Max Subdivisions**, and **Preview Collision** in
+   the panel.
+3. Click **Generate / Update Preview**. The first click spawns an actor labeled `SolarOrbzIcoSphere`
+   into the level and selects it; later clicks update that same actor instead of spawning another.
+4. The panel only stages those four fields - Terrain Stack and everything else is set directly on
+   the actor itself, next.
+
+**B. Place directly**
+
+This is a plain actor, not a Content Browser asset. **Window → Place Actors**, search "SolarOrbz
+IcoSphere", drag one into the level. Every property is editable immediately in its Details panel,
+and changing Radius/Vertices Per Meter/Max Subdivisions/etc. there regenerates the mesh live - no
+separate Generate button needed on this path.
+
+**Either way, once it's placed, these are the properties that matter:**
+
+| Property | Category | What it does |
+|---|---|---|
+| `Radius Meters` | IcoSphere | Sphere radius, in meters. Earth is ~6,371,000. No upper limit - performance is the only ceiling. |
+| `Vertices Per Meter` | IcoSphere | Surface vertex density target, clamped by Max Subdivisions below. |
+| `Max Subdivisions` | IcoSphere | Hard-clamped at 11. A single mesh can't show ground-level detail at planetary radius - keep this low (6-9) for live editing. This actor is for a bounded preview/bake radius, not a full streaming planet. |
+| `Terrain Stack` | Terrain | **Assign your `USolarOrbzTerrainLayerStack` here** - this is the asset the rest of this guide edits. |
+| `Biome Stack` | Biome | Optional - biome-specific detail layered on top of Terrain Stack. |
+| `Climate Simulation` | Climate | Optional - feeds real temperature/moisture into biome masks. |
+| `Profile` | Profile | Optional - a Planet/Star/Asteroid Profile asset; drives gravity, atmosphere, landmass counts. |
+| `Preview Collision` | IcoSphere | Off by default - leave off for large/dense previews; add collision later on the baked mesh instead. |
+
+Assigning `Terrain Stack` (and editing anything on it afterward, including everything in §2-§8
+below) regenerates the mesh immediately - every change you make in the Terrain Graph Editor shows up
+on this actor in real time, nothing else to trigger.
+
+Once a preview looks right, **Bake To Static Mesh** (further down the same panel, or the matching
+button in the actor's own Details panel) writes it out to a `UStaticMesh` asset at the **Package
+Path**/**Asset Name** you set there - that's the actual deliverable for building solar-system
+assets.
+
+## 2. Opening a Terrain Layer Stack
 
 A `USolarOrbzTerrainLayerStack` is still an ordinary `UPrimaryDataAsset` - nothing about *creating*
 one changed. If you don't already have one: Content Browser → **Add** → **Miscellaneous → Data
@@ -18,9 +64,9 @@ unfiled default.
 **What's new:** double-click an existing stack asset and it now opens the **Terrain Graph Editor**
 (a new tab layout: "Terrain Graph" + "Details") instead of the generic property grid. The generic
 property grid is gone for this asset type - everything you used to edit there, you edit the same way
-now, just reached by clicking a node instead of expanding an array entry (see §4).
+now, just reached by clicking a node instead of expanding an array entry (see §5).
 
-## 2. Reading the graph
+## 3. Reading the graph
 
 On open, the Terrain Graph tab shows your stack's layers as a left-to-right chain:
 
@@ -40,7 +86,7 @@ On open, the Terrain Graph tab shows your stack's layers as a left-to-right chai
   right. Rearrange them however you like - your layout is remembered per-asset (saved in the stack's
   own `EditorNodePositions`, so it persists across editor sessions once you save the asset).
 
-## 3. Adding a layer
+## 4. Adding a layer
 
 There's no right-click "Add Node" on empty canvas in this version - use the **Add Layer** button
 above the graph canvas instead. Click it, pick a layer type from the dropdown (every concrete layer
@@ -48,9 +94,9 @@ type in the plugin is listed - Noise, Planetary Noise, Heightmap, Stamp, Erosion
 Continent). The new node appears **at the end of the chain, just before Output** with default
 property values.
 
-If you need it somewhere other than the end, see §5 (reordering) right after.
+If you need it somewhere other than the end, see §6 (reordering) right after.
 
-## 4. Editing a layer's properties
+## 5. Editing a layer's properties
 
 Click a node. The **Details** tab (right side) fills with that exact layer's properties - the same
 fields you'd see expanding it in the old array widget (`Strength`, `Blend Mode`, `Mask`, plus
@@ -60,7 +106,7 @@ etc.). Edit there as normal; it's the real asset data, not a copy, so no extra s
 Clicking **Start** or **Output** clears the Details tab - they're sentinels, not layers, and have no
 properties of their own.
 
-## 5. Reordering layers
+## 6. Reordering layers
 
 The chain only allows one connection per pin, so reordering means **dragging a new connection onto
 a pin that already has one** - the old connection breaks automatically the moment the new one is
@@ -80,7 +126,7 @@ This is a bit fiddly for anything beyond a short hop - moving a layer several po
 several drags. If that turns out to be annoying in practice, say so; a "move up/down" context action
 on the node is a reasonable follow-up and doesn't touch anything else in this system.
 
-## 6. Removing a layer
+## 7. Removing a layer
 
 Select the node and press **Delete**. *(Flagged as unverified: standard `SGraphEditor` keyboard
 delete should just work here, but this is the one interaction in this editor I'd most want
@@ -88,7 +134,7 @@ confirmed on first hands-on pass - if Delete does nothing, tell me and I'll wire
 command rather than relying on the graph's default.)* Start/Output can't be deleted - they're not
 "in" `Layers` to begin with.
 
-## 7. Saving
+## 8. Saving
 
 Ctrl+S / the editor's Save button, same as any other asset. Every structural edit (add a layer,
 reconnect, delete) is already written back into the real `Layers` array **immediately**, not just on
@@ -96,7 +142,7 @@ save - save just persists that array (and your node layout) to disk as usual. Yo
 reopen the stack mid-edit without losing a reorder, in other words; save is only about disk
 persistence, not about "committing" the graph edits.
 
-## 8. If something looks wrong
+## 9. If something looks wrong
 
 Open **Window → Developer Tools → Output Log** and filter for `LogSolarOrbzTerrainGraph` - every
 rebuild, compile-back-into-`Layers`, connection decision, and toolkit action logs there, including
@@ -109,11 +155,11 @@ warnings for the cases most likely to actually go wrong:
 | Add Layer's dropdown is empty | A `GetDerivedClasses found no concrete USolarOrbzTerrainLayer subclasses` warning means something's wrong with module loading, not this editor specifically - worth a full rebuild. |
 | The editor won't open at all / double-click still shows the old property grid | Check for a `USolarOrbzTerrainLayerStackAssetDefinition::OpenAssets` line - if it's not there at all, the asset definition likely isn't registering; a restart of the editor (not just a hot-reload) is worth trying first. |
 
-## 9. Known limitations (carried over from the design doc)
+## 10. Known limitations (carried over from the design doc)
 
 - No branching - this is a straight chain, matching what `Layers` already was. See the design doc's
   "why a strict chain" section if you want the reasoning.
-- No native right-click "Add Node" menu - the toolbar button in §3 does the same job.
+- No native right-click "Add Node" menu - the toolbar button in §4 does the same job.
 - No per-node preview thumbnails - you still need to look at the actual planet to see a layer's
   effect.
 
