@@ -224,9 +224,11 @@ TSharedRef<SWidget> FSolarOrbzTerrainGraphEditorToolkit::BuildAddLayerMenu()
 {
 	TArray<UClass*> LayerClasses;
 	GetDerivedClasses(USolarOrbzTerrainLayer::StaticClass(), LayerClasses, true);
-	LayerClasses.Sort([](UClass* const& A, UClass* const& B)
+	// TArray<T*>::Sort wraps the predicate in TDereferenceWrapper, which always dereferences the
+	// pointers before calling it - so the predicate takes the pointee type (UClass&), not UClass*.
+	LayerClasses.Sort([](const UClass& A, const UClass& B)
 	{
-		return A->GetDisplayNameText().CompareTo(B->GetDisplayNameText()) < 0;
+		return A.GetDisplayNameText().CompareTo(B.GetDisplayNameText()) < 0;
 	});
 
 	TSharedRef<SVerticalBox> MenuBox = SNew(SVerticalBox);
