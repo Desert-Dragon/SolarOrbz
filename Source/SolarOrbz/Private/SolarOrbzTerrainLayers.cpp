@@ -24,6 +24,7 @@ USolarOrbzTerrainGraph* USolarOrbzTerrainLayerStack::GetOrCreateTerrainGraph()
 {
 	if (!TerrainGraph)
 	{
+		UE_LOG(LogSolarOrbzTerrainGraph, Log, TEXT("GetOrCreateTerrainGraph: building the Terrain Graph Editor view for %s for the first time this session"), *GetName());
 		TerrainGraph = NewObject<USolarOrbzTerrainGraph>(this, NAME_None, RF_Transient);
 		TerrainGraph->RebuildFromLayers(this);
 	}

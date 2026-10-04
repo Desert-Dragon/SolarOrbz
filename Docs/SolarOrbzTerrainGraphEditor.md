@@ -1,14 +1,17 @@
 # SolarOrbz Terrain Graph Editor — Design
 
-**Status: Phase 1 (data model) implemented. No graph UI exists yet - double-clicking a
-`USolarOrbzTerrainLayerStack` asset still opens the generic property editor until Phase 2 lands.**
-Written without a UE5.8 compiler available (see every other SolarOrbz doc's standing caveat) -
-`UAssetDefinition`/`GetMipImage`/`UEdGraph`-class facts below were checked against current
-documentation before being written as fact, per this repo's own UE5.8-specific documentation
-standard (`CLAUDE.md`); Phase 1's code (`SolarOrbzTerrainGraph.h`/`.cpp`) is therefore at this
-repo's "review-only" verification bar - checked by careful reading against those documented APIs,
-not compiled or run, same as `AASolarOrbzChunkedPlanetActor`/`FSolarOrbzChunkResidentSetManager` in
-the chunked-terrain work.
+**Status: Phase 1 (data model) and Phase 2 (editor UI) both implemented.** Double-clicking a
+`USolarOrbzTerrainLayerStack` asset now opens `FSolarOrbzTerrainGraphEditorToolkit` instead of the
+generic property matrix. Written without a UE5.8 compiler available (see every other SolarOrbz
+doc's standing caveat) - `UAssetDefinition`/`GetMipImage`/`UEdGraph`/`SGraphEditor`/
+`FAssetEditorToolkit`-class facts below were checked against current documentation before being
+written as fact, per this repo's own UE5.8-specific documentation standard (`CLAUDE.md`); this
+code (`SolarOrbzTerrainGraph.h`/`.cpp`, `SolarOrbzTerrainGraphEditorToolkit.h`/`.cpp`) is therefore
+at this repo's "review-only" verification bar - checked by careful reading against those documented
+APIs, not compiled or run, same as `AASolarOrbzChunkedPlanetActor`/`FSolarOrbzChunkResidentSetManager`
+in the chunked-terrain work. Every operation in both files now logs through `LogSolarOrbzTerrainGraph`
+(see "Logging" below) specifically so a real compile/run pass has something to point at if any of
+this guessed an API shape wrong.
 
 ## Why this exists
 
@@ -93,33 +96,55 @@ expose it meaningfully, and that's a bigger, separate design question, not a gra
     made in the graph back onto the real asset data) and snapshots each visited node's current
     canvas position into `EditorNodePositions`.
 
-Nothing calls `GetOrCreateTerrainGraph()` yet - without Phase 2's editor toolkit, this is dead code
-reachable only from C++/the future editor, not from anything a user can trigger today. It compiles
-against documented UE5.8 `UEdGraph`/`UEdGraphNode`/`UEdGraphSchema` APIs (Engine module, already a
-`SolarOrbz.Build.cs` dependency - no Build.cs change was needed for this phase) but has not been run
-in-editor, per the review-only bar noted above.
+`GetOrCreateTerrainGraph()` is now called from Phase 2's toolkit on editor open - see below. It
+compiles against documented UE5.8 `UEdGraph`/`UEdGraphNode`/`UEdGraphSchema` APIs (Engine module,
+already a `SolarOrbz.Build.cs` dependency - no Build.cs change was needed for this phase) but has
+not been run in-editor, per the review-only bar noted above.
 
-### Phase 2 - the actual editor UI (not started)
+### Phase 2 - the actual editor UI (implemented, `SolarOrbzTerrainGraphEditorToolkit.h`/`.cpp`)
 
 - `USolarOrbzTerrainLayerStackAssetDefinition : UAssetDefinitionDefault` - the modern UE5.8
   registration point (Epic's current replacement for the older `IAssetTypeActions`/
   `FAssetTypeActions_Base` pattern - `UAssetDefinition`s register automatically with
-  `UAssetDefinitionRegistry` and route a double-click through the new `UToolMenu`-based actions
-  system rather than a hand-registered `IAssetTypeActions::OpenAssetEditor` override). This is what
-  makes double-clicking a `USolarOrbzTerrainLayerStack` asset open the new editor instead of the
-  generic property matrix.
+  `UAssetDefinitionRegistry`, no manual registration call needed anywhere in this module). Overrides
+  `GetAssetClass`/`GetAssetDisplayName`/`GetAssetColor`/`GetAssetCategories` (puts the asset under a
+  "SolarOrbz" category) and `OpenAssets`, which is what makes double-clicking a
+  `USolarOrbzTerrainLayerStack` asset open `FSolarOrbzTerrainGraphEditorToolkit` below instead of the
+  generic property matrix. Lives in the `UnrealEd` module (already a dependency); the `FAssetOpenArgs`/
+  `FAssetCategoryPath`/`EAssetCommandResult` types it uses live in the `AssetDefinition` module,
+  newly added to `SolarOrbz.Build.cs`.
 - `FSolarOrbzTerrainGraphEditorToolkit : FAssetEditorToolkit` - the actual editor window/tab layout:
-  an `SGraphEditor` (from the `GraphEditor` module) bound to `RebuildFromLayers()`'s output, docked
-  alongside a standard `IDetailsView` showing whichever node is currently selected - this is also
-  why Phase 1's "node just references the real layer object" choice matters: the existing Details
-  panel already knows how to edit every `UPROPERTY` on every existing layer type (`Strength`,
-  `BlendMode`, `Mask`, every `Noise`/`Heightmap`/`Erosion`-specific field) with zero new UI code -
-  selecting a node is all that's needed to get the exact same property editing experience the array
-  widget already provides today, just reached by clicking a node instead of expanding an array
-  entry.
-- "Add Node" context menu, reflection-driven over non-abstract `USolarOrbzTerrainLayer` subclasses.
-- Wire `CompileToLayers()` to fire on every structural graph edit (`FEdGraphEditAction`), not just on
-  save, so `Layers` never drifts out of sync with what the graph currently shows.
+  an `SGraphEditor` (from the newly-added `GraphEditor` module dependency) bound to the stack's
+  `USolarOrbzTerrainGraph`, in a "Terrain Graph" tab alongside a "Details" tab holding a standard
+  `IDetailsView`. `InitEditor()` calls `GetOrCreateTerrainGraph()` then `RebuildFromLayers()` again
+  unconditionally (covers a stack whose `Layers` changed via the generic Details panel - e.g.
+  undo/redo - while this graph wasn't open to see it), then builds both widgets and lays them out via
+  `FTabManager::NewLayout` (75/25 horizontal split) before calling `InitAssetEditor()`.
+  - Selecting a node pushes its wrapped `Layer` object into the `IDetailsView` (`HandleSelectionChanged`,
+    bound to `SGraphEditor::FGraphEditorEvents::OnSelectionChanged`) - this is also why Phase 1's
+    "node just references the real layer object" choice matters: the existing Details panel already
+    knows how to edit every `UPROPERTY` on every existing layer type (`Strength`, `BlendMode`, `Mask`,
+    every `Noise`/`Heightmap`/`Erosion`-specific field) with zero new UI code.
+  - **"Add Layer" is a toolbar combo button, not a native graph right-click context menu - a
+    deliberate simplification from the original design.** `SGraphEditor`'s right-click "create node"
+    path goes through an `OnCreateActionMenu` delegate whose exact signature could not be pinned down
+    against documented UE5.8 sources with the confidence this project's verification standard calls
+    for. A combo button (`BuildAddLayerMenu`, reflection-driven over non-abstract
+    `USolarOrbzTerrainLayer` subclasses via `GetDerivedClasses` - still zero per-layer-type code, same
+    promise the original design made) reaches the same outcome through APIs already proven correct
+    elsewhere in this codebase (`SComboButton`/`SButton`, the same pattern `SolarOrbzEditor.h`'s
+    `SSolarOrbzMainPanel` already uses). Picking a class calls `AddLayerOfClass()`, which appends a
+    `NewObject` of that class to `Layers` and calls `RebuildFromLayers()` to show it immediately.
+  - `CompileToLayers()` fires on every structural graph edit via `TerrainGraph->AddOnGraphChangedHandler`
+    (`HandleGraphChanged`), not just on save, so `Layers` never drifts out of sync with what the graph
+    currently shows - exactly the Phase 2 item the original design called for. This needed one small
+    Phase 1 addition made alongside this phase: `USolarOrbzTerrainGraph::IsRebuilding()` (backed by a
+    new private `bIsRebuilding` flag, set for the duration of `RebuildFromLayers()`). Without it,
+    `RebuildFromLayers()`'s own node adds/removes - which broadcast the identical graph-changed
+    notification a user's interactive edit does - would reach `HandleGraphChanged` mid-rebuild (e.g.
+    after Start and Output both exist but before any layer node is wired between them) and compile a
+    truncated or empty chain back into `Layers`. `HandleGraphChanged` checks `IsRebuilding()` before
+    calling `CompileToLayers()`; genuine interactive edits (the whole point) aren't affected.
 
 ### Phase 3 - explicitly future, not v1
 
@@ -128,14 +153,31 @@ in-editor, per the review-only bar noted above.
 - Per-node live preview thumbnails.
 - Categorized/grouped Add Node menu, comment boxes, copy/paste between stacks.
 
+## Logging
+
+Every operation in both files logs through one shared category, `LogSolarOrbzTerrainGraph`
+(declared in `SolarOrbzTerrainGraph.h`, defined in `SolarOrbzTerrainGraph.cpp`) - filtering the
+Output Log for it shows the whole story for one editor session: `RebuildFromLayers`/
+`CompileToLayers` (start/finish, layer counts, a null-entry or broken-chain warning),
+`CanCreateConnection`'s allow/disallow/replace decisions (`Verbose`), `GetOrCreateTerrainGraph`'s
+first-build, and the toolkit's open/close, `AddLayerOfClass`, `HandleSelectionChanged`, and
+`HandleGraphChanged`. This exists specifically so that if any of this guessed a UE5.8 API shape
+wrong, the first real compile/run pass has a trail to debug from rather than a silent failure -
+e.g. a `CompileToLayers` "chain never reached Output" warning would point straight at a
+`CanCreateConnection` or `RebuildFromLayers` bug rather than silently truncating `Layers`.
+
 ## Known limitations / out of scope for this pass
 
-- No graph UI yet - Phase 1 (data model) only. A stack asset still opens the generic editor until
-  Phase 2 lands, and nothing calls `GetOrCreateTerrainGraph()` today.
-- `UEdGraph`/`UEdGraphNode`/`SGraphEditor`-class code is engine-dependent UObject/Slate machinery,
-  the same "review-only" verification bar as `AASolarOrbzChunkedPlanetActor`/
-  `FSolarOrbzChunkResidentSetManager` in the chunked-terrain work - there is no Python-equivalent
-  ground truth for "does this UEdGraphSchema correctly reject an invalid Slate drag-connection," so
-  this is checked by careful reading against documented UE5.8 APIs and this plugin's own existing
-  patterns, not compiled or run (no UE5.8 compiler available in this environment).
+- `UEdGraph`/`UEdGraphNode`/`SGraphEditor`/`FAssetEditorToolkit`-class code is engine-dependent
+  UObject/Slate machinery, the same "review-only" verification bar as
+  `AASolarOrbzChunkedPlanetActor`/`FSolarOrbzChunkResidentSetManager` in the chunked-terrain work -
+  there is no Python-equivalent ground truth for "does this UEdGraphSchema correctly reject an
+  invalid Slate drag-connection" or "does this toolkit's tab layout actually render," so this is
+  checked by careful reading against documented UE5.8 APIs and this plugin's own existing patterns,
+  not compiled or run (no UE5.8 compiler available in this environment). The logging above exists
+  specifically to make the first real compile/run pass debuggable rather than starting over blind.
+- "Add Layer" is a toolbar combo button, not a native graph right-click context menu - see Phase 2
+  above for why. A right-click "Add Node" experience is still achievable later, once
+  `OnCreateActionMenu`'s signature can be confirmed against a real engine checkout or documentation
+  that pins it down precisely.
 - Branching/merge terrain combination - genuinely not designed yet, see Phase 3.

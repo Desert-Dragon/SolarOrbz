@@ -30,25 +30,44 @@ commitment or a schedule - just a place these don't get lost between sessions.
 
 ## Terrain
 
-- **Terrain Graph Editor, Phase 1 (data model).** **Done, no UI yet.** Requested directly: a
-  dedicated node-graph UI for authoring a planet's terrain recipe instead of editing
+- **Terrain Graph Editor, Phase 1 (data model) + Phase 2 (editor UI).** **Done.** Requested
+  directly: a dedicated node-graph UI for authoring a planet's terrain recipe instead of editing
   `USolarOrbzTerrainLayerStack::Layers` as a raw `Instanced` array in the generic Details panel. Full
   design in `Docs/SolarOrbzTerrainGraphEditor.md` (mirrored as an Artifact per `CLAUDE.md`'s
   subsystem-doc policy); the short version: the graph is a transient VIEW over `Layers`, never a
   second source of truth - `EvaluateHeight`/`Bake`/every existing caller still only ever reads
-  `Layers`, completely unchanged. This pass adds the data model only, in new file
-  `SolarOrbzTerrainGraph.h`/`.cpp` plus small additions to `SolarOrbzTerrainLayers.h`/`.cpp`:
-  `FGuid USolarOrbzTerrainLayer::EditorNodeId` (+ `EnsureEditorNodeId()`), `TMap<FGuid, FVector2D>
-  USolarOrbzTerrainLayerStack::EditorNodePositions` + a `Transient` `TerrainGraph` field +
-  `GetOrCreateTerrainGraph()`, and the three new graph classes themselves
-  (`USolarOrbzTerrainGraphNode`/`Schema`/`Graph`, see the design doc's Phase 1 section for what each
-  does). No Build.cs change needed - `UEdGraph`/`UEdGraphNode`/`UEdGraphSchema` live in the `Engine`
-  module, already a dependency. Nothing calls `GetOrCreateTerrainGraph()` yet; double-clicking a
-  stack asset still opens the generic property editor until Phase 2 (the actual
-  `UAssetDefinition` + `SGraphEditor`-based toolkit, not started) lands. Written and reviewed against
-  documented UE5.8 `EdGraph` APIs (verified via web search, not assumed from memory), not compiled or
-  run - the same review-only verification bar as the chunked-terrain actor/manager code, since there
-  is no Python-equivalent ground truth for UObject/Slate-adjacent graph machinery.
+  `Layers`, completely unchanged.
+  - **Phase 1 (data model)**: new file `SolarOrbzTerrainGraph.h`/`.cpp` plus small additions to
+    `SolarOrbzTerrainLayers.h`/`.cpp`: `FGuid USolarOrbzTerrainLayer::EditorNodeId` (+
+    `EnsureEditorNodeId()`), `TMap<FGuid, FVector2D> USolarOrbzTerrainLayerStack::EditorNodePositions`
+    + a `Transient` `TerrainGraph` field + `GetOrCreateTerrainGraph()`, and the three new graph
+    classes themselves (`USolarOrbzTerrainGraphNode`/`Schema`/`Graph`). No Build.cs change needed for
+    this part - `UEdGraph`/`UEdGraphNode`/`UEdGraphSchema` live in the `Engine` module, already a
+    dependency.
+  - **Phase 2 (editor UI)**: new file `SolarOrbzTerrainGraphEditorToolkit.h`/`.cpp`:
+    `USolarOrbzTerrainLayerStackAssetDefinition : UAssetDefinitionDefault` (the modern UE5.8
+    registration point, replacing the older `IAssetTypeActions` pattern) makes double-clicking a
+    stack asset open `FSolarOrbzTerrainGraphEditorToolkit : FAssetEditorToolkit` - an `SGraphEditor`
+    tab bound to the Phase 1 graph, docked next to a `IDetailsView` tab that shows whichever node is
+    selected (free, since a node references the real layer object directly). Added `GraphEditor` and
+    `AssetDefinition` to `SolarOrbz.Build.cs`'s private dependencies for this. "Add Layer" is a
+    toolbar combo button rather than a native graph right-click menu - `SGraphEditor`'s
+    `OnCreateActionMenu` delegate's exact signature couldn't be confirmed against documented UE5.8
+    sources, so the combo button (same reflection-over-subclasses approach, zero per-layer-type code)
+    reaches the same outcome through APIs already proven correct elsewhere in this codebase. Also
+    added `USolarOrbzTerrainGraph::IsRebuilding()` (a small Phase 1 follow-up): wiring
+    `CompileToLayers()` to fire on every graph edit meant guarding against `RebuildFromLayers()`'s own
+    programmatic node adds/removes re-triggering that same compile mid-rebuild and writing a
+    truncated chain back into `Layers`.
+  - **Logging**: every operation in both files now logs through one new category,
+    `LogSolarOrbzTerrainGraph` - rebuild/compile start-finish and layer counts, connection
+    allow/disallow/replace decisions, and the toolkit's open/close/add-layer/selection/compile steps -
+    specifically so a real compile/run pass has a trail to debug from if any guessed API shape below
+    turns out wrong, rather than a silent failure.
+  - Written and reviewed against documented UE5.8 `EdGraph`/`GraphEditor`/`AssetDefinition`/
+    `UnrealEd` APIs (verified via web search, not assumed from memory), not compiled or run - the same
+    review-only verification bar as the chunked-terrain actor/manager code, since there is no
+    Python-equivalent ground truth for UObject/Slate-adjacent graph/toolkit machinery.
 
 - **Heightmap/Stamp layers silently contributing zero height - a real bug, found once hands-on
   testing was actually possible.** **Done.** Reported symptom: a Heightmap Layer showed no visible

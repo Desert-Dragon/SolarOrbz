@@ -2,8 +2,9 @@
 // The classes here are a VIEW over USolarOrbzTerrainLayerStack::Layers, never a second source of
 // truth - RebuildFromLayers()/CompileToLayers() are the only two places that cross between the
 // array and the graph; every other evaluation code path (EvaluateHeight/Bake/etc.) never sees this
-// file at all. No asset editor exists yet (that's Phase 2 - USolarOrbzTerrainLayerStackAssetDefinition
-// + FSolarOrbzTerrainGraphEditorToolkit, not started) - these classes are unused by anything today.
+// file at all. The Phase 2 asset editor (SolarOrbzTerrainGraphEditorToolkit.h/.cpp) drives these
+// classes but doesn't touch Layers directly either - it only ever goes through RebuildFromLayers()/
+// CompileToLayers() too.
 
 #pragma once
 
@@ -15,6 +16,9 @@
 
 class USolarOrbzTerrainLayer;
 class USolarOrbzTerrainLayerStack;
+
+/** Shared by the Phase 1 data model here and the Phase 2 editor toolkit - one category for the whole Terrain Graph Editor subsystem, so filtering the Output Log for "LogSolarOrbzTerrainGraph" shows the full story for a given editor session. */
+SOLARORBZ_API DECLARE_LOG_CATEGORY_EXTERN(LogSolarOrbzTerrainGraph, Log, All);
 
 // ================================================================================================
 // USolarOrbzTerrainGraphNode - ONE generic node class for every entry in Layers, plus the fixed
@@ -121,4 +125,18 @@ public:
 	 * rule keeps this from happening except transiently during an edit.
 	 */
 	void CompileToLayers(USolarOrbzTerrainLayerStack* OwningStack) const;
+
+	/**
+	 * True while RebuildFromLayers() is actively tearing down/recreating nodes. RebuildFromLayers()
+	 * adds/removes nodes through the normal AddNode()/RemoveNode() API, which broadcasts the same
+	 * OnGraphChanged notifications a user's interactive edit would - without this guard, the Phase 2
+	 * toolkit's "recompile on every graph change" handler would see those programmatic broadcasts
+	 * too and call CompileToLayers() with the graph only half-rebuilt (e.g. Start and Output both
+	 * present but not yet wired to any layer node), overwriting Layers with a truncated list. The
+	 * toolkit checks this before compiling; nothing in this file needs to.
+	 */
+	bool IsRebuilding() const { return bIsRebuilding; }
+
+private:
+	bool bIsRebuilding = false;
 };
