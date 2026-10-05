@@ -156,11 +156,19 @@ on the node is a reasonable follow-up and doesn't touch anything else in this sy
 
 ## 7. Removing a layer
 
-Select the node and press **Delete**. *(Flagged as unverified: standard `SGraphEditor` keyboard
-delete should just work here, but this is the one interaction in this editor I'd most want
-confirmed on first hands-on pass - if Delete does nothing, tell me and I'll wire an explicit delete
-command rather than relying on the graph's default.)* Start/Output can't be deleted - they're not
-"in" `Layers` to begin with.
+Select the node and press **Delete**. This is wired explicitly (`FGenericCommands::Get().Delete`
+mapped to `DeleteSelectedNodes()`) rather than relying on `SGraphEditor`'s own default behavior -
+an earlier pass left `.AdditionalCommands()` empty, so Delete silently did nothing at all; that's
+fixed now. Deleting a layer in the middle of the chain does **not** auto-reconnect its neighbors -
+the chain simply breaks at that point (same as an in-progress reconnect), so `Layers` truncates at
+the break until you drag a new connection across the gap (or Ctrl+Z). Start/Output can't be
+deleted - they're not "in" `Layers` to begin with, and aren't selectable as deletable targets even
+if they're part of your selection when you press Delete.
+
+Same wiring (and same "chain truncates, not auto-reconnects" behavior) applies to the embedded
+terrain chain in the Planet Spawner panel's graph (§1) - selecting one of its fixed module/Planet
+nodes instead and pressing Delete does nothing there; only terrain-chain layer nodes are
+deletable.
 
 ## 8. Saving
 

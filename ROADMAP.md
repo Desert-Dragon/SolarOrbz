@@ -68,6 +68,37 @@ commitment or a schedule - just a place these don't get lost between sessions.
     `UnrealEd` APIs (verified via web search, not assumed from memory), not compiled or run - the same
     review-only verification bar as the chunked-terrain actor/manager code, since there is no
     Python-equivalent ground truth for UObject/Slate-adjacent graph/toolkit machinery.
+  - **Layer deletion ("can I remove layers in the terrain graph") - requested directly, and a real
+    gap: Delete silently did nothing at all.** **Done.** `.AdditionalCommands(MakeShared<FUICommandList>())`
+    was an empty command list - nothing routed the Delete key to anything, so the usage guide's own
+    "press Delete" instructions (and the Planet Spawner design doc's claim that deleting a fixed
+    module node "hides it until Ctrl+Z") never actually worked; this had been flagged unverified
+    rather than caught, since no UE5.8 compiler is available in this environment to exercise it.
+    Fixed in both graphs that carry `USolarOrbzTerrainGraphNode`s: `FSolarOrbzTerrainGraphEditorToolkit`
+    (new `GraphEditorCommands` member) and `SSolarOrbzMainPanel` (new `GraphEditorCommands` member,
+    for the Planet Spawner panel's embedded terrain chain) each now build a real
+    `FUICommandList`, map `FGenericCommands::Get().Delete` to a new `DeleteSelectedNodes()`/
+    `DeleteSelectedTerrainNodes()` handler (gated by a matching `CanDelete...()` so the command is
+    disabled unless a real layer node is selected), and pass that list to `.AdditionalCommands()`
+    instead of an empty one. The handler walks `GraphEditorWidget->GetSelectedNodes()`, skips
+    anything that isn't a non-sentinel `USolarOrbzTerrainGraphNode` (Start/Output, and - in the
+    embedded graph only - a selected fixed module/Planet node, left alone since that topology stays
+    non-editable by design), and calls `RemoveNode(Node, /*bBreakAllLinks=*/true)` on each - already
+    enough on its own, since `RemoveNode()` broadcasts the same `OnGraphChanged` notification
+    `AddNode()` does (see `USolarOrbzTerrainGraph`'s own header), so the existing
+    `HandleGraphChanged`/`HandleSpawnerGraphChanged` compile-on-change handlers recompile `Layers`
+    for each removal automatically with no new write-back code needed; the handler only additionally
+    calls `GraphEditorWidget->NotifyGraphChanged()` once afterward to refresh the canvas. Deleting a
+    middle-of-chain layer does NOT auto-reconnect its neighbors - the chain breaks at that point and
+    `Layers` truncates there until a new connection is dragged across the gap (or the delete is
+    undone), the same behavior an in-progress reconnect already produces. Checked the
+    `FGenericCommands`/`SGraphEditor::GetSelectedNodes()`/`FGraphPanelSelectionSet`/
+    `UEdGraph::RemoveNode()` APIs used here via sub-agent research before writing them as fact - this
+    environment's network policy blocks direct access to Epic's own source/doc hosts, so the result
+    is indirect corroboration (legacy API-doc snippets, source-derived code snippets from third-party
+    indexes) rather than a first-hand 5.8 source read; all four came back consistent with no
+    5.8-specific deviations found, which is this repo's usual review-only bar for engine-dependent
+    code, not a weaker one than the rest of this subsystem already carries.
 
 - **Heightmap/Stamp layers silently contributing zero height - a real bug, found once hands-on
   testing was actually possible.** **Done.** Reported symptom: a Heightmap Layer showed no visible

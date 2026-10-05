@@ -14,6 +14,7 @@
 #include "Toolkits/AssetEditorToolkit.h"
 #include "SolarOrbzTerrainGraphEditorToolkit.generated.h"
 
+class FUICommandList;
 class IDetailsView;
 class SDockTab;
 class SGraphEditor;
@@ -95,6 +96,21 @@ private:
 	/** Fired by TerrainGraph on every add/remove/reconnect, including ones RebuildFromLayers() itself makes - guarded by TerrainGraph->IsRebuilding() so only genuine interactive edits reach CompileToLayers(). */
 	void HandleGraphChanged(const FEdGraphEditAction& Action);
 
+	/**
+	 * Bound to FGenericCommands::Get().Delete via GraphEditorCommands (SGraphEditor's own Delete key
+	 * handling routes through whatever FUICommandList is passed to .AdditionalCommands() - there is
+	 * no deletion at all without this, which is exactly the gap this method closes). Removes every
+	 * selected node that is a real layer (skips Start/Output - they aren't "in" Layers to begin with,
+	 * same reasoning BuildAddLayerMenu's "append before Output" already assumes). TerrainGraph's own
+	 * RemoveNode() already broadcasts the same OnGraphChanged notification AddNode() does (see
+	 * USolarOrbzTerrainGraph's own header), so HandleGraphChanged above recompiles Layers for each
+	 * removal automatically - this method only needs to call RemoveNode and refresh the widget.
+	 */
+	void DeleteSelectedNodes();
+
+	/** Enables the Delete command only when at least one selected node is a real (non-sentinel) layer node. */
+	bool CanDeleteSelectedNodes() const;
+
 	/** The stack this toolkit is editing. Kept alive by the asset editor subsystem via the ObjectsToEdit list passed to InitAssetEditor() - this is a convenience cache, not an extra GC root. */
 	USolarOrbzTerrainLayerStack* EditingStack = nullptr;
 
@@ -103,6 +119,9 @@ private:
 
 	TSharedPtr<SGraphEditor> GraphEditorWidget;
 	TSharedPtr<IDetailsView> DetailsView;
+
+	/** Maps FGenericCommands::Get().Delete to DeleteSelectedNodes()/CanDeleteSelectedNodes() - passed to SGraphEditor's .AdditionalCommands() in InitEditor(). */
+	TSharedPtr<FUICommandList> GraphEditorCommands;
 
 	FDelegateHandle GraphChangedDelegateHandle;
 

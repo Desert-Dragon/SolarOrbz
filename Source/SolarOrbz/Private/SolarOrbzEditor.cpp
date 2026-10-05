@@ -33,6 +33,7 @@
 #include "PropertyEditorModule.h"
 #include "IDetailsView.h"
 #include "Framework/Commands/UICommandList.h"
+#include "Framework/Commands/GenericCommands.h"
 
 // ================================================================================================
 // FSolarOrbzStyle
@@ -153,11 +154,17 @@ void SSolarOrbzMainPanel::Construct(const FArguments& InArgs)
 
 	SpawnerGraph->AddOnGraphChangedHandler(FOnGraphChanged::FDelegate::CreateSP(this, &SSolarOrbzMainPanel::HandleSpawnerGraphChanged));
 
+	GraphEditorCommands = MakeShared<FUICommandList>();
+	GraphEditorCommands->MapAction(
+		FGenericCommands::Get().Delete,
+		FExecuteAction::CreateSP(this, &SSolarOrbzMainPanel::DeleteSelectedTerrainNodes),
+		FCanExecuteAction::CreateSP(this, &SSolarOrbzMainPanel::CanDeleteSelectedTerrainNodes));
+
 	SGraphEditor::FGraphEditorEvents GraphEvents;
 	GraphEvents.OnSelectionChanged = SGraphEditor::FOnSelectionChanged::CreateSP(this, &SSolarOrbzMainPanel::HandleGraphSelectionChanged);
 
 	GraphEditorWidget = SNew(SGraphEditor)
-		.AdditionalCommands(MakeShared<FUICommandList>())
+		.AdditionalCommands(GraphEditorCommands)
 		.GraphToEdit(SpawnerGraph.Get())
 		.GraphEvents(GraphEvents);
 
@@ -446,6 +453,72 @@ void SSolarOrbzMainPanel::HandleSpawnerGraphChanged(const FEdGraphEditAction& Ac
 
 	UE_LOG(LogSolarOrbzPlanetSpawner, Verbose, TEXT("HandleSpawnerGraphChanged: graph edited, compiling embedded terrain chain"));
 	SpawnerGraph->CompileEmbeddedTerrainChain();
+}
+
+void SSolarOrbzMainPanel::DeleteSelectedTerrainNodes()
+{
+	if (!GraphEditorWidget.IsValid() || !SpawnerGraph)
+	{
+		return;
+	}
+
+	const FGraphPanelSelectionSet SelectedNodes = GraphEditorWidget->GetSelectedNodes();
+	if (SelectedNodes.Num() == 0)
+	{
+		return;
+	}
+
+	if (SpawnerGraph->EmbeddedTerrainStack)
+	{
+		SpawnerGraph->EmbeddedTerrainStack->Modify();
+	}
+
+	int32 NumRemoved = 0;
+	for (UObject* SelectedObject : SelectedNodes)
+	{
+		USolarOrbzTerrainGraphNode* Node = Cast<USolarOrbzTerrainGraphNode>(SelectedObject);
+		if (!Node || Node->bIsStartNode || Node->bIsOutputNode)
+		{
+			// Not a real terrain-chain layer node: either a fixed module/Planet node (left alone,
+			// this graph's fixed topology stays non-editable by design) or a Start/Output sentinel
+			// (never "in" Layers to begin with) - either way, not deletable here.
+			continue;
+		}
+
+		Node->Modify();
+		SpawnerGraph->RemoveNode(Node, /*bBreakAllLinks=*/ true);
+		++NumRemoved;
+	}
+
+	if (NumRemoved > 0)
+	{
+		// RemoveNode() already broadcast OnGraphChanged per removal (HandleSpawnerGraphChanged
+		// already recompiled EmbeddedTerrainStack->Layers for each one) - this just refreshes the
+		// canvas so the removed node(s) actually disappear, same as AddLayerOfClass's own
+		// NotifyGraphChanged() call.
+		UE_LOG(LogSolarOrbzPlanetSpawner, Log, TEXT("DeleteSelectedTerrainNodes: removed %d terrain layer node(s)"), NumRemoved);
+		GraphEditorWidget->NotifyGraphChanged();
+	}
+}
+
+bool SSolarOrbzMainPanel::CanDeleteSelectedTerrainNodes() const
+{
+	if (!GraphEditorWidget.IsValid())
+	{
+		return false;
+	}
+
+	for (UObject* SelectedObject : GraphEditorWidget->GetSelectedNodes())
+	{
+		if (const USolarOrbzTerrainGraphNode* Node = Cast<USolarOrbzTerrainGraphNode>(SelectedObject))
+		{
+			if (!Node->bIsStartNode && !Node->bIsOutputNode)
+			{
+				return true;
+			}
+		}
+	}
+	return false;
 }
 
 FReply SSolarOrbzMainPanel::OnGenerateClicked()

@@ -204,9 +204,13 @@ density concept) and are left as whatever `BaseSphereConfig` already held.
   across planets today is the standalone Terrain Graph Editor's real asset workflow.
 - No batch/multi-planet spawning - this pass is one panel driving one preview actor at a time, same
   as before.
-- Deleting a fixed module node (Delete key) hides that module's Details-panel entry point until
-  Ctrl+Z - there's no "restore node" affordance beyond undo. Deleting a terrain-chain node behaves
-  like the standalone editor: the chain truncates until reconnected (or undone).
+- Delete only removes terrain-chain nodes (`DeleteSelectedTerrainNodes`, bound to
+  `FGenericCommands::Get().Delete`) - a selected fixed module/Planet node is simply left alone,
+  since this graph's fixed topology (Base Sphere/Biome/Climate/Profile → Planet) stays
+  non-editable by design, same as it always was for reconnection. Deleting a terrain-chain node
+  does NOT auto-reconnect its neighbors: the chain breaks at that point and
+  `EmbeddedTerrainStack->Layers` truncates there (same as an in-progress reconnect) until a new
+  connection is dragged across the gap, or the delete is undone.
 - The Chunked Planet Preview only ever shows ground-level detail near ONE vantage point per click -
   not the whole planet at max depth (chunked streaming exists specifically to avoid ever doing
   that). No biome coloring/climate masking either - `AASolarOrbzChunkedPlanetActor` forwards

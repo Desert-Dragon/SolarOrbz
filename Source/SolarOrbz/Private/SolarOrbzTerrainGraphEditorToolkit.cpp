@@ -13,6 +13,7 @@
 #include "Widgets/Text/STextBlock.h"
 #include "Framework/Application/SlateApplication.h"
 #include "Framework/Commands/UICommandList.h"
+#include "Framework/Commands/GenericCommands.h"
 
 #define LOCTEXT_NAMESPACE "SolarOrbzTerrainGraphEditor"
 
@@ -96,11 +97,17 @@ void FSolarOrbzTerrainGraphEditorToolkit::InitEditor(const EToolkitMode::Type Mo
 
 	GraphChangedDelegateHandle = TerrainGraph->AddOnGraphChangedHandler(FOnGraphChanged::FDelegate::CreateSP(this, &FSolarOrbzTerrainGraphEditorToolkit::HandleGraphChanged));
 
+	GraphEditorCommands = MakeShared<FUICommandList>();
+	GraphEditorCommands->MapAction(
+		FGenericCommands::Get().Delete,
+		FExecuteAction::CreateSP(this, &FSolarOrbzTerrainGraphEditorToolkit::DeleteSelectedNodes),
+		FCanExecuteAction::CreateSP(this, &FSolarOrbzTerrainGraphEditorToolkit::CanDeleteSelectedNodes));
+
 	SGraphEditor::FGraphEditorEvents GraphEvents;
 	GraphEvents.OnSelectionChanged = SGraphEditor::FOnSelectionChanged::CreateSP(this, &FSolarOrbzTerrainGraphEditorToolkit::HandleSelectionChanged);
 
 	GraphEditorWidget = SNew(SGraphEditor)
-		.AdditionalCommands(MakeShared<FUICommandList>())
+		.AdditionalCommands(GraphEditorCommands)
 		.GraphToEdit(TerrainGraph)
 		.GraphEvents(GraphEvents);
 
@@ -332,6 +339,67 @@ void FSolarOrbzTerrainGraphEditorToolkit::HandleGraphChanged(const FEdGraphEditA
 
 	UE_LOG(LogSolarOrbzTerrainGraph, Verbose, TEXT("HandleGraphChanged: graph edited, compiling back into %s"), *EditingStack->GetName());
 	TerrainGraph->CompileToLayers(EditingStack);
+}
+
+void FSolarOrbzTerrainGraphEditorToolkit::DeleteSelectedNodes()
+{
+	if (!GraphEditorWidget.IsValid() || !TerrainGraph || !EditingStack)
+	{
+		return;
+	}
+
+	const FGraphPanelSelectionSet SelectedNodes = GraphEditorWidget->GetSelectedNodes();
+	if (SelectedNodes.Num() == 0)
+	{
+		return;
+	}
+
+	EditingStack->Modify();
+	TerrainGraph->Modify();
+
+	int32 NumRemoved = 0;
+	for (UObject* SelectedObject : SelectedNodes)
+	{
+		USolarOrbzTerrainGraphNode* Node = Cast<USolarOrbzTerrainGraphNode>(SelectedObject);
+		if (!Node || Node->bIsStartNode || Node->bIsOutputNode)
+		{
+			// Start/Output are fixed sentinels, never "in" Layers to begin with - not deletable.
+			continue;
+		}
+
+		Node->Modify();
+		TerrainGraph->RemoveNode(Node, /*bBreakAllLinks=*/ true);
+		++NumRemoved;
+	}
+
+	if (NumRemoved > 0)
+	{
+		// RemoveNode() already broadcast OnGraphChanged per removal (HandleGraphChanged already
+		// recompiled Layers for each one) - this just refreshes the canvas so the removed node(s)
+		// actually disappear, same as AddLayerOfClass's own NotifyGraphChanged() call above.
+		UE_LOG(LogSolarOrbzTerrainGraph, Log, TEXT("DeleteSelectedNodes: removed %d layer node(s) from %s"), NumRemoved, *EditingStack->GetName());
+		GraphEditorWidget->NotifyGraphChanged();
+	}
+}
+
+bool FSolarOrbzTerrainGraphEditorToolkit::CanDeleteSelectedNodes() const
+{
+	if (!GraphEditorWidget.IsValid())
+	{
+		return false;
+	}
+
+	for (UObject* SelectedObject : GraphEditorWidget->GetSelectedNodes())
+	{
+		if (const USolarOrbzTerrainGraphNode* Node = Cast<USolarOrbzTerrainGraphNode>(SelectedObject))
+		{
+			if (!Node->bIsStartNode && !Node->bIsOutputNode)
+			{
+				return true;
+			}
+		}
+	}
+	return false;
 }
 
 #undef LOCTEXT_NAMESPACE

@@ -145,6 +145,19 @@ not been run in-editor, per the review-only bar noted above.
     after Start and Output both exist but before any layer node is wired between them) and compile a
     truncated or empty chain back into `Layers`. `HandleGraphChanged` checks `IsRebuilding()` before
     calling `CompileToLayers()`; genuine interactive edits (the whole point) aren't affected.
+  - **Deleting a layer node (requested directly - a real gap, not a documented limitation:
+    `.AdditionalCommands(MakeShared<FUICommandList>())` was an empty command list, so pressing
+    Delete did nothing at all).** Fixed by building a real `GraphEditorCommands` (`FUICommandList`)
+    that maps `FGenericCommands::Get().Delete` to a new `DeleteSelectedNodes()` (gated by
+    `CanDeleteSelectedNodes()`, true only when a selected node is a non-sentinel
+    `USolarOrbzTerrainGraphNode`) and passing that list to `.AdditionalCommands()` instead. The
+    handler walks `GraphEditorWidget->GetSelectedNodes()` and calls `TerrainGraph->RemoveNode(Node,
+    /*bBreakAllLinks=*/true)` on each eligible node - nothing more is needed to keep `Layers` in
+    sync, since `RemoveNode()` already broadcasts the same graph-changed notification `AddNode()`
+    does, so `HandleGraphChanged` recompiles `Layers` for each removal exactly like any other
+    structural edit. Deleting a middle-of-chain node does not auto-reconnect its neighbors - the
+    chain simply breaks there, same as an in-progress reconnect, until a new connection bridges the
+    gap (or the delete is undone).
 
 ### Phase 3 - explicitly future, not v1
 

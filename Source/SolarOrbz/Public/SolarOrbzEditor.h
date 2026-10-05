@@ -15,6 +15,7 @@
 
 class FToolBarBuilder;
 class FMenuBuilder;
+class FUICommandList;
 class ASolarOrbzIcoSphereActor;
 class AASolarOrbzChunkedPlanetActor;
 class USolarOrbzPlanetSpawnerGraph;
@@ -93,6 +94,9 @@ private:
 	TSharedPtr<SGraphEditor> GraphEditorWidget;
 	TSharedPtr<IDetailsView> DetailsView;
 
+	/** Maps FGenericCommands::Get().Delete to DeleteSelectedTerrainNodes()/CanDeleteSelectedTerrainNodes() - passed to SGraphEditor's .AdditionalCommands() in Construct(). */
+	TSharedPtr<FUICommandList> GraphEditorCommands;
+
 	FString BakePackagePath = TEXT("/Game/SolarOrbz/Meshes");
 	FString BakeAssetName = TEXT("SM_IcoSphere");
 
@@ -116,6 +120,20 @@ private:
 
 	/** Fired by SpawnerGraph on every add/remove/reconnect, including ones RebuildEmbeddedTerrainChain() itself makes - guarded by SpawnerGraph->IsRebuildingTerrainChain() so only genuine interactive edits reach CompileEmbeddedTerrainChain(). */
 	void HandleSpawnerGraphChanged(const struct FEdGraphEditAction& Action);
+
+	/**
+	 * Bound to FGenericCommands::Get().Delete. Removes every selected node that is a real terrain
+	 * layer (USolarOrbzTerrainGraphNode, skipping the fixed Start/Output sentinels) - a selected
+	 * fixed module/Planet node (USolarOrbzPlanetSpawnerGraphNode) is simply left alone, since this
+	 * graph's fixed topology (Base Sphere/Biome/Climate/Profile -> Planet) stays non-editable by
+	 * design, only the embedded terrain chain is. SpawnerGraph->RemoveNode() already broadcasts the
+	 * same OnGraphChanged notification AddNode() does, so HandleSpawnerGraphChanged above recompiles
+	 * EmbeddedTerrainStack->Layers for each removal automatically.
+	 */
+	void DeleteSelectedTerrainNodes();
+
+	/** Enables the Delete command only when at least one selected node is a real (non-sentinel) terrain layer node. */
+	bool CanDeleteSelectedTerrainNodes() const;
 
 	FReply OnGenerateClicked();
 	FReply OnBakeClicked();
