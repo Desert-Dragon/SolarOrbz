@@ -91,14 +91,37 @@ commitment or a schedule - just a place these don't get lost between sessions.
     calls `GraphEditorWidget->NotifyGraphChanged()` once afterward to refresh the canvas. Deleting a
     middle-of-chain layer does NOT auto-reconnect its neighbors - the chain breaks at that point and
     `Layers` truncates there until a new connection is dragged across the gap (or the delete is
-    undone), the same behavior an in-progress reconnect already produces. Checked the
-    `FGenericCommands`/`SGraphEditor::GetSelectedNodes()`/`FGraphPanelSelectionSet`/
-    `UEdGraph::RemoveNode()` APIs used here via sub-agent research before writing them as fact - this
-    environment's network policy blocks direct access to Epic's own source/doc hosts, so the result
-    is indirect corroboration (legacy API-doc snippets, source-derived code snippets from third-party
-    indexes) rather than a first-hand 5.8 source read; all four came back consistent with no
-    5.8-specific deviations found, which is this repo's usual review-only bar for engine-dependent
-    code, not a weaker one than the rest of this subsystem already carries.
+    undone), the same behavior an in-progress reconnect already produces. Initially checked via
+    sub-agent research (indirect corroboration only - this environment's network policy blocks
+    direct access to Epic's own source/doc hosts); re-verified directly against real UE 5.8.3
+    engine source once the user attached a private fork of it to this session (`Desert-Dragon/
+    UnrealEngine`, confirmed `Engine/Build/Build.version` reads 5.8.3) - every fact behind this fix
+    held up:
+    - `Framework/Commands/GenericCommands.h` (Slate module) really does register `Delete` with
+      `FInputChord(EKeys::Delete)`/`FInputChord(EKeys::BackSpace)` as its default chords.
+    - `SGraphEditor` itself is declared in `Editor/UnrealEd/Public/GraphEditor.h` (not the
+      GraphEditor module's own public headers - that header is a thin wrapper around a lazily
+      module-loaded `Implementation`), and its `.AdditionalCommands()` argument is exactly
+      `TSharedPtr<FUICommandList>`. The real implementation (`SGraphEditorImpl::Construct`, in
+      `Editor/GraphEditor/Private/`) does `Commands->Append(AdditionalCommands.ToSharedRef())` at
+      construction time, and `SGraphEditorImpl::OnKeyDown` calls
+      `Commands->ProcessCommandBindings(InKeyEvent)` - confirming the mapped Delete action genuinely
+      fires on a real keypress, not just something that compiles.
+    - `GetSelectedNodes()` returns `const FGraphPanelSelectionSet&`, and that typedef
+      (`TSet<class UObject*>`) lives in the same `GraphEditor.h` already included by both files -
+      no missing-include risk.
+    - `UEdGraph::RemoveNode()`'s real signature is actually
+      `bool RemoveNode(UEdGraphNode* NodeToRemove, bool bBreakAllLinks = true, bool
+      bAlwaysMarkDirty = true)` - three parameters and a `bool` return, not the two/void shape
+      assumed here - but calling it with two positional args and discarding the return value (as
+      every call site in this plugin does) is ordinary, correct C++ (default argument + discarded
+      return), not a bug. Its body does call `Modify(bAlwaysMarkDirty)` then build a
+      `GRAPHACTION_RemoveNode` action and call `NotifyGraphChanged(RemovalAction)` - confirming,
+      first-hand this time, that `RemoveNode()` alone really does trigger
+      `HandleGraphChanged`/`HandleSpawnerGraphChanged`'s recompile with no extra call needed.
+
+    No code changes were needed - the fix shipped correct; this was purely upgrading the evidence
+    behind it from indirect corroboration to a first-hand 5.8.3 source read.
 
 - **Heightmap/Stamp layers silently contributing zero height - a real bug, found once hands-on
   testing was actually possible.** **Done.** Reported symptom: a Heightmap Layer showed no visible
