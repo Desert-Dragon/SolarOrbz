@@ -173,6 +173,26 @@ edit the spawned actor's own `ViewerWorldPositionOverride` directly in its Detai
 ITS OWN `RebuildChunkedPlanetNow` button - that bypasses this panel's click handler, so it won't get
 reset back to the north pole until the panel's own button is pressed again.
 
+### Use Selected Actor (importing an already-placed planet)
+
+Both preview paths above are one-directional by default - Generate/Generate Chunked Preview push
+the panel's staged graph onto an actor, with no way back in once the tab is closed and reopened
+(the graph is scratch state, as noted above). `OnUseSelectedActorClicked` adds the reverse
+direction: it walks `GEditor->GetSelectedActors()` for the first `ASolarOrbzIcoSphereActor` or
+`AASolarOrbzChunkedPlanetActor` in the current level selection and pulls ITS current
+Radius/`TerrainStack`/Biome/Climate/Profile back into `BaseSphereConfig`/`EmbeddedTerrainStack`/
+`BiomeModule`/`ClimateModule`/`ProfileModule`, then calls `RebuildEmbeddedTerrainChain()` - the same
+entry point that already builds a node chain from a pre-existing `Layers` array when the standalone
+Terrain Graph Editor opens an existing stack asset, reused here rather than writing a second
+"import" algorithm. `PreviewActor`/`ChunkedPreviewActor` (whichever matches the found actor's type)
+is pointed at it too, so the matching Generate button now updates that actor in place instead of
+spawning a new one.
+
+Whole-sphere import pulls `VerticesPerMeter`/`MaxSubdivisions`/`bEnablePreviewCollision` as well as
+Radius, since `ASolarOrbzIcoSphereActor` has all four. Chunked-actor import only pulls Radius - the
+other three have no chunked-actor equivalent (`ChunkResolution` is a per-chunk, not per-planet,
+density concept) and are left as whatever `BaseSphereConfig` already held.
+
 ## Known limitations / out of scope for this pass
 
 - `SGraphEditor`/`IDetailsView`/`TStrongObjectPtr`-class code is engine-dependent UObject/Slate
@@ -192,3 +212,11 @@ reset back to the north pole until the panel's own button is pressed again.
   that). No biome coloring/climate masking either - `AASolarOrbzChunkedPlanetActor` forwards
   Biome/Climate/Profile for parity but doesn't read them yet (see its own header comment), so a
   streamed chunk shows raw terrain shape only, same gap that exists outside this panel.
+- Use Selected Actor reuses the selected actor's existing `USolarOrbzTerrainLayer` objects directly
+  (not a duplicate) - editing them afterward in this panel edits the same objects the actor was
+  already pointing at, which is the intended "keep tuning this planet's real recipe" behavior, but
+  means two still-open editors (e.g. this panel and a standalone Terrain Graph Editor tab on the same
+  stack asset) would be editing shared objects, same as assigning one asset to two actors always
+  implied. If both an `ASolarOrbzIcoSphereActor` and an `AASolarOrbzChunkedPlanetActor` are selected
+  at once, only the whole-sphere one is imported (checked first) - select one at a time to control
+  which. Only logs (no error dialog) if the selection has neither actor type.

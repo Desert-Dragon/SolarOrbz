@@ -22,6 +22,7 @@
 #include "ToolMenus.h"
 
 #include "Editor.h"
+#include "Selection.h"
 #include "Engine/World.h"
 #include "Widgets/SBoxPanel.h"
 #include "Widgets/Layout/SSeparator.h"
@@ -184,6 +185,13 @@ void SSolarOrbzMainPanel::Construct(const FArguments& InArgs)
 					[
 						SNew(STextBlock).Text(LOCTEXT("AddLayerButton", "Add Layer"))
 					]
+				]
+				+ SHorizontalBox::Slot().AutoWidth().Padding(4.0f, 0.0f, 0.0f, 0.0f)
+				[
+					SNew(SButton)
+					.ToolTipText(LOCTEXT("UseSelectedActorTooltip", "Pull the currently-selected SolarOrbz planet actor (whole-sphere or chunked) back into this panel - its Radius/Terrain/Biome/Climate/Profile replace whatever is currently staged here, so you can keep editing an already-placed planet instead of starting a fresh recipe."))
+					.Text(LOCTEXT("UseSelectedActorButton", "Use Selected Actor"))
+					.OnClicked(this, &SSolarOrbzMainPanel::OnUseSelectedActorClicked)
 				]
 			]
 
@@ -558,6 +566,122 @@ FText SSolarOrbzMainPanel::GetStatsText() const
 bool SSolarOrbzMainPanel::IsPreviewValid() const
 {
 	return PreviewActor.IsValid();
+}
+
+FReply SSolarOrbzMainPanel::OnUseSelectedActorClicked()
+{
+	if (!SpawnerGraph || !SpawnerGraph->BaseSphereConfig || !SpawnerGraph->EmbeddedTerrainStack || !GEditor)
+	{
+		UE_LOG(LogSolarOrbzPlanetSpawner, Error, TEXT("OnUseSelectedActorClicked: spawner graph not built - this should never happen"));
+		return FReply::Handled();
+	}
+
+	ASolarOrbzIcoSphereActor* FoundIcoSphere = nullptr;
+	AASolarOrbzChunkedPlanetActor* FoundChunked = nullptr;
+
+	USelection* Selection = GEditor->GetSelectedActors();
+	for (FSelectionIterator It(*Selection); It; ++It)
+	{
+		if (ASolarOrbzIcoSphereActor* IcoSphere = Cast<ASolarOrbzIcoSphereActor>(*It))
+		{
+			FoundIcoSphere = IcoSphere;
+			break;
+		}
+		if (AASolarOrbzChunkedPlanetActor* Chunked = Cast<AASolarOrbzChunkedPlanetActor>(*It))
+		{
+			FoundChunked = Chunked;
+			break;
+		}
+	}
+
+	if (!FoundIcoSphere && !FoundChunked)
+	{
+		UE_LOG(LogSolarOrbzPlanetSpawner, Warning, TEXT("OnUseSelectedActorClicked: current selection has no ASolarOrbzIcoSphereActor or AASolarOrbzChunkedPlanetActor - nothing to import"));
+		return FReply::Handled();
+	}
+
+	// Shared across both actor types: whichever one was found, its Terrain/Biome/Climate/Profile
+	// references get pulled into this panel's own graph state below, then the embedded chain is
+	// rebuilt from whatever Layers that terrain stack holds - RebuildEmbeddedTerrainChain() already
+	// exists precisely to build a node chain from a pre-existing Layers array (the same path a
+	// freshly-opened stack asset takes in the standalone Terrain Graph Editor), so no separate
+	// "import" algorithm is needed here.
+	USolarOrbzTerrainLayerStack* SourceStack = nullptr;
+	USolarOrbzBiomeStack* SourceBiome = nullptr;
+	USolarOrbzClimateSimulationAsset* SourceClimate = nullptr;
+	USolarOrbzCelestialBodyProfile* SourceProfile = nullptr;
+
+	if (FoundIcoSphere)
+	{
+		PreviewActor = FoundIcoSphere;
+
+		SpawnerGraph->BaseSphereConfig->RadiusMeters = FoundIcoSphere->RadiusMeters;
+		SpawnerGraph->BaseSphereConfig->VerticesPerMeter = FoundIcoSphere->VerticesPerMeter;
+		SpawnerGraph->BaseSphereConfig->MaxSubdivisions = FoundIcoSphere->MaxSubdivisions;
+		SpawnerGraph->BaseSphereConfig->bEnablePreviewCollision = FoundIcoSphere->bEnablePreviewCollision;
+
+		SourceStack = FoundIcoSphere->TerrainStack;
+		SourceBiome = FoundIcoSphere->BiomeStack;
+		SourceClimate = FoundIcoSphere->ClimateSimulation;
+		SourceProfile = FoundIcoSphere->Profile;
+
+		UE_LOG(LogSolarOrbzPlanetSpawner, Log, TEXT("OnUseSelectedActorClicked: importing %s (whole-sphere preview) into the panel"), *FoundIcoSphere->GetName());
+	}
+	else
+	{
+		ChunkedPreviewActor = FoundChunked;
+
+		// VerticesPerMeter/MaxSubdivisions/bEnablePreviewCollision have no chunked-actor equivalent
+		// (chunk density is ChunkResolution, a per-chunk not per-planet concept, and the chunked actor
+		// has no preview-collision toggle) - left as whatever BaseSphereConfig already had. Radius is
+		// the one Base Sphere field both actor types share.
+		SpawnerGraph->BaseSphereConfig->RadiusMeters = FoundChunked->RadiusMeters;
+
+		SourceStack = FoundChunked->TerrainStack;
+		SourceBiome = FoundChunked->BiomeStack;
+		SourceClimate = FoundChunked->ClimateSimulation;
+		SourceProfile = FoundChunked->Profile;
+
+		UE_LOG(LogSolarOrbzPlanetSpawner, Log, TEXT("OnUseSelectedActorClicked: importing %s (chunked planet) into the panel"), *FoundChunked->GetName());
+	}
+
+	if (SpawnerGraph->BiomeModule)
+	{
+		SpawnerGraph->BiomeModule->BiomeStack = SourceBiome;
+	}
+	if (SpawnerGraph->ClimateModule)
+	{
+		SpawnerGraph->ClimateModule->ClimateSimulation = SourceClimate;
+	}
+	if (SpawnerGraph->ProfileModule)
+	{
+		SpawnerGraph->ProfileModule->Profile = SourceProfile;
+	}
+
+	SpawnerGraph->EmbeddedTerrainStack->Modify();
+	SpawnerGraph->EmbeddedTerrainStack->Layers = SourceStack ? SourceStack->Layers : TArray<TObjectPtr<USolarOrbzTerrainLayer>>();
+	SpawnerGraph->EmbeddedTerrainStack->EditorNodePositions = SourceStack ? SourceStack->EditorNodePositions : TMap<FGuid, FVector2D>();
+	SpawnerGraph->RebuildEmbeddedTerrainChain();
+
+	if (GraphEditorWidget.IsValid())
+	{
+		GraphEditorWidget->NotifyGraphChanged();
+	}
+
+	if (GEditor)
+	{
+		GEditor->SelectNone(/*bNoteSelectionChange=*/false, /*bDeselectBSPSurfs=*/true);
+		if (FoundIcoSphere)
+		{
+			GEditor->SelectActor(FoundIcoSphere, /*bInSelected=*/true, /*bNotify=*/true);
+		}
+		else if (FoundChunked)
+		{
+			GEditor->SelectActor(FoundChunked, /*bInSelected=*/true, /*bNotify=*/true);
+		}
+	}
+
+	return FReply::Handled();
 }
 
 FReply SSolarOrbzMainPanel::OnGenerateChunkedClicked()

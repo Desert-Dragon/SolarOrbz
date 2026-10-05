@@ -70,6 +70,17 @@ values live on the actor itself and are safe. If you want a terrain recipe to ou
 Terrain Graph Editor instead (§2 on) and assign that asset directly on the actor's Details panel -
 this embedded chain doesn't save to its own asset.
 
+**Bringing an already-placed planet back into the panel:** select a previously-generated
+`SolarOrbzIcoSphere` or `SolarOrbzChunkedPlanet` actor in the level (Outliner or viewport click),
+then click **Use Selected Actor** next to Add Layer. This is Generate's reverse direction: instead
+of pushing the panel's staged graph onto an actor, it pulls that actor's current Radius/terrain
+recipe/Biome/Climate/Profile back into the panel - the graph canvas repopulates with its terrain
+chain, and both the Generate and Generate Chunked Preview buttons now target that same actor, so
+further edits (add a layer, tweak Radius, etc.) update it in place rather than spawning a new one.
+Works for either actor type - whichever one is selected wins if, implausibly, both are selected at
+once. Since the embedded chain is scratch state (see above), this is also the way back in after
+closing and reopening the panel tab on a planet you already generated.
+
 ## 2. Opening a Terrain Layer Stack
 
 A `USolarOrbzTerrainLayerStack` is still an ordinary `UPrimaryDataAsset` - nothing about *creating*

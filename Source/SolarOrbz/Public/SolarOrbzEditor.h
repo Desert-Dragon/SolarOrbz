@@ -130,6 +130,20 @@ private:
 
 	FText GetChunkedStatsText() const;
 	bool IsChunkedPreviewValid() const;
+
+	/**
+	 * Adopts whichever SolarOrbz planet actor (ASolarOrbzIcoSphereActor or
+	 * AASolarOrbzChunkedPlanetActor - whichever is found first in the current level selection) is
+	 * currently selected: points PreviewActor/ChunkedPreviewActor at it and pulls its Radius/
+	 * TerrainStack-Layers/Biome/Climate/Profile back into this panel's graph (BaseSphereConfig/
+	 * EmbeddedTerrainStack/BiomeModule/ClimateModule/ProfileModule), then rebuilds the embedded
+	 * terrain chain from whatever Layers that stack holds. This is the reverse direction of
+	 * Generate - Generate pushes the panel's staged graph onto an actor, this pulls an already-placed
+	 * actor's current configuration back into the panel so it can be edited further from here,
+	 * without hand-rebuilding the recipe from scratch. Does nothing (just logs) if the selection has
+	 * neither actor type.
+	 */
+	FReply OnUseSelectedActorClicked();
 };
 
 // ================================================================================================

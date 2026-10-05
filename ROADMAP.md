@@ -567,6 +567,23 @@ commitment or a schedule - just a place these don't get lost between sessions.
     into plain BY-VALUE locals up front, before any `Add` call touches their arrays, so every `Add`
     argument is now independent of whatever that `Add` does to its own array's storage afterward.
     Confirmed (by grep across the whole plugin) this exact aliasing pattern existed nowhere else.
+  - **"Use Selected Actor" - importing an already-placed planet back into the panel.** Requested
+    directly, after confirming the two preview paths are already independent (either button can be
+    used alone without ever touching the other actor type). The panel's graph is scratch state
+    (`Docs/SolarOrbzPlanetSpawnerGraph.md`'s own standing caveat) - closing and reopening the tab, or
+    simply never having opened it this session, had no way back into a previously-generated planet's
+    recipe short of rebuilding it node-by-node from scratch. New `OnUseSelectedActorClicked`
+    (`SolarOrbzEditor.h`/`.cpp`) walks the current level selection for the first
+    `ASolarOrbzIcoSphereActor` or `AASolarOrbzChunkedPlanetActor`, pulls its Radius/`TerrainStack`/
+    Biome/Climate/Profile back into `BaseSphereConfig`/`EmbeddedTerrainStack`/`BiomeModule`/
+    `ClimateModule`/`ProfileModule`, and calls `RebuildEmbeddedTerrainChain()` - reusing the same
+    entry point that already rebuilds a node chain from a pre-existing `Layers` array for the
+    standalone Terrain Graph Editor, rather than writing a second import algorithm. Points
+    `PreviewActor`/`ChunkedPreviewActor` at the found actor too, so the matching Generate button now
+    updates it in place. Whole-sphere import also pulls `VerticesPerMeter`/`MaxSubdivisions`/
+    `bEnablePreviewCollision`; chunked-actor import only pulls Radius (the other three have no
+    chunked-actor equivalent). See the design doc's own new "Use Selected Actor" section for the
+    full behavior and its known trade-off (imported layers are reused directly, not duplicated).
 
 - **Real-time orbit and rotation.** Planets need to actually orbit their star and rotate on their
   axis in real time, with players able to seamlessly leave one planet and travel to another. This
