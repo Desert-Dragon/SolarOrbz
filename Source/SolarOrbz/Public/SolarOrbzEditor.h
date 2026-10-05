@@ -16,6 +16,7 @@
 class FToolBarBuilder;
 class FMenuBuilder;
 class ASolarOrbzIcoSphereActor;
+class AASolarOrbzChunkedPlanetActor;
 class USolarOrbzPlanetSpawnerGraph;
 class SGraphEditor;
 class IDetailsView;
@@ -97,6 +98,14 @@ private:
 
 	TWeakObjectPtr<ASolarOrbzIcoSphereActor> PreviewActor;
 
+	/**
+	 * The chunked, planet-scale preview actor the "Generate Chunked Preview" button below drives -
+	 * shares the SAME Base Sphere radius and embedded terrain chain as PreviewActor above, so "does
+	 * this terrain recipe look good enough at real planetary scale, with real ground-level detail"
+	 * can be checked without hand-configuring a second actor from scratch. See OnGenerateChunkedClicked().
+	 */
+	TWeakObjectPtr<AASolarOrbzChunkedPlanetActor> ChunkedPreviewActor;
+
 	/** Reflection-driven over non-abstract USolarOrbzTerrainLayer subclasses, mirroring FSolarOrbzTerrainGraphEditorToolkit::BuildAddLayerMenu - adding a new layer type needs zero new code here either. */
 	TSharedRef<SWidget> BuildAddLayerMenu();
 
@@ -114,6 +123,13 @@ private:
 
 	FText GetStatsText() const;
 	bool IsPreviewValid() const;
+
+	/** Spawns (first click) or rebuilds (later clicks) ChunkedPreviewActor from the same Base Sphere radius/embedded terrain chain/Biome/Climate/Profile the simple preview above uses, defaults a north-pole viewer vantage if none is set yet, then calls its RebuildChunkedPlanetNow() so chunks appear immediately without entering Play. */
+	FReply OnGenerateChunkedClicked();
+	FReply OnClearChunkedPreviewClicked();
+
+	FText GetChunkedStatsText() const;
+	bool IsChunkedPreviewValid() const;
 };
 
 // ================================================================================================

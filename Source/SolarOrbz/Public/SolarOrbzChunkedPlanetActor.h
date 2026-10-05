@@ -194,9 +194,35 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "SolarOrbz|ChunkedPlanet|Viewer")
 	FVector ViewerWorldPositionOverride = FVector::ZeroVector;
 
-	/** Forces an immediate resident-set recompute without waiting for the next timer tick - useful for testing from the editor/Blueprint. */
+	/**
+	 * Forces an immediate resident-set recompute without waiting for the next timer tick - useful
+	 * for testing from the editor/Blueprint. Lazily constructs the resident-set manager first if it
+	 * doesn't exist yet (see RebuildChunkedPlanetNow()'s own comment on why that's needed at all) -
+	 * this makes CallInEditor genuinely work on an actor sitting in the editor that has never been
+	 * through BeginPlay, not just in PIE/a packaged game. Does NOT pick up changed RadiusMeters/
+	 * TerrainStack/ChunkResolution/Material/SkirtDepth on an already-constructed manager - those are
+	 * baked into the manager at construction time with no setters (see
+	 * FSolarOrbzChunkResidentSetManager's own header); call RebuildChunkedPlanetNow() instead after
+	 * changing any of those.
+	 */
 	UFUNCTION(BlueprintCallable, CallInEditor, Category = "SolarOrbz|ChunkedPlanet|Chunking")
 	void UpdateChunksNow();
+
+	/**
+	 * Tears down the resident-set manager (destroying every currently-resident chunk component) and
+	 * reconstructs it fresh from this actor's CURRENT RadiusMeters/TerrainStack/ChunkResolution/
+	 * Material/SkirtDepth, then immediately recomputes the resident set - this is the entry point
+	 * for "I changed the terrain recipe/radius/chunk settings, show me the new result," the same role
+	 * ASolarOrbzIcoSphereActor::RegenerateMesh plays for the whole-sphere actor. UpdateChunksNow()
+	 * alone is NOT enough for this: FSolarOrbzChunkResidentSetManager has no setters, so an
+	 * already-constructed one keeps using whatever values it was built with regardless of what this
+	 * actor's own properties change to afterward. Also the actor-side half of making CallInEditor
+	 * genuinely usable standalone in the editor (no BeginPlay has ever run, so there's no existing
+	 * manager to tear down the first time this is called) - mirrors UpdateChunksNow()'s own lazy
+	 * construction for that same reason.
+	 */
+	UFUNCTION(BlueprintCallable, CallInEditor, Category = "SolarOrbz|ChunkedPlanet|Chunking")
+	void RebuildChunkedPlanetNow();
 
 	/** Currently-resident chunk count, for a debug overlay/HUD. */
 	UFUNCTION(BlueprintCallable, Category = "SolarOrbz|ChunkedPlanet|Chunking")
@@ -212,6 +238,9 @@ private:
 
 	/** Timer callback - resolves the viewer position and calls FSolarOrbzChunkResidentSetManager::UpdateResidentSet. */
 	void UpdateChunks();
+
+	/** (Re)constructs ResidentSetManager from this actor's current properties - shared by BeginPlay() and RebuildChunkedPlanetNow()/UpdateChunksNow()'s lazy-construction path, so there is exactly one place that reads RadiusMeters/TerrainStack/etc into the manager's constructor. */
+	void ConstructResidentSetManager();
 
 	/** Non-UObject, so a plain TUniquePtr rather than a UPROPERTY - see FSolarOrbzChunkResidentSetManager's own header for why it's a plain C++ class, not a UObject/component itself. Constructed in BeginPlay, destroyed (along with every resident component it owns) in EndPlay. */
 	TUniquePtr<FSolarOrbzChunkResidentSetManager> ResidentSetManager;

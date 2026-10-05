@@ -23,10 +23,8 @@ AASolarOrbzChunkedPlanetActor::AASolarOrbzChunkedPlanetActor()
 // to add here beyond what ResidentSetManager's own TUniquePtr reset/EndPlay already handle.
 AASolarOrbzChunkedPlanetActor::~AASolarOrbzChunkedPlanetActor() = default;
 
-void AASolarOrbzChunkedPlanetActor::BeginPlay()
+void AASolarOrbzChunkedPlanetActor::ConstructResidentSetManager()
 {
-	Super::BeginPlay();
-
 	const double RadiusCm = RadiusMeters * 100.0;
 
 	// ClimateGridForMasking is forwarded as nullptr - no whole-planet climate grid is built by this
@@ -39,6 +37,13 @@ void AASolarOrbzChunkedPlanetActor::BeginPlay()
 		ChunkResolution,
 		Material,
 		SkirtDepth);
+}
+
+void AASolarOrbzChunkedPlanetActor::BeginPlay()
+{
+	Super::BeginPlay();
+
+	ConstructResidentSetManager();
 
 	if (UWorld* World = GetWorld())
 	{
@@ -105,6 +110,26 @@ void AASolarOrbzChunkedPlanetActor::UpdateChunks()
 
 void AASolarOrbzChunkedPlanetActor::UpdateChunksNow()
 {
+	if (!ResidentSetManager.IsValid())
+	{
+		// Lazily construct here too - this is the whole fix for CallInEditor silently no-op'ing on
+		// an actor that has never been through BeginPlay (i.e. always, outside PIE/a packaged game).
+		// Only the FIRST call pays this cost; after that ResidentSetManager already exists and this
+		// branch never runs again until RebuildChunkedPlanetNow() tears it back down.
+		ConstructResidentSetManager();
+	}
+
+	UpdateChunks();
+}
+
+void AASolarOrbzChunkedPlanetActor::RebuildChunkedPlanetNow()
+{
+	// Destroys every currently-resident chunk component (via ResidentSetManager's own destructor) -
+	// necessary because the manager has no setters for Radius/TerrainStack/ChunkResolution/Material/
+	// SkirtDepth, so simply calling UpdateChunksNow() on an already-constructed manager would keep
+	// using whatever values it was built with, ignoring anything changed on this actor since then.
+	ResidentSetManager.Reset();
+	ConstructResidentSetManager();
 	UpdateChunks();
 }
 

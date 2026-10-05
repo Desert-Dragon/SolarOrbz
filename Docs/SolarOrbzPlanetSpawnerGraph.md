@@ -140,6 +140,39 @@ same tab. Its content:
   `ASolarOrbzIcoSphereActor` doesn't know or care whether the stack it's pointed at is a saved asset
   or a dock tab's transient scratch object.
 
+### Chunked Planet Preview section
+
+A second preview path, added once planet-scale radii became the actual target: `ASolarOrbzIcoSphereActor`
+is a single mesh, so a real planetary radius (e.g. Earth's 6,371,000 m) only ever produces one coarse
+polygon ball - `Docs/ChunkedPlanetTerrain.md`'s own `AASolarOrbzChunkedPlanetActor` exists specifically
+for ground-level detail at that scale, but had no way to see it without entering Play. `OnGenerateChunkedClicked`
+spawns/rebuilds one, reusing exactly the same `BaseSphereConfig->RadiusMeters` and `EmbeddedTerrainStack`
+(plus Biome/Climate/Profile, forwarded for parity even though the chunked actor doesn't read the last
+three yet) the simple preview above uses - same noise functions, same terrain chain, just a different
+representation of the result, so "does this recipe look good enough" can be checked at real scale
+without hand-configuring a second actor.
+
+Two gaps in `AASolarOrbzChunkedPlanetActor` itself had to be fixed first, independent of this panel:
+- `UpdateChunksNow()` was `CallInEditor` but silently did nothing on an actor that had never been
+  through `BeginPlay()` (i.e. always, outside PIE/a packaged game) - its `ResidentSetManager` was
+  only ever constructed there. Fixed by factoring that construction into `ConstructResidentSetManager()`,
+  called lazily by `UpdateChunksNow()` the first time.
+- Changing `RadiusMeters`/`TerrainStack`/etc. on an already-constructed manager did nothing - it has
+  no setters, so it keeps using whatever it was first built with. Fixed by a new
+  `RebuildChunkedPlanetNow()` (tears the manager down, reconstructs it from current properties, then
+  recomputes) - the chunked actor's equivalent of `RegenerateMesh()`. This panel's button always
+  calls this one, not `UpdateChunksNow()`, matching the simple preview's "every Generate click
+  rebuilds from current values" semantics.
+
+There's no Pawn/camera to resolve a real viewer position from outside Play, so the button defaults
+the spawned actor's `ViewerWorldPositionOverride` to a fixed altitude (2 m) above the north pole on
+every click - unless a real `ViewerActor` is assigned, which always wins and is never overwritten
+here. This streams chunks near that ONE vantage point, not the whole globe at max depth everywhere -
+inherent to why chunked streaming exists at all, not a gap in this integration. To look elsewhere:
+edit the spawned actor's own `ViewerWorldPositionOverride` directly in its Details panel and press
+ITS OWN `RebuildChunkedPlanetNow` button - that bypasses this panel's click handler, so it won't get
+reset back to the north pole until the panel's own button is pressed again.
+
 ## Known limitations / out of scope for this pass
 
 - `SGraphEditor`/`IDetailsView`/`TStrongObjectPtr`-class code is engine-dependent UObject/Slate
@@ -154,3 +187,8 @@ same tab. Its content:
 - Deleting a fixed module node (Delete key) hides that module's Details-panel entry point until
   Ctrl+Z - there's no "restore node" affordance beyond undo. Deleting a terrain-chain node behaves
   like the standalone editor: the chain truncates until reconnected (or undone).
+- The Chunked Planet Preview only ever shows ground-level detail near ONE vantage point per click -
+  not the whole planet at max depth (chunked streaming exists specifically to avoid ever doing
+  that). No biome coloring/climate masking either - `AASolarOrbzChunkedPlanetActor` forwards
+  Biome/Climate/Profile for parity but doesn't read them yet (see its own header comment), so a
+  streamed chunk shows raw terrain shape only, same gap that exists outside this panel.

@@ -9,6 +9,7 @@
 #include "Styling/SlateStyleMacros.h"
 
 #include "SolarOrbzIcoSphere.h"
+#include "SolarOrbzChunkedPlanetActor.h"
 #include "SolarOrbzPlanetSpawnerGraph.h"
 #include "SolarOrbzTerrainGraph.h"
 #include "SolarOrbzTerrainLayers.h"
@@ -232,6 +233,55 @@ void SSolarOrbzMainPanel::Construct(const FArguments& InArgs)
 			]
 
 			+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 4.0f)
+			[
+				SNew(SSeparator)
+			]
+
+			// --- Chunked Planet Preview: same Base Sphere radius + embedded terrain chain as the
+			// simple preview above, but streamed through AASolarOrbzChunkedPlanetActor so a
+			// planet-scale radius actually gets ground-level detail to look at, instead of one
+			// coarse whole-planet mesh. See OnGenerateChunkedClicked(). ---
+			+ SVerticalBox::Slot().AutoHeight()
+			[
+				MakeSectionHeader(LOCTEXT("ChunkedHeader", "Chunked Planet Preview (planet-scale)"))
+			]
+
+			+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 2.0f, 0.0f, 4.0f)
+			[
+				SNew(STextBlock)
+				.Text(LOCTEXT("ChunkedHint", "Streams real ground-level detail near one vantage point (default: 2m above the north pole) instead of one coarse whole-planet mesh - uses the same Base Sphere radius and embedded terrain chain as the preview above. To look elsewhere, drag the spawned actor's own Viewer World Position Override in its Details panel, then press ITS \"Rebuild Chunked Planet Now\" button (not this one, which re-syncs from the graph and resets the vantage back to the north pole)."))
+				.AutoWrapText(true)
+				.ColorAndOpacity(FSlateColor::UseSubduedForeground())
+			]
+
+			+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 0.0f, 0.0f, 4.0f)
+			[
+				SNew(SHorizontalBox)
+				+ SHorizontalBox::Slot().FillWidth(1.0f).Padding(0.0f, 0.0f, 4.0f, 0.0f)
+				[
+					SNew(SButton)
+					.HAlign(HAlign_Center)
+					.Text(LOCTEXT("GenerateChunkedButton", "Generate Chunked Preview"))
+					.OnClicked(this, &SSolarOrbzMainPanel::OnGenerateChunkedClicked)
+				]
+				+ SHorizontalBox::Slot().AutoWidth()
+				[
+					SNew(SButton)
+					.HAlign(HAlign_Center)
+					.Text(LOCTEXT("ClearChunkedButton", "Clear"))
+					.IsEnabled(this, &SSolarOrbzMainPanel::IsChunkedPreviewValid)
+					.OnClicked(this, &SSolarOrbzMainPanel::OnClearChunkedPreviewClicked)
+				]
+			]
+
+			+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 2.0f, 0.0f, 8.0f)
+			[
+				SNew(STextBlock)
+				.Text(this, &SSolarOrbzMainPanel::GetChunkedStatsText)
+				.ColorAndOpacity(FSlateColor::UseSubduedForeground())
+			]
+
+			+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 0.0f, 0.0f, 4.0f)
 			[
 				SNew(SSeparator)
 			]
@@ -508,6 +558,112 @@ FText SSolarOrbzMainPanel::GetStatsText() const
 bool SSolarOrbzMainPanel::IsPreviewValid() const
 {
 	return PreviewActor.IsValid();
+}
+
+FReply SSolarOrbzMainPanel::OnGenerateChunkedClicked()
+{
+	if (!SpawnerGraph || !SpawnerGraph->BaseSphereConfig)
+	{
+		UE_LOG(LogSolarOrbzPlanetSpawner, Error, TEXT("OnGenerateChunkedClicked: spawner graph not built - this should never happen"));
+		return FReply::Handled();
+	}
+
+	if (!ChunkedPreviewActor.IsValid() && GEditor)
+	{
+		if (UWorld* World = GEditor->GetEditorWorldContext().World())
+		{
+			// Same naming rationale as OnGenerateClicked's own PreviewActor spawn - leave Name unset,
+			// set the human-readable Outliner label separately below.
+			FActorSpawnParameters SpawnParams;
+			SpawnParams.NameMode = FActorSpawnParameters::ESpawnActorNameMode::Requested;
+
+			ChunkedPreviewActor = World->SpawnActor<AASolarOrbzChunkedPlanetActor>(SpawnParams);
+
+#if WITH_EDITOR
+			if (AASolarOrbzChunkedPlanetActor* NewActor = ChunkedPreviewActor.Get())
+			{
+				NewActor->SetActorLabel(TEXT("SolarOrbzChunkedPlanet"));
+			}
+#endif
+		}
+	}
+
+	if (AASolarOrbzChunkedPlanetActor* Actor = ChunkedPreviewActor.Get())
+	{
+		const USolarOrbzPlanetBaseSphereConfig* BaseSphere = SpawnerGraph->BaseSphereConfig;
+		Actor->RadiusMeters = BaseSphere->RadiusMeters;
+
+		// Defensive: make sure the chain currently shown on the canvas is what gets streamed, even if
+		// some edit landed without going through HandleSpawnerGraphChanged (e.g. programmatic change)
+		// - same reasoning as OnGenerateClicked's own call.
+		SpawnerGraph->CompileEmbeddedTerrainChain();
+		Actor->TerrainStack = SpawnerGraph->EmbeddedTerrainStack;
+
+		if (const USolarOrbzPlanetBiomeModule* BiomeModule = SpawnerGraph->BiomeModule)
+		{
+			Actor->BiomeStack = BiomeModule->BiomeStack;
+		}
+		if (const USolarOrbzPlanetClimateModule* ClimateModule = SpawnerGraph->ClimateModule)
+		{
+			Actor->ClimateSimulation = ClimateModule->ClimateSimulation;
+		}
+		if (const USolarOrbzPlanetProfileModule* ProfileModule = SpawnerGraph->ProfileModule)
+		{
+			Actor->Profile = ProfileModule->Profile;
+		}
+
+		// There's no Pawn/camera to resolve a real viewer position from outside Play, so this always
+		// resets the vantage back to a fixed altitude above the north pole UNLESS a real ViewerActor
+		// is assigned (which always wins and is never clobbered here) - this is what guarantees
+		// Generate always shows SOME ground-level detail immediately. To look elsewhere afterward,
+		// edit the spawned actor's own ViewerWorldPositionOverride directly (it's a plain EditAnywhere
+		// property) and press ITS OWN "Rebuild Chunked Planet Now" button in its Details panel - that
+		// bypasses this click handler entirely, so it won't get reset back to the north pole until
+		// this button is pressed again.
+		if (!Actor->ViewerActor)
+		{
+			constexpr double DefaultViewerAltitudeMeters = 2.0;
+			Actor->bUseViewerWorldPositionOverride = true;
+			Actor->ViewerWorldPositionOverride = FVector(0.0, 0.0, (BaseSphere->RadiusMeters + DefaultViewerAltitudeMeters) * 100.0);
+		}
+
+		UE_LOG(LogSolarOrbzPlanetSpawner, Log, TEXT("OnGenerateChunkedClicked: rebuilding chunked planet %s (Radius=%f m)"), *Actor->GetName(), BaseSphere->RadiusMeters);
+		Actor->RebuildChunkedPlanetNow();
+
+		if (GEditor)
+		{
+			GEditor->SelectNone(/*bNoteSelectionChange=*/false, /*bDeselectBSPSurfs=*/true);
+			GEditor->SelectActor(Actor, /*bInSelected=*/true, /*bNotify=*/true);
+		}
+	}
+
+	return FReply::Handled();
+}
+
+FReply SSolarOrbzMainPanel::OnClearChunkedPreviewClicked()
+{
+	if (AASolarOrbzChunkedPlanetActor* Actor = ChunkedPreviewActor.Get())
+	{
+		Actor->Destroy();
+	}
+	ChunkedPreviewActor.Reset();
+	return FReply::Handled();
+}
+
+FText SSolarOrbzMainPanel::GetChunkedStatsText() const
+{
+	if (const AASolarOrbzChunkedPlanetActor* Actor = ChunkedPreviewActor.Get())
+	{
+		return FText::Format(
+			LOCTEXT("ChunkedStatsFormat", "{0} resident chunk(s)"),
+			FText::AsNumber(Actor->GetResidentChunkCount()));
+	}
+	return LOCTEXT("ChunkedStatsEmpty", "No chunked preview generated yet.");
+}
+
+bool SSolarOrbzMainPanel::IsChunkedPreviewValid() const
+{
+	return ChunkedPreviewActor.IsValid();
 }
 
 #undef LOCTEXT_NAMESPACE

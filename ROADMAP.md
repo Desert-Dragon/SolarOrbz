@@ -498,6 +498,38 @@ commitment or a schedule - just a place these don't get lost between sessions.
   `Docs/ChunkedPlanetTerrain.md` for the full design, the phased CPU-first-then-GPU-compute plan, and
   the explicit list of what's deliberately not built yet - don't start the GPU-compute phase before
   the CPU-chunked streaming architecture is proven out.
+  - **Made actually usable from the editor without entering Play, and wired into the Planet
+    Spawner panel as a "see it at real scale" preview.** **Done.** Real gap found: `UpdateChunksNow()`
+    was marked `CallInEditor` (meant to work on an actor just sitting in the editor) but silently
+    no-op'd there, since `ResidentSetManager` was only ever constructed in `BeginPlay()`, which
+    never runs outside PIE/a packaged game. Fixed by factoring that construction out into a new
+    `ConstructResidentSetManager()`, called lazily by `UpdateChunksNow()` the first time (so the
+    existing button now genuinely works standalone) and unconditionally by a new
+    `RebuildChunkedPlanetNow()` (tears the manager down and reconstructs it fresh from this actor's
+    CURRENT `RadiusMeters`/`TerrainStack`/`ChunkResolution`/`Material`/`SkirtDepth` first) - needed
+    because `FSolarOrbzChunkResidentSetManager` has no setters, so `UpdateChunksNow()` alone on an
+    already-constructed manager keeps using whatever it was first built with regardless of what
+    changes afterward. `RebuildChunkedPlanetNow()` is the chunked actor's equivalent of
+    `ASolarOrbzIcoSphereActor::RegenerateMesh()` - "the terrain recipe/radius/settings changed, show
+    me the new result," not "the viewer moved, recompute what should be resident."
+  - The SolarOrbz dock-tab panel (`Docs/SolarOrbzPlanetSpawnerGraph.md`) now has a **Chunked Planet
+    Preview** section alongside the existing whole-mesh preview - "Generate Chunked Preview" spawns/
+    rebuilds an `AASolarOrbzChunkedPlanetActor` from the SAME Base Sphere radius and embedded
+    terrain chain the simple preview uses (plus Biome/Climate/Profile, forwarded for parity even
+    though the chunked actor doesn't read the last three yet), so a radius big enough to trip the
+    whole-mesh actor's "not achievable in any single mesh" warning can still actually be looked at,
+    with real ground-level chunk detail, using the exact noise functions/layers already being
+    authored on the same canvas - this is the actual point: validate "does this terrain recipe look
+    good enough" at planet scale without hand-configuring a second actor from scratch. Defaults the
+    actor's `ViewerWorldPositionOverride` to a fixed altitude (2m) above the north pole on every
+    click (unless a real `ViewerActor` is assigned, which always wins) so Generate always shows SOME
+    ground-level detail immediately, then calls `RebuildChunkedPlanetNow()`. This streams chunks near
+    ONE vantage point, not the whole globe at max depth everywhere - that's inherent to why chunked
+    streaming exists at all (see this item's own "why this exists" framing above), not a limitation
+    of the panel integration. To look from elsewhere afterward: drag the spawned actor's own
+    `ViewerWorldPositionOverride` in its Details panel and press ITS OWN `RebuildChunkedPlanetNow`
+    `CallInEditor` button directly - that bypasses the panel's click handler, so it won't get reset
+    back to the north pole until the panel's own button is pressed again.
 
 - **Real-time orbit and rotation.** Planets need to actually orbit their star and rotate on their
   axis in real time, with players able to seamlessly leave one planet and travel to another. This

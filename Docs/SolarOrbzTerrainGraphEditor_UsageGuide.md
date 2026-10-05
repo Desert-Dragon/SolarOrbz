@@ -46,6 +46,21 @@ Once a preview looks right, **Bake To Static Mesh** (further down the same panel
 a `UStaticMesh` asset at the **Package Path**/**Asset Name** you set there - that's the actual
 deliverable for building solar-system assets.
 
+**Checking it at real planetary scale:** push Radius Meters up toward Earth's ~6,371,000 and the
+Output Log warns that the mesh density you asked for "is not achievable in any single mesh" - this
+is expected, not a bug; `ASolarOrbzIcoSphereActor` is a single mesh, so a planet-scale radius still
+regenerates (the sphere really does get that big), just as one very coarse ball, since no single
+mesh can carry ground-level detail across an entire planet's surface. To actually see ground-level
+detail at that scale, use the **Chunked Planet Preview** section further down the same panel
+instead: **Generate Chunked Preview** spawns/rebuilds an `AASolarOrbzChunkedPlanetActor` using the
+SAME Radius and embedded terrain chain above, and streams real chunk geometry near a fixed vantage
+point (2m above the north pole by default) so you can tell whether the recipe actually looks good at
+scale, without entering Play. To look from somewhere other than the north pole: select the spawned
+actor, drag its own **Viewer World Position Override** in the Details panel, then press **that
+actor's own** `Rebuild Chunked Planet Now` button (not the panel's) - pressing the panel's
+**Generate Chunked Preview** button again re-syncs from the graph and resets the vantage back to the
+north pole.
+
 The graph - fixed modules **and** the terrain chain - only holds staged values in memory for as long
 as the SolarOrbz panel stays open: closing the tab and reopening it rebuilds a fresh, empty graph
 (same as the old flat panel losing its typed-in Radius/etc. on reopen). Click Generate before
