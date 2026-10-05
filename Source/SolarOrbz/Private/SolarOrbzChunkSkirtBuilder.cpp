@@ -63,8 +63,17 @@ void FSolarOrbzChunkSkirtBuilder::AppendSkirts(int32 Resolution, double SkirtDep
 			return *Found;
 		}
 
-		const FVector& OriginalPosition = InOutMeshData.Vertices[OriginalIndex];
-		const FVector& OriginalNormal = InOutMeshData.Normals[OriginalIndex];
+		// Copied BY VALUE, not bound by reference - each is about to be the argument to an Add() call
+		// on the very array it was read from (Normals.Add(OriginalNormal), etc. below). TArray::Add
+		// can reallocate the array's backing storage before constructing the new element from its
+		// argument; a reference into the array's OLD (now-freed) storage read at that point is a
+		// real, UE-detected bug ("Attempting to use a container element which already comes from the
+		// container being modified"), not just a style preference - plain value copies here sidestep
+		// it entirely, since they're independent of whatever Add() does to the array afterward.
+		const FVector OriginalPosition = InOutMeshData.Vertices[OriginalIndex];
+		const FVector OriginalNormal = InOutMeshData.Normals[OriginalIndex];
+		const FVector2D OriginalUV = InOutMeshData.UVs[OriginalIndex];
+		const FVector OriginalTangent = InOutMeshData.Tangents[OriginalIndex];
 
 		// Pulled inward along the vertex's own FINAL normal - see the header comment for why the
 		// normal (not the radial/from-planet-center direction) is the right reference once terrain
@@ -75,8 +84,8 @@ void FSolarOrbzChunkSkirtBuilder::AppendSkirts(int32 Resolution, double SkirtDep
 		const int32 NewIndex = InOutMeshData.Vertices.Num();
 		InOutMeshData.Vertices.Add(SkirtPosition);
 		InOutMeshData.Normals.Add(OriginalNormal);
-		InOutMeshData.UVs.Add(InOutMeshData.UVs[OriginalIndex]);
-		InOutMeshData.Tangents.Add(InOutMeshData.Tangents[OriginalIndex]);
+		InOutMeshData.UVs.Add(OriginalUV);
+		InOutMeshData.Tangents.Add(OriginalTangent);
 
 		OriginalToSkirt.Add(OriginalIndex, NewIndex);
 		return NewIndex;

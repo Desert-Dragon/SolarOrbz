@@ -548,6 +548,25 @@ commitment or a schedule - just a place these don't get lost between sessions.
     underlying "no per-update spawn/despawn budget" gap itself is still open and could independently
     matter for frame-time reasons even without ray tracing involved - a real future task, not solved
     by this fix, just no longer the thing causing this specific symptom.
+  - **Second hands-on report, this one an actual editor crash: `Attempting to use a container
+    element which already comes from the container being modified!` in `TArray` (not an `ensure()` -
+    a hard assertion, editor closes).** **Done (fixed).** A real, genuine bug in
+    `FSolarOrbzChunkSkirtBuilder::AppendSkirts` (`SolarOrbzChunkSkirtBuilder.cpp`), not an engine
+    quirk this time: `GetOrCreateSkirtVertex`'s local helper bound `OriginalNormal` (and, less
+    visibly, the inline `InOutMeshData.UVs[OriginalIndex]`/`InOutMeshData.Tangents[OriginalIndex]`
+    expressions) as *references into* `InOutMeshData.Normals`/`UVs`/`Tangents`, then passed those
+    same references straight into `.Add(...)` calls **on those same arrays** -
+    `Normals.Add(OriginalNormal)`, `UVs.Add(UVs[OriginalIndex])`, `Tangents.Add(Tangents[OriginalIndex])`.
+    `TArray::Add` can reallocate the array's backing storage before constructing the new element
+    from its argument; when the argument is itself a reference into that array's OLD (now-freed)
+    storage, the copy reads freed memory - exactly the bug UE's debug container check exists to
+    catch (`SizeofElement: 24` matches `TArray<FVector>`, i.e. `Normals`/`Tangents`, either of which
+    could have fired it first). `Vertices.Add(SkirtPosition)` right above these was NOT affected -
+    `SkirtPosition` is a freshly computed independent value, not an alias into `Vertices`. Fixed by
+    copying all four source fields (`OriginalPosition`/`OriginalNormal`/`OriginalUV`/`OriginalTangent`)
+    into plain BY-VALUE locals up front, before any `Add` call touches their arrays, so every `Add`
+    argument is now independent of whatever that `Add` does to its own array's storage afterward.
+    Confirmed (by grep across the whole plugin) this exact aliasing pattern existed nowhere else.
 
 - **Real-time orbit and rotation.** Planets need to actually orbit their star and rotate on their
   axis in real time, with players able to seamlessly leave one planet and travel to another. This
