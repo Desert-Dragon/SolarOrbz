@@ -707,9 +707,15 @@ public:
 // separate algorithm or a post-hoc size classification - Min/Max Continent Radius vs Min/Max
 // Island Radius is what actually distinguishes them, so both counts are independently authorable.
 //
-// Known simplification: seed placement is pure uniform-random on the sphere, not blue-noise/
-// Poisson-disc - so seeds can occasionally cluster closer together than a hand-placed layout would,
-// though this is what re-rolling Seed is for in practice.
+// Continent/island seeds never overlap an enabled polar continent - Bake() rejection-samples each
+// one's position (re-rolling position+radius together, up to a fixed attempt cap) against both
+// pole flags before accepting it. Two randomly-placed continents/islands can still overlap each
+// other, though - this restriction only protects the poles' fixed, author-placed landmasses from
+// collateral damage, not every pair of seeds from each other.
+//
+// Known simplification: seed placement is otherwise pure uniform-random on the sphere, not
+// blue-noise/Poisson-disc - so non-polar seeds can occasionally cluster closer together than a
+// hand-placed layout would, though this is what re-rolling Seed is for in practice.
 // ================================================================================================
 struct SOLARORBZ_API FSolarOrbzContinentSeedData
 {
@@ -755,6 +761,7 @@ public:
 	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Continent|Poles")
 	bool bHasSouthPolarContinent = false;
 
+	/** Also defines the exclusion zone continents/islands are rejection-sampled against: a randomly-placed seed never ends up closer to an enabled pole than this radius plus its own radius, i.e. it never actually overlaps the polar continent. Raising this shrinks the sphere area still open to random placement - with both poles enabled and a large enough radius, random continents/islands may end up placed overlapping anyway (logged as a warning) once there's nowhere left that's clear. */
 	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Continent|Poles", meta = (ClampMin = "1.0", ClampMax = "90.0", EditCondition = "bHasNorthPolarContinent || bHasSouthPolarContinent"))
 	float PolarContinentRadiusDegrees = 20.0f;
 

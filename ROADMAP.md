@@ -160,6 +160,14 @@ commitment or a schedule - just a place these don't get lost between sessions.
     cached in a private `TWeakObjectPtr`, resolved fresh inside `Bake()` each time.
   - Known simplification: seed placement is pure uniform-random on the sphere, not blue-noise/
     Poisson-disc, so seeds can occasionally cluster closer together than a hand-placed layout would.
+  - **Continents/islands no longer overlap an enabled polar continent.** `Bake()` now
+    rejection-samples each random continent/island's position+radius (re-rolling together, up to a
+    32-attempt cap) against both pole flags, accepting only a placement whose angular distance from
+    an enabled pole is at least that pole's `PolarContinentRadiusDegrees` plus the new seed's own
+    radius - i.e. the two landmasses don't actually overlap. Doesn't protect seeds from overlapping
+    each other, only from colliding with the poles' fixed, author-placed landmasses. A no-op (zero
+    extra `FRandomStream` draws) whenever neither pole is enabled, so existing continent layouts
+    seeded without poles are unaffected.
 
 - **Erosion Rainfall Amount** is uniform across the planet by default, not yet driven by a Climate
   Simulation's actual computed moisture. Wiring the two together would let erosion carve more

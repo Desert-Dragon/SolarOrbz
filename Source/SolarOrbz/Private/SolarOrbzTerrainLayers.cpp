@@ -1016,9 +1016,10 @@ void USolarOrbzContinentTerrainLayer::Bake(const TFunctionRef<float(const FVecto
 
 	CachedSeeds.Reset();
 	FRandomStream Stream(Seed);
+	const float PolarRadiusRadians = FMath::DegreesToRadians(PolarContinentRadiusDegrees);
 
 	int32 SeedIndex = 0;
-	auto AddSeed = [&](const FVector& Direction, float MinRadiusDegrees, float MaxRadiusDegrees)
+	auto AddSeed = [&](const FVector& Direction, float MinRadiusDegrees, float MaxRadiusDegrees) -> FSolarOrbzContinentSeedData
 	{
 		FSolarOrbzContinentSeedData S;
 		S.Direction = Direction;
@@ -1028,15 +1029,71 @@ void USolarOrbzContinentTerrainLayer::Bake(const TFunctionRef<float(const FVecto
 		S.NoiseOffset = FVector(SeedIndex * 17.3f, SeedIndex * 29.7f, SeedIndex * 53.1f);
 		CachedSeeds.Add(S);
 		++SeedIndex;
+		return S;
+	};
+
+	// A seed "steps on the toes" of an enabled polar continent when the great-circle distance
+	// between their centers is less than the sum of their angular radii - i.e. the two landmasses
+	// actually overlap, not just come close.
+	auto OverlapsEnabledPole = [&](const FSolarOrbzContinentSeedData& S)
+	{
+		if (bEffectiveNorthPolar)
+		{
+			const float AngleToNorth = FMath::Acos(FMath::Clamp(FVector::DotProduct(S.Direction, FVector::UpVector), -1.0f, 1.0f));
+			if (AngleToNorth < S.RadiusRadians + PolarRadiusRadians)
+			{
+				return true;
+			}
+		}
+		if (bEffectiveSouthPolar)
+		{
+			const float AngleToSouth = FMath::Acos(FMath::Clamp(FVector::DotProduct(S.Direction, -FVector::UpVector), -1.0f, 1.0f));
+			if (AngleToSouth < S.RadiusRadians + PolarRadiusRadians)
+			{
+				return true;
+			}
+		}
+		return false;
+	};
+
+	// Places a randomly-positioned continent/island seed, re-rolling its position+radius together
+	// (same as a normal roll) up to MaxPlacementAttempts times if it overlaps an enabled N/S polar
+	// continent - the actual "don't step on the pole continent's toes" restriction. Gives up and
+	// keeps the last roll anyway (logging a warning) rather than looping forever on a degenerate
+	// setup (e.g. a Polar Continent Radius large enough to leave nowhere left on that pole's side of
+	// the sphere). A no-op when neither pole is enabled - OverlapsEnabledPole() is trivially false,
+	// so this costs zero extra Stream draws and existing continent layouts (seeded without poles) are
+	// unaffected by this restriction.
+	constexpr int32 MaxPlacementAttempts = 32;
+	auto AddRandomSeedClearOfPoles = [&](float MinRadiusDegrees, float MaxRadiusDegrees)
+	{
+		for (int32 Attempt = 0; Attempt < MaxPlacementAttempts; ++Attempt)
+		{
+			const FVector Direction = RandomPointOnUnitSphere(Stream);
+			const FSolarOrbzContinentSeedData Placed = AddSeed(Direction, MinRadiusDegrees, MaxRadiusDegrees);
+			if (!OverlapsEnabledPole(Placed))
+			{
+				return;
+			}
+			if (Attempt + 1 == MaxPlacementAttempts)
+			{
+				UE_LOG(LogSolarOrbzContinent, Warning,
+					TEXT("SolarOrbz Continent: couldn't find a seed position clear of the polar continent(s) after %d attempts - keeping this one overlapping anyway. Shrink Polar Continent Radius, or this layer's continent/island radius range, if that keeps happening."),
+					MaxPlacementAttempts);
+				return;
+			}
+			CachedSeeds.Pop();
+			--SeedIndex;
+		}
 	};
 
 	for (int32 i = 0; i < EffectiveNumContinents; ++i)
 	{
-		AddSeed(RandomPointOnUnitSphere(Stream), MinContinentRadiusDegrees, MaxContinentRadiusDegrees);
+		AddRandomSeedClearOfPoles(MinContinentRadiusDegrees, MaxContinentRadiusDegrees);
 	}
 	for (int32 i = 0; i < EffectiveNumIslands; ++i)
 	{
-		AddSeed(RandomPointOnUnitSphere(Stream), MinIslandRadiusDegrees, MaxIslandRadiusDegrees);
+		AddRandomSeedClearOfPoles(MinIslandRadiusDegrees, MaxIslandRadiusDegrees);
 	}
 	if (bEffectiveNorthPolar)
 	{
