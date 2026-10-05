@@ -530,6 +530,24 @@ commitment or a schedule - just a place these don't get lost between sessions.
     `ViewerWorldPositionOverride` in its Details panel and press ITS OWN `RebuildChunkedPlanetNow`
     `CallInEditor` button directly - that bypasses the panel's click handler, so it won't get reset
     back to the north pole until the panel's own button is pressed again.
+  - **First hands-on report: `Ensure condition failed: !Geometry->IsEvicted()` / "Dynamic ray
+    tracing instance skipped because geometry 'ProcMesh' is evicted" flying toward a generated
+    planet.** **Done (fixed).** Non-fatal (an `ensure()`, not a crash - it just skipped ray tracing
+    for that one chunk for a frame) but a real, reproducible gap: UE5's ray tracing keeps BLAS
+    geometry in a GPU-memory-budgeted residency pool and evicts entries under pressure, and this
+    is an actively-reported class of bug in UE5.7/5.8 specifically tied to streaming/short-lived
+    primitives (not unique to this plugin). `FSolarOrbzChunkResidentSetManager::UpdateResidentSet`
+    has no per-update spawn/despawn budget (a gap this file's own header already lists) - flying
+    toward the planet quickly can make a single update tick create/destroy a burst of chunk
+    components at once, exactly the kind of GPU churn that can trip the eviction path. Fixed by
+    setting `bVisibleInRayTracing = false` on every spawned chunk component (before
+    `RegisterComponent()`, so no `MarkRenderStateDirty()` dance needed) - streamed terrain chunks
+    now never participate in ray tracing at all, rather than disabling ray tracing project-wide.
+    Costs nothing visible today (no biome coloring is wired into chunk generation yet either, so
+    RT reflections/shadows on raw gray terrain chunks weren't adding anything to look at). The
+    underlying "no per-update spawn/despawn budget" gap itself is still open and could independently
+    matter for frame-time reasons even without ray tracing involved - a real future task, not solved
+    by this fix, just no longer the thing causing this specific symptom.
 
 - **Real-time orbit and rotation.** Planets need to actually orbit their star and rotate on their
   axis in real time, with players able to seamlessly leave one planet and travel to another. This

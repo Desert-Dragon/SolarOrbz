@@ -142,6 +142,21 @@ void FSolarOrbzChunkResidentSetManager::UpdateResidentSet(const FVector& ViewerW
 		const FSolarOrbzIcoSphereMeshData& MeshData = MeshDataForSpawn[Index];
 
 		UProceduralMeshComponent* Component = NewObject<UProceduralMeshComponent>(OwningActor);
+
+		// Streamed chunks opt out of ray tracing entirely (set before RegisterComponent(), so it's
+		// picked up the first time this component's render state is created - no MarkRenderStateDirty
+		// dance needed). UE5's ray tracing keeps BLAS geometry in a GPU-memory-budgeted residency pool
+		// and evicts entries under pressure; this resident-set manager has no per-update spawn/despawn
+		// budget (see this file's own header comment), so a large viewer jump can create/destroy many
+		// chunk components in a single UpdateResidentSet call - exactly the kind of burst that can
+		// trip that eviction path and fire `Ensure condition failed: !Geometry->IsEvicted()` /
+		// "Dynamic ray tracing instance skipped because geometry 'ProcMesh' is evicted" (non-fatal -
+		// it just skips that one instance for a frame - but still worth not hitting). None of this
+		// subsystem's visuals currently depend on RT reflections/shadows on streamed terrain anyway
+		// (no biome coloring is wired into chunk generation yet either - see GenerateChunk's own
+		// header), so excluding chunks from ray tracing costs nothing visible today.
+		Component->bVisibleInRayTracing = false;
+
 		Component->RegisterComponent();
 
 		if (AttachTarget)
