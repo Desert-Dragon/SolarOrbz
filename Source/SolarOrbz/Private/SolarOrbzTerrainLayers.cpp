@@ -982,6 +982,43 @@ namespace SolarOrbzContinent
 		const float R = FMath::Sqrt(FMath::Max(1.0f - Z * Z, 0.0f));
 		return FVector(R * FMath::Cos(Theta), R * FMath::Sin(Theta), Z);
 	}
+
+	/** Multi-octave fBm, same basis/accumulation convention as USolarOrbzFractalNoiseTerrainLayerBase::ComputeNormalizedNoiseUncompensated (always Perlin basis here - coastlines don't need a NoiseType picker of their own), normalized to roughly -1..1 regardless of octave count. */
+	static float FractalNoise3D(const FVector& Pos, int32 Octaves, float Persistence, float Lacunarity, int32 Seed)
+	{
+		float Sum = 0.0f;
+		float MaxPossible = 0.0f;
+		float OctaveAmplitude = 1.0f;
+		FVector OctavePos = Pos;
+		for (int32 Octave = 0; Octave < FMath::Max(Octaves, 1); ++Octave)
+		{
+			Sum += SolarOrbzNoiseBasis::SampleBasis(ESolarOrbzNoiseType::Perlin, OctavePos, Seed) * OctaveAmplitude;
+			MaxPossible += OctaveAmplitude;
+			OctaveAmplitude *= Persistence;
+			OctavePos *= Lacunarity;
+		}
+		return MaxPossible > KINDA_SMALL_NUMBER ? FMath::Clamp(Sum / MaxPossible, -1.0f, 1.0f) : 0.0f;
+	}
+
+	/** 4-connected neighbor cell indices for Idx on a GridW x GridH FSolarOrbzLatLongGrid - wraps longitude (X), clamps latitude (Y), matching that grid's own convention. Shared by BakeVoronoiGrowth and BakePlateTectonics below, each of which otherwise builds an unrelated per-cell dataset. */
+	static void GetGridNeighbors4(int32 Idx, int32 GridW, int32 GridH, int32 (&OutNeighbors)[4])
+	{
+		const int32 X = Idx % GridW;
+		const int32 Y = Idx / GridW;
+		OutNeighbors[0] = Y * GridW + (X + 1) % GridW;
+		OutNeighbors[1] = Y * GridW + (X - 1 + GridW) % GridW;
+		OutNeighbors[2] = FMath::Clamp(Y + 1, 0, GridH - 1) * GridW + X;
+		OutNeighbors[3] = FMath::Clamp(Y - 1, 0, GridH - 1) * GridW + X;
+	}
+
+	/** Nearest grid cell index for an arbitrary direction - good enough for picking a growth/plate seed's starting cell, not a substitute for FSolarOrbzLatLongGrid::SampleBilinear's actual interpolated sampling. */
+	static int32 DirectionToNearestCellIdx(const FSolarOrbzLatLongGrid& Grid, const FVector& Dir)
+	{
+		const FSolarOrbzLatLongGrid::FBilinearCell Cell = Grid.ComputeBilinearCell(Dir);
+		const int32 X = Cell.Tx < 0.5f ? Cell.X0 : Cell.X1;
+		const int32 Y = Cell.Ty < 0.5f ? Cell.Y0 : Cell.Y1;
+		return Y * Grid.Width + X;
+	}
 }
 
 void USolarOrbzContinentTerrainLayer::ApplyPlanetaryContext(const USolarOrbzPlanetProfile* Profile, float SeaLevelCm)
@@ -999,37 +1036,95 @@ void USolarOrbzContinentTerrainLayer::ApplyPlanetaryContext(const USolarOrbzPlan
 
 void USolarOrbzContinentTerrainLayer::Bake(const TFunctionRef<float(const FVector& UnitDirection, const FVector2D& UV)>& PriorLayersHeight, double RadiusCm)
 {
-	// PriorLayersHeight is deliberately unused - seed positions/radii don't depend on anything
-	// below this layer in the stack. Bake() is only used here as a "once per regenerate" hook to
-	// regenerate the seed list deterministically, not for whole-surface height sampling.
-	using namespace SolarOrbzContinent;
-
+	// PriorLayersHeight is deliberately unused by every algorithm below - seed/growth/plate
+	// positions don't depend on anything below this layer in the stack. Bake() is only used as a
+	// "once per regenerate" hook to regenerate the layout deterministically; Radial Seeds doesn't
+	// even need the whole-surface pass this hook provides (see RequiresWholeSurfaceBake()).
 	const USolarOrbzPlanetProfile* EffectiveProfile = ProfileOverride.Get();
 
 	// Resolve once, here, rather than reading the authored properties directly below - this is the
 	// one and only place Profile overriding actually happens; everything past this point behaves
-	// identically whether these came from a Profile or from this layer's own fields.
+	// identically whether these came from a Profile or from this layer's own fields. Plate
+	// Tectonics ignores both counts entirely (continents emerge from the plate partition instead),
+	// but resolving them unconditionally here costs nothing and keeps this one block the only place
+	// that ever needs to know about Profile overriding.
 	const int32 EffectiveNumContinents = EffectiveProfile ? EffectiveProfile->GetNumContinents() : NumContinents;
 	const int32 EffectiveNumIslands = EffectiveProfile ? EffectiveProfile->GetNumIslands() : NumIslands;
 	const bool bEffectiveNorthPolar = EffectiveProfile ? EffectiveProfile->HasNorthPolarContinent() : bHasNorthPolarContinent;
 	const bool bEffectiveSouthPolar = EffectiveProfile ? EffectiveProfile->HasSouthPolarContinent() : bHasSouthPolarContinent;
 
 	CachedSeeds.Reset();
+	BakedHeightCm.Reset();
+	BakedGridWidth = 0;
+	BakedGridHeight = 0;
+
+	switch (Algorithm)
+	{
+	case ESolarOrbzContinentAlgorithm::VoronoiGrowth:
+		BakeVoronoiGrowth(bEffectiveNorthPolar, bEffectiveSouthPolar, EffectiveNumContinents, EffectiveNumIslands);
+		break;
+	case ESolarOrbzContinentAlgorithm::PlateTectonics:
+		BakePlateTectonics(bEffectiveNorthPolar, bEffectiveSouthPolar);
+		break;
+	case ESolarOrbzContinentAlgorithm::RadialSeeds:
+	default:
+		BakeRadialSeeds(bEffectiveNorthPolar, bEffectiveSouthPolar, EffectiveNumContinents, EffectiveNumIslands);
+		break;
+	}
+
+	const TCHAR* AlgorithmName = TEXT("Radial Seeds");
+	if (Algorithm == ESolarOrbzContinentAlgorithm::VoronoiGrowth) AlgorithmName = TEXT("Voronoi Growth");
+	else if (Algorithm == ESolarOrbzContinentAlgorithm::PlateTectonics) AlgorithmName = TEXT("Plate Tectonics");
+
+	// Cheap diagnostic: estimate land coverage by sampling a small independent grid - not the same
+	// grid resolution concept Voronoi Growth/Plate Tectonics's own Bake Grid is, just a coarse
+	// average purely for this log line, same cost/purpose regardless of which algorithm just ran
+	// (GetRawHeight below is already virtual-dispatched to whichever one it is).
+	constexpr int32 CoverageSamplesW = 64, CoverageSamplesH = 32;
+	int32 LandSamples = 0;
+	FSolarOrbzLatLongGrid(CoverageSamplesW, CoverageSamplesH).ForEachCell([&](int32 Idx, const FVector& Dir, const FVector2D& UV)
+	{
+		if (GetRawHeight(Dir, UV) > 0.0f)
+		{
+			++LandSamples;
+		}
+	});
+	const float LandCoveragePercent = 100.0f * LandSamples / (float)(CoverageSamplesW * CoverageSamplesH);
+
+	UE_LOG(LogSolarOrbzContinent, Log,
+		TEXT("SolarOrbz Continent (%s): approx %.1f%% land coverage (values from %s)"),
+		AlgorithmName, LandCoveragePercent,
+		EffectiveProfile ? TEXT("Planet Profile") : TEXT("this layer's own authored properties"));
+
+	if (Algorithm == ESolarOrbzContinentAlgorithm::RadialSeeds && CachedSeeds.Num() == 0)
+	{
+		UE_LOG(LogSolarOrbzContinent, Warning, TEXT("SolarOrbz Continent: no continents, islands, or polar continents configured - the whole planet will be Ocean Floor Depth."));
+	}
+}
+
+void USolarOrbzContinentTerrainLayer::BakeRadialSeeds(bool bEffectiveNorthPolar, bool bEffectiveSouthPolar, int32 EffectiveNumContinents, int32 EffectiveNumIslands)
+{
+	using namespace SolarOrbzContinent;
+
 	FRandomStream Stream(Seed);
 	const float PolarRadiusRadians = FMath::DegreesToRadians(PolarContinentRadiusDegrees);
 
 	int32 SeedIndex = 0;
-	auto AddSeed = [&](const FVector& Direction, float MinRadiusDegrees, float MaxRadiusDegrees) -> FSolarOrbzContinentSeedData
+	auto AddSeedAt = [&](const FVector& Direction, float RadiusRadians) -> FSolarOrbzContinentSeedData
 	{
 		FSolarOrbzContinentSeedData S;
 		S.Direction = Direction;
-		S.RadiusRadians = FMath::DegreesToRadians(Stream.FRandRange(MinRadiusDegrees, MaxRadiusDegrees));
+		S.RadiusRadians = RadiusRadians;
 		// Small deterministic per-seed offset so each landmass's coastline noise looks independent
 		// rather than every coastline sharing the exact same wiggle pattern.
 		S.NoiseOffset = FVector(SeedIndex * 17.3f, SeedIndex * 29.7f, SeedIndex * 53.1f);
 		CachedSeeds.Add(S);
 		++SeedIndex;
 		return S;
+	};
+	auto AddSeed = [&](const FVector& Direction, float MinRadiusDegrees, float MaxRadiusDegrees) -> FSolarOrbzContinentSeedData
+	{
+		return AddSeedAt(Direction, FMath::DegreesToRadians(Stream.FRandRange(MinRadiusDegrees, MaxRadiusDegrees)));
 	};
 
 	// A seed "steps on the toes" of an enabled polar continent when the great-circle distance
@@ -1056,6 +1151,39 @@ void USolarOrbzContinentTerrainLayer::Bake(const TFunctionRef<float(const FVecto
 		return false;
 	};
 
+	// Scatters SubSeedsPerLandmass smaller "metaball" seeds around Parent (a just-placed continent/
+	// island) - the union of several overlapping circles (GetRawHeightRadialSeeds already takes the
+	// max influence across every seed, so this costs nothing extra there) reads far less like a
+	// single circle than one circle alone. Skips (rather than rejection-samples) any sub-seed that
+	// would overlap an enabled pole, since a parent that already passed that check can still have
+	// its own edge close enough to a pole that an outward-scattered sub-seed pokes into it - a
+	// slightly smaller-than-authored landmass there is a fine trade for never breaking the
+	// pole-overlap guarantee. Never called for the two fixed polar continents themselves.
+	auto AddSubSeeds = [&](const FSolarOrbzContinentSeedData& Parent)
+	{
+		for (int32 i = 0; i < SubSeedsPerLandmass; ++i)
+		{
+			const FVector RandomPoint = RandomPointOnUnitSphere(Stream);
+			FVector Tangent = RandomPoint - Parent.Direction * FVector::DotProduct(RandomPoint, Parent.Direction);
+			if (Tangent.IsNearlyZero())
+			{
+				continue; // degenerate (RandomPoint landed ~= +/-Parent.Direction) - just skip this one sub-seed, not worth retrying
+			}
+			Tangent = Tangent.GetSafeNormal();
+
+			const float OffsetRadians = Stream.FRandRange(0.0f, SubSeedScatterFraction) * Parent.RadiusRadians;
+			const FVector SubDirection = (Parent.Direction * FMath::Cos(OffsetRadians) + Tangent * FMath::Sin(OffsetRadians)).GetSafeNormal();
+			const float SubRadiusRadians = Parent.RadiusRadians * Stream.FRandRange(MinSubSeedRadiusFraction, MaxSubSeedRadiusFraction);
+
+			const FSolarOrbzContinentSeedData SubSeed = AddSeedAt(SubDirection, SubRadiusRadians);
+			if (OverlapsEnabledPole(SubSeed))
+			{
+				CachedSeeds.Pop();
+				--SeedIndex;
+			}
+		}
+	};
+
 	// Places a randomly-positioned continent/island seed, re-rolling its position+radius together
 	// (same as a normal roll) up to MaxPlacementAttempts times if it overlaps an enabled N/S polar
 	// continent - the actual "don't step on the pole continent's toes" restriction. Gives up and
@@ -1073,6 +1201,7 @@ void USolarOrbzContinentTerrainLayer::Bake(const TFunctionRef<float(const FVecto
 			const FSolarOrbzContinentSeedData Placed = AddSeed(Direction, MinRadiusDegrees, MaxRadiusDegrees);
 			if (!OverlapsEnabledPole(Placed))
 			{
+				AddSubSeeds(Placed);
 				return;
 			}
 			if (Attempt + 1 == MaxPlacementAttempts)
@@ -1080,6 +1209,7 @@ void USolarOrbzContinentTerrainLayer::Bake(const TFunctionRef<float(const FVecto
 				UE_LOG(LogSolarOrbzContinent, Warning,
 					TEXT("SolarOrbz Continent: couldn't find a seed position clear of the polar continent(s) after %d attempts - keeping this one overlapping anyway. Shrink Polar Continent Radius, or this layer's continent/island radius range, if that keeps happening."),
 					MaxPlacementAttempts);
+				AddSubSeeds(Placed);
 				return;
 			}
 			CachedSeeds.Pop();
@@ -1103,55 +1233,443 @@ void USolarOrbzContinentTerrainLayer::Bake(const TFunctionRef<float(const FVecto
 	{
 		AddSeed(FVector(0.0f, 0.0f, -1.0f), PolarContinentRadiusDegrees, PolarContinentRadiusDegrees);
 	}
+}
 
-	// Cheap diagnostic: estimate land coverage by sampling a small independent grid - not the same
-	// grid resolution concept Erosion/Terrace use (this layer has no bake grid of its own), just a
-	// coarse average purely for this log line.
-	constexpr int32 CoverageSamplesW = 64, CoverageSamplesH = 32;
-	int32 LandSamples = 0;
-	FSolarOrbzLatLongGrid(CoverageSamplesW, CoverageSamplesH).ForEachCell([&](int32 Idx, const FVector& Dir, const FVector2D& UV)
+void USolarOrbzContinentTerrainLayer::BakeVoronoiGrowth(bool bEffectiveNorthPolar, bool bEffectiveSouthPolar, int32 EffectiveNumContinents, int32 EffectiveNumIslands)
+{
+	using namespace SolarOrbzContinent;
+
+	const int32 GridW = FMath::Max(BakeGridWidth, 8);
+	const int32 GridH = FMath::Max(BakeGridHeight, 4);
+	BakedGridWidth = GridW;
+	BakedGridHeight = GridH;
+	const int32 NumCells = GridW * GridH;
+	const FSolarOrbzLatLongGrid Grid(GridW, GridH);
+
+	TArray<FVector> CellDirections;
+	CellDirections.SetNumUninitialized(NumCells);
+	Grid.ForEachCell([&](int32 Idx, const FVector& Dir, const FVector2D& UV) { CellDirections[Idx] = Dir; });
+
+	FRandomStream Stream(Seed);
+
+	TArray<int32> OwnerId;
+	OwnerId.Init(-1, NumCells);
+	TArray<float> OwnerEnergyRemaining; // per-cell: this cell's own remaining energy at the moment its growth claimed it
+	OwnerEnergyRemaining.Init(0.0f, NumCells);
+	TArray<float> OwnerStartEnergy; // per-owner (indexed by OwnerId), always 1.0 here - see StopThresholdForRadius below for why that's fine
+
+	// Random-order flood fill from StartIdx: claims OwnerId for every cell it reaches, decaying
+	// energy (starting at 1.0) by a randomized factor (Growth Decay Min/Max plus Growth Jitter) each
+	// hop, until energy drops to/below StopThreshold or there's nowhere unclaimed left to grow into.
+	// Picking a uniformly random cell from the CURRENT FRONTIER each step - not strict ring-by-ring
+	// BFS - is what actually breaks radial symmetry into organic, non-convex blobs (see Azgaar's
+	// Fantasy Map Generator, referenced on the class comment above); plain same-decay BFS on a
+	// uniform grid would still grow in nearly perfect rings, right back to looking circular.
+	auto GrowLandmass = [&](int32 StartIdx, float StopThreshold) -> bool
 	{
-		if (GetRawHeight(Dir, UV) > 0.0f)
+		if (OwnerId[StartIdx] != -1)
 		{
-			++LandSamples;
+			return false;
 		}
-	});
-	const float LandCoveragePercent = 100.0f * LandSamples / (float)(CoverageSamplesW * CoverageSamplesH);
 
-	UE_LOG(LogSolarOrbzContinent, Log,
-		TEXT("SolarOrbz Continent: placed %d continent(s), %d island(s), %s%s%s - approx %.1f%% land coverage (values from %s)"),
-		EffectiveNumContinents, EffectiveNumIslands,
-		bEffectiveNorthPolar ? TEXT("north polar continent") : TEXT("no north polar continent"),
-		(bEffectiveNorthPolar && bEffectiveSouthPolar) ? TEXT(", ") : TEXT(""),
-		bEffectiveSouthPolar ? TEXT("south polar continent") : TEXT(""),
-		LandCoveragePercent,
-		EffectiveProfile ? TEXT("Planet Profile") : TEXT("this layer's own authored properties"));
+		const int32 OwnerTag = OwnerStartEnergy.Add(1.0f);
+		OwnerId[StartIdx] = OwnerTag;
+		OwnerEnergyRemaining[StartIdx] = 1.0f;
 
-	if (CachedSeeds.Num() == 0)
+		struct FFrontierEntry { int32 Idx; float Energy; };
+		TArray<FFrontierEntry> Frontier;
+		Frontier.Add({ StartIdx, 1.0f });
+
+		while (Frontier.Num() > 0)
+		{
+			const int32 PickIndex = Stream.RandRange(0, Frontier.Num() - 1);
+			const FFrontierEntry Current = Frontier[PickIndex];
+			Frontier.RemoveAtSwap(PickIndex, 1, EAllowShrinking::No);
+
+			int32 Neighbors[4];
+			GetGridNeighbors4(Current.Idx, GridW, GridH, Neighbors);
+			for (int32 NeighborIdx : Neighbors)
+			{
+				if (OwnerId[NeighborIdx] != -1)
+				{
+					continue; // claimed by this growth or an earlier one (poles included) - never cross into it
+				}
+
+				const float Decay = FMath::Clamp(Stream.FRandRange(GrowthDecayMin, GrowthDecayMax) + Stream.FRandRange(-GrowthJitter, GrowthJitter), 0.0f, 1.0f);
+				const float NextEnergy = Current.Energy * Decay;
+				if (NextEnergy <= StopThreshold)
+				{
+					continue; // decayed to nothing - this branch of the growth stops here
+				}
+
+				OwnerId[NeighborIdx] = OwnerTag;
+				OwnerEnergyRemaining[NeighborIdx] = NextEnergy;
+				Frontier.Add({ NeighborIdx, NextEnergy });
+			}
+		}
+		return true;
+	};
+
+	// Converts an authored "radius, degrees" into a stop-energy threshold so Radial Seeds and
+	// Voronoi Growth stay authored in the same units despite growing completely differently -
+	// starting energy is always 1.0 above, so only the AVERAGE decay rate and an approximate
+	// degrees-per-hop (this grid's own longitude/latitude cell size) matter for how many hops the
+	// growth survives before its energy crosses the threshold. Actual realized size still varies
+	// around this average because of Growth Jitter and the random frontier order - intentionally;
+	// that variation is a large part of what makes the result look organic rather than templated.
+	const float DegreesPerHop = 0.5f * (360.0f / GridW + 180.0f / FMath::Max(GridH - 1, 1));
+	const float AverageDecay = FMath::Clamp((GrowthDecayMin + GrowthDecayMax) * 0.5f, 0.01f, 0.999f);
+	auto StopThresholdForRadius = [&](float RadiusDegrees)
 	{
-		UE_LOG(LogSolarOrbzContinent, Warning, TEXT("SolarOrbz Continent: no continents, islands, or polar continents configured - the whole planet will be Ocean Floor Depth."));
+		const float NumHops = FMath::Max(RadiusDegrees / DegreesPerHop, 1.0f);
+		return FMath::Pow(AverageDecay, NumHops);
+	};
+
+	constexpr int32 MaxPlacementAttempts = 16;
+	auto GrowRandomLandmass = [&](float MinRadiusDegrees, float MaxRadiusDegrees)
+	{
+		const float StopThreshold = StopThresholdForRadius(Stream.FRandRange(MinRadiusDegrees, MaxRadiusDegrees));
+		for (int32 Attempt = 0; Attempt < MaxPlacementAttempts; ++Attempt)
+		{
+			const int32 StartIdx = DirectionToNearestCellIdx(Grid, RandomPointOnUnitSphere(Stream));
+			if (GrowLandmass(StartIdx, StopThreshold))
+			{
+				return;
+			}
+		}
+		UE_LOG(LogSolarOrbzContinent, Warning,
+			TEXT("SolarOrbz Continent (Voronoi Growth): couldn't find an unclaimed start cell after %d attempts - skipping one landmass. The grid is likely nearly full (too many continents/islands for Bake Grid Width/Height, or the polar continents cover most of it)."),
+			MaxPlacementAttempts);
+	};
+
+	// Claims every cell within Polar Continent Radius of PoleDirection outright - a direct
+	// geometric claim, not a randomized growth, since a polar cap conventionally reads fine as
+	// (approximately) round, unlike a random landmass. Still writes OwnerEnergyRemaining/
+	// OwnerStartEnergy through the exact same fields GrowLandmass uses, so the shared conversion
+	// pass below treats every landmass identically regardless of how it was claimed.
+	auto ClaimPolarCap = [&](const FVector& PoleDirection)
+	{
+		const float PolarRadiusRadians = FMath::DegreesToRadians(PolarContinentRadiusDegrees);
+		const int32 OwnerTag = OwnerStartEnergy.Add(1.0f);
+		for (int32 Idx = 0; Idx < NumCells; ++Idx)
+		{
+			if (OwnerId[Idx] != -1)
+			{
+				continue;
+			}
+			const float Angle = FMath::Acos(FMath::Clamp(FVector::DotProduct(CellDirections[Idx], PoleDirection), -1.0f, 1.0f));
+			if (Angle <= PolarRadiusRadians)
+			{
+				OwnerId[Idx] = OwnerTag;
+				OwnerEnergyRemaining[Idx] = FMath::Clamp(1.0f - Angle / FMath::Max(PolarRadiusRadians, KINDA_SMALL_NUMBER), 0.0f, 1.0f);
+			}
+		}
+	};
+
+	// Poles claim their cap FIRST so continents/islands below can never grow into it - overlap with
+	// a polar continent is prevented by construction here, unlike Radial Seeds' rejection-sampling.
+	if (bEffectiveNorthPolar)
+	{
+		ClaimPolarCap(FVector(0.0f, 0.0f, 1.0f));
+	}
+	if (bEffectiveSouthPolar)
+	{
+		ClaimPolarCap(FVector(0.0f, 0.0f, -1.0f));
+	}
+
+	for (int32 i = 0; i < EffectiveNumContinents; ++i)
+	{
+		GrowRandomLandmass(MinContinentRadiusDegrees, MaxContinentRadiusDegrees);
+	}
+	for (int32 i = 0; i < EffectiveNumIslands; ++i)
+	{
+		GrowRandomLandmass(MinIslandRadiusDegrees, MaxIslandRadiusDegrees);
+	}
+
+	BakedHeightCm.SetNumUninitialized(NumCells);
+	for (int32 Idx = 0; Idx < NumCells; ++Idx)
+	{
+		float BaseMeters = OceanFloorDepthMeters;
+		if (OwnerId[Idx] != -1)
+		{
+			// 1 at a growth's origin (or a pole's exact center), ramping toward 0 at the edge of
+			// however far it actually grew - same Lerp/Sharpness shape Radial Seeds' own falloff uses.
+			const float T = FMath::Clamp(OwnerEnergyRemaining[Idx] / FMath::Max(OwnerStartEnergy[OwnerId[Idx]], KINDA_SMALL_NUMBER), 0.0f, 1.0f);
+			const float Shaped = FMath::Pow(T, FMath::Max(CoastlineSharpness, 0.01f));
+			BaseMeters = FMath::Lerp(OceanFloorDepthMeters, LandPlateauHeightMeters, Shaped);
+		}
+
+		// Small cosmetic wobble on top of the grid-driven coastline, reusing the shared Coastline
+		// properties - 0.1x their own span is deliberately modest; the growth shape is already doing
+		// the real work of not looking circular, this is just surface texture.
+		const float NoiseMeters = CoastlineNoiseAmplitude * (LandPlateauHeightMeters - OceanFloorDepthMeters) * 0.1f *
+			SolarOrbzNoiseBasis::SampleBasis(ESolarOrbzNoiseType::Perlin, CellDirections[Idx] * CoastlineNoiseFrequency, Seed);
+
+		BakedHeightCm[Idx] = (BaseMeters + NoiseMeters) * 100.0f;
+	}
+}
+
+void USolarOrbzContinentTerrainLayer::BakePlateTectonics(bool bEffectiveNorthPolar, bool bEffectiveSouthPolar)
+{
+	using namespace SolarOrbzContinent;
+
+	const int32 GridW = FMath::Max(BakeGridWidth, 8);
+	const int32 GridH = FMath::Max(BakeGridHeight, 4);
+	BakedGridWidth = GridW;
+	BakedGridHeight = GridH;
+	const int32 NumCells = GridW * GridH;
+	const FSolarOrbzLatLongGrid Grid(GridW, GridH);
+
+	TArray<FVector> CellDirections;
+	CellDirections.SetNumUninitialized(NumCells);
+	Grid.ForEachCell([&](int32 Idx, const FVector& Dir, const FVector2D& UV) { CellDirections[Idx] = Dir; });
+
+	FRandomStream Stream(Seed);
+
+	// Each plate: a random seed direction (for the nearest-seed/Worley partition below), a random
+	// "drift" direction (magnitude is never used - only two plates' drift directions RELATIVE to
+	// each other classify their shared boundary, below), and oceanic-vs-continental. This is the
+	// approximate (NOT a physics simulation) model "Procedural Tectonic Planets" (Cortial, Peytavie,
+	// Galin & Guerin, CGF 38:2, 2019) describes - see the class comment above.
+	const int32 PlateCount = FMath::Max(NumPlates, 2);
+	TArray<FVector> PlateSeedDirection;
+	TArray<FVector> PlateDrift;
+	TArray<bool> PlateOceanic;
+	PlateSeedDirection.SetNumUninitialized(PlateCount);
+	PlateDrift.SetNumUninitialized(PlateCount);
+	PlateOceanic.SetNumUninitialized(PlateCount);
+	for (int32 P = 0; P < PlateCount; ++P)
+	{
+		PlateSeedDirection[P] = RandomPointOnUnitSphere(Stream);
+		PlateDrift[P] = RandomPointOnUnitSphere(Stream); // an independent random unit vector reused purely as a direction, not a position
+		PlateOceanic[P] = Stream.FRand() < OceanicPlateFraction;
+	}
+
+	// Nearest-seed (Worley) plate assignment, one brute-force scan over PlateCount per cell -
+	// trivially cheap even at NumPlates' max (64) against a few hundred thousand cells, since this
+	// runs once per regenerate, not per vertex.
+	TArray<int32> PlateId;
+	PlateId.SetNumUninitialized(NumCells);
+	for (int32 Idx = 0; Idx < NumCells; ++Idx)
+	{
+		int32 BestPlate = 0;
+		float BestDot = -2.0f;
+		for (int32 P = 0; P < PlateCount; ++P)
+		{
+			const float Dot = FVector::DotProduct(CellDirections[Idx], PlateSeedDirection[P]);
+			if (Dot > BestDot)
+			{
+				BestDot = Dot;
+				BestPlate = P;
+			}
+		}
+		PlateId[Idx] = BestPlate;
+	}
+
+	// Pole override: force the polar cap's plate assignment to a sentinel "always continental,
+	// always stationary" id regardless of the Worley partition above - the explicit "pinned
+	// landmass at the pole" feature works the same way under every algorithm. IsOceanic/IsContinental
+	// below both understand this sentinel.
+	constexpr int32 PolarContinentalSentinel = -2;
+	const float PolarRadiusRadians = FMath::DegreesToRadians(PolarContinentRadiusDegrees);
+	auto ApplyPolarOverride = [&](const FVector& PoleDirection)
+	{
+		for (int32 Idx = 0; Idx < NumCells; ++Idx)
+		{
+			const float Angle = FMath::Acos(FMath::Clamp(FVector::DotProduct(CellDirections[Idx], PoleDirection), -1.0f, 1.0f));
+			if (Angle <= PolarRadiusRadians)
+			{
+				PlateId[Idx] = PolarContinentalSentinel;
+			}
+		}
+	};
+	if (bEffectiveNorthPolar)
+	{
+		ApplyPolarOverride(FVector(0.0f, 0.0f, 1.0f));
+	}
+	if (bEffectiveSouthPolar)
+	{
+		ApplyPolarOverride(FVector(0.0f, 0.0f, -1.0f));
+	}
+
+	auto IsOceanic = [&PlateOceanic](int32 Plate) { return Plate >= 0 && PlateOceanic[Plate]; };
+	auto IsContinental = [&PlateOceanic](int32 Plate) { return Plate == PolarContinentalSentinel || (Plate >= 0 && !PlateOceanic[Plate]); };
+
+	// Multi-source BFS from every plate-boundary cell (any cell with a 4-connected neighbor on a
+	// different plate), carrying forward that boundary's classified height modifier - this is what
+	// turns "two touching Worley cells" into an actual mountain range/trench/ridge/rift that extends
+	// some distance either side of the boundary (Boundary Influence Degrees), not a single
+	// one-cell-wide seam.
+	TArray<int32> DistanceHops;
+	TArray<float> BoundaryModifierMeters;
+	DistanceHops.Init(-1, NumCells);
+	BoundaryModifierMeters.Init(0.0f, NumCells);
+
+	const float DegreesPerHop = 0.5f * (360.0f / GridW + 180.0f / FMath::Max(GridH - 1, 1));
+	const int32 CutoffHops = FMath::Max(FMath::RoundToInt(BoundaryInfluenceDegrees / DegreesPerHop), 1);
+
+	TArray<int32> Frontier;
+	for (int32 Idx = 0; Idx < NumCells; ++Idx)
+	{
+		int32 Neighbors[4];
+		GetGridNeighbors4(Idx, GridW, GridH, Neighbors);
+
+		const int32 PlateA = PlateId[Idx];
+		float BestModifier = 0.0f;
+		bool bIsBoundary = false;
+		for (int32 NeighborIdx : Neighbors)
+		{
+			const int32 PlateB = PlateId[NeighborIdx];
+			if (PlateB == PlateA)
+			{
+				continue;
+			}
+			bIsBoundary = true;
+
+			// Classify using the two plates' drift RELATIVE to each other, projected onto the line
+			// between their seeds - a cheap proxy for "are they closing (convergent), opening
+			// (divergent), or sliding past (transform) each other," in the same approximate spirit
+			// the class comment's paper reference uses (no actual physics simulation).
+			const FVector SeedDirA = (PlateA >= 0) ? PlateSeedDirection[PlateA] : CellDirections[Idx];
+			const FVector SeedDirB = (PlateB >= 0) ? PlateSeedDirection[PlateB] : CellDirections[NeighborIdx];
+			const FVector BoundaryAxis = (SeedDirB - SeedDirA).GetSafeNormal();
+			const FVector DriftA = (PlateA >= 0) ? PlateDrift[PlateA] : FVector::ZeroVector; // the polar sentinel is treated as stationary
+			const FVector DriftB = (PlateB >= 0) ? PlateDrift[PlateB] : FVector::ZeroVector;
+			const float Closure = FVector::DotProduct(DriftA, BoundaryAxis) - FVector::DotProduct(DriftB, BoundaryAxis);
+
+			constexpr float TransformThreshold = 0.25f;
+			float Modifier = 0.0f;
+			if (Closure > TransformThreshold)
+			{
+				// Converging.
+				if (IsContinental(PlateA) && IsContinental(PlateB))
+				{
+					Modifier = MountainHeightMeters; // continent-continent collision, the Himalaya case
+				}
+				else if (IsOceanic(PlateA) && IsOceanic(PlateB))
+				{
+					Modifier = MountainHeightMeters * 0.3f; // smaller island-arc bump
+				}
+				else
+				{
+					// One oceanic, one continental - subduction: a trench on the oceanic side, a
+					// smaller coastal-mountain bump on the continental side.
+					Modifier = IsOceanic(PlateA) ? TrenchDepthMeters : MountainHeightMeters * 0.5f;
+				}
+			}
+			else if (Closure < -TransformThreshold)
+			{
+				// Diverging.
+				Modifier = (IsOceanic(PlateA) && IsOceanic(PlateB)) ? RidgeHeightMeters : RiftDepthMeters;
+			}
+			// else: transform - no height modifier, just the plain plate-boundary seam.
+
+			if (FMath::Abs(Modifier) > FMath::Abs(BestModifier))
+			{
+				BestModifier = Modifier;
+			}
+		}
+
+		if (bIsBoundary)
+		{
+			DistanceHops[Idx] = 0;
+			BoundaryModifierMeters[Idx] = BestModifier;
+			Frontier.Add(Idx);
+		}
+	}
+
+	for (int32 Hop = 0; Hop < CutoffHops && Frontier.Num() > 0; ++Hop)
+	{
+		TArray<int32> NextFrontier;
+		for (int32 Idx : Frontier)
+		{
+			int32 Neighbors[4];
+			GetGridNeighbors4(Idx, GridW, GridH, Neighbors);
+			for (int32 NeighborIdx : Neighbors)
+			{
+				if (DistanceHops[NeighborIdx] != -1)
+				{
+					continue;
+				}
+				DistanceHops[NeighborIdx] = Hop + 1;
+				BoundaryModifierMeters[NeighborIdx] = BoundaryModifierMeters[Idx];
+				NextFrontier.Add(NeighborIdx);
+			}
+		}
+		Frontier = MoveTemp(NextFrontier);
+	}
+
+	BakedHeightCm.SetNumUninitialized(NumCells);
+	for (int32 Idx = 0; Idx < NumCells; ++Idx)
+	{
+		const float BaseMeters = IsOceanic(PlateId[Idx]) ? OceanFloorDepthMeters : LandPlateauHeightMeters;
+
+		float ModifierMeters = 0.0f;
+		if (DistanceHops[Idx] != -1)
+		{
+			const float Falloff = 1.0f - FMath::SmoothStep(0.0f, (float)CutoffHops, (float)DistanceHops[Idx]);
+			ModifierMeters = BoundaryModifierMeters[Idx] * Falloff;
+		}
+
+		// Small cosmetic wobble, same convention BakeVoronoiGrowth's grid uses.
+		const float NoiseMeters = CoastlineNoiseAmplitude * (LandPlateauHeightMeters - OceanFloorDepthMeters) * 0.1f *
+			SolarOrbzNoiseBasis::SampleBasis(ESolarOrbzNoiseType::Perlin, CellDirections[Idx] * CoastlineNoiseFrequency, Seed);
+
+		BakedHeightCm[Idx] = (BaseMeters + ModifierMeters + NoiseMeters) * 100.0f;
 	}
 }
 
 float USolarOrbzContinentTerrainLayer::GetRawHeight(const FVector& UnitDirection, const FVector2D& UV) const
 {
+	switch (Algorithm)
+	{
+	case ESolarOrbzContinentAlgorithm::VoronoiGrowth:
+	case ESolarOrbzContinentAlgorithm::PlateTectonics:
+		return GetRawHeightFromBakedGrid(UnitDirection);
+	case ESolarOrbzContinentAlgorithm::RadialSeeds:
+	default:
+		return GetRawHeightRadialSeeds(UnitDirection);
+	}
+}
+
+float USolarOrbzContinentTerrainLayer::GetRawHeightRadialSeeds(const FVector& UnitDirection) const
+{
+	using namespace SolarOrbzContinent;
+
 	if (CachedSeeds.Num() == 0)
 	{
 		return OceanFloorDepthMeters * 100.0f + CachedSeaLevelCm; // no landmasses configured - the whole planet is ocean floor
 	}
 
+	// Domain-warp the SAMPLE POINT before any seed's circle test runs, rather than only perturbing
+	// the output radius below - warping the point is what can actually bend the boundary into
+	// peninsulas/bays (a radius perturbation alone is still one smooth distance field around one
+	// center, however noisy). Same warp-vector construction USolarOrbzFractalNoiseTerrainLayerBase
+	// already uses for its own WarpStrength/WarpFrequency, applied here to geometry instead of to a
+	// noise function's internal sample position - see iquilezles.org/articles/warp.
+	FVector WarpedDirection = UnitDirection;
+	if (CoastlineWarpStrength > 0.0f)
+	{
+		const FVector WarpPos = UnitDirection * CoastlineWarpFrequency;
+		const FVector Warp(
+			FMath::PerlinNoise3D(WarpPos),
+			FMath::PerlinNoise3D(WarpPos + FVector(31.7f, 0.0f, 0.0f)),
+			FMath::PerlinNoise3D(WarpPos + FVector(0.0f, 57.3f, 0.0f)));
+		WarpedDirection = (UnitDirection + Warp * CoastlineWarpStrength).GetSafeNormal();
+	}
+
 	float MaxInfluence = 0.0f;
 	for (const FSolarOrbzContinentSeedData& S : CachedSeeds)
 	{
-		const float CosAngle = FVector::DotProduct(UnitDirection, S.Direction);
+		const float CosAngle = FVector::DotProduct(WarpedDirection, S.Direction);
 		const float Angle = FMath::Acos(FMath::Clamp(CosAngle, -1.0f, 1.0f));
 
-		const float CoastlineNoise = FMath::PerlinNoise3D(UnitDirection * CoastlineNoiseFrequency + S.NoiseOffset);
+		const float CoastlineNoise = FractalNoise3D(WarpedDirection * CoastlineNoiseFrequency + S.NoiseOffset, CoastlineNoiseOctaves, CoastlineNoisePersistence, CoastlineNoiseLacunarity, Seed);
 		const float PerturbedRadius = FMath::Max(S.RadiusRadians * (1.0f + CoastlineNoiseAmplitude * CoastlineNoise), 0.0f);
 
 		// 1 at the seed's center, ramping smoothly down to 0 at (and beyond) its perturbed radius.
 		const float Influence = 1.0f - FMath::SmoothStep(0.0f, FMath::Max(PerturbedRadius, KINDA_SMALL_NUMBER), Angle);
-		MaxInfluence = FMath::Max(MaxInfluence, Influence); // overlapping seeds merge into one landmass rather than fighting
+		MaxInfluence = FMath::Max(MaxInfluence, Influence); // overlapping seeds (sub-seeds included) merge into one landmass rather than fighting
 	}
 
 	MaxInfluence = FMath::Pow(FMath::Clamp(MaxInfluence, 0.0f, 1.0f), FMath::Max(CoastlineSharpness, 0.01f));
@@ -1161,4 +1679,17 @@ float USolarOrbzContinentTerrainLayer::GetRawHeight(const FVector& UnitDirection
 	// radius - so Ocean Floor Depth/Land Plateau Height mean "relative to wherever Sea Level is",
 	// exactly matching the doc comments on those two properties.
 	return HeightMetersAboveSeaLevel * 100.0f + CachedSeaLevelCm; // meters -> UE units (cm), then shift by Sea Level
+}
+
+float USolarOrbzContinentTerrainLayer::GetRawHeightFromBakedGrid(const FVector& UnitDirection) const
+{
+	if (BakedHeightCm.Num() == 0 || BakedGridWidth <= 0 || BakedGridHeight <= 0)
+	{
+		return OceanFloorDepthMeters * 100.0f + CachedSeaLevelCm; // Bake() hasn't run (or produced an empty grid) yet - fall back to plain ocean floor rather than reading past the array
+	}
+
+	// BakedHeightCm already stores plain meters-relative-to-sea-level (converted to cm) with NO Sea
+	// Level offset baked in, exactly like CachedSeeds' RadialSeeds path - Sea Level is added once,
+	// here, at sample time, so moving Sea Level later never requires re-baking the grid.
+	return FSolarOrbzLatLongGrid(BakedGridWidth, BakedGridHeight).SampleBilinear(BakedHeightCm, UnitDirection) + CachedSeaLevelCm;
 }

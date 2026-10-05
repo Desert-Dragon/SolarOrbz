@@ -168,6 +168,50 @@ commitment or a schedule - just a place these don't get lost between sessions.
     each other, only from colliding with the poles' fixed, author-placed landmasses. A no-op (zero
     extra `FRandomStream` draws) whenever neither pole is enabled, so existing continent layouts
     seeded without poles are unaffected.
+  - **"Continents still look too circular" → three selectable algorithms.** **Done.** Researched
+    real procedural-generation references (not guessed) before implementing - Red Blob Games'
+    island-shaping article, Azgaar's Fantasy Map Generator, Inigo Quilez's domain-warping article,
+    and Cortial/Peytavie/Galin/Guerin's "Procedural Tectonic Planets" (CGF 38:2, 2019) - then added
+    a new `Algorithm` property (`ESolarOrbzContinentAlgorithm`) picking between them per-instance:
+    - **Radial Seeds** (the original approach, enhanced, still the default): the circle test
+      survives, but the SAMPLE POINT is now domain-warped before that test runs (`CoastlineWarpStrength`/
+      `CoastlineWarpFrequency`, the same warp-vector construction `USolarOrbzFractalNoiseTerrainLayerBase`
+      already uses for its own `WarpStrength`, applied here to geometry instead of to a noise
+      function's own sample position) - this is the fix that actually matters, since perturbing the
+      output radius (the old and only mechanism) can never change the boundary's topology, only its
+      wobble. Also upgraded the boundary wobble from one `PerlinNoise3D` call to proper multi-octave
+      fBm (`CoastlineNoiseOctaves`/`Persistence`/`Lacunarity`, reusing `SolarOrbzNoiseBasis::SampleBasis`
+      from the Noise layer rather than a second implementation), and added metaball sub-seeds
+      (`SubSeedsPerLandmass`, scattered within `SubSeedScatterFraction` of each parent's radius) -
+      the union of several overlapping circles reads far less like one circle, and costs nothing
+      extra in `GetRawHeight` since it already takes the max influence across every seed.
+    - **Voronoi Growth**: each landmass starts at one cell of a new bake grid
+      (`BakeGridWidth`/`Height`, same `FSolarOrbzLatLongGrid` pattern Erosion/Terrace already use)
+      and randomly floods into unclaimed neighbor cells, decaying a growth-energy budget by a
+      randomized factor (`GrowthDecayMin`/`Max` plus `GrowthJitter`) each hop - picking a *random*
+      cell from the current frontier each step, not strict same-decay BFS rings, is what actually
+      breaks radial symmetry into real bays/peninsulas. `MinContinentRadiusDegrees`/etc are reused
+      (converted into an equivalent hop budget via the grid's own degrees-per-cell) so both
+      algorithms stay authored in the same units. A cell can only be claimed once, so overlap
+      between landmasses - poles included, which claim their cap first - is prevented by
+      construction instead of Radial Seeds' rejection-sampling.
+    - **Plate Tectonics**: approximate, explicitly NOT a physics simulation (same framing the paper
+      itself uses) - partitions the sphere into `NumPlates` randomly-drifting plates via
+      nearest-seed/Worley assignment, classifies each plate-boundary cell as convergent/divergent/
+      transform from the two plates' relative drift, then a multi-source BFS (`BoundaryInfluenceDegrees`
+      cutoff) carries each boundary's classified modifier (`MountainHeightMeters`/`TrenchDepthMeters`/
+      `RidgeHeightMeters`/`RiftDepthMeters`) outward with a falloff, so a boundary reads as an actual
+      mountain range/trench/ridge/rift, not a one-cell seam. `NumContinents`/`NumIslands` do nothing
+      in this mode - continents are an emergent side effect of `OceanicPlateFraction`, not an
+      authored count. The pole flags still work the same way as the other two algorithms (force the
+      polar cap's plate assignment continental via a sentinel id), so that one feature behaves
+      identically regardless of which algorithm is active.
+    - Voronoi Growth and Plate Tectonics share one bake grid and one cached height raster
+      (`BakedHeightCm`, sampled bilinearly via `FSolarOrbzLatLongGrid::SampleBilinear`, same
+      whole-surface-bake-then-sample shape Erosion/Terrace use); Radial Seeds alone stays a pure
+      per-point function with no grid, unchanged in kind from the original design.
+    - Switching `Algorithm` re-rolls the whole layout, the same as changing `Seed` - no attempt at
+      cross-algorithm layout compatibility.
 
 - **Erosion Rainfall Amount** is uniform across the planet by default, not yet driven by a Climate
   Simulation's actual computed moisture. Wiring the two together would let erosion carve more

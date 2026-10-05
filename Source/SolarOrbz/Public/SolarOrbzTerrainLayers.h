@@ -693,30 +693,55 @@ public:
 };
 
 // ================================================================================================
-// FSolarOrbzContinentSeedData / USolarOrbzContinentTerrainLayer - places a controllable number of
-// discrete landmasses via seeded/grown regions instead of noise-derived coastlines, so an actual
-// continent COUNT is directly authorable rather than an emergent side effect of noise frequency.
+// ESolarOrbzContinentAlgorithm / FSolarOrbzContinentSeedData / USolarOrbzContinentTerrainLayer -
+// places a controllable number of discrete landmasses, so an actual continent COUNT is directly
+// authorable rather than an emergent side effect of noise frequency. Three interchangeable
+// algorithms (below), picked per-instance via Algorithm - researched against real procedural
+// generation references rather than guessed, after "continents still look too circular" feedback
+// on the original single-algorithm version:
 //
-// A pure function of position (like Noise/Stamp) - seed positions/radii don't depend on anything
-// below it in the stack, so it opts into the whole-surface-bake hook purely as a "run once per
-// regenerate" moment to regenerate its seed list deterministically, not because it needs
-// PriorLayersHeight (it's ignored). Place this FIRST in a stack, before your mountain/detail noise
-// layers - it defines the base land/ocean shape those layers then add detail on top of.
+// - RadialSeeds: Red Blob Games' island-shaping article (redblobgames.com/maps/terrain-from-noise/
+//   islands.html) and Inigo Quilez's domain-warping article (iquilezles.org/articles/warp) - a
+//   circle test is still the base shape, but the SAMPLE POINT is domain-warped before the test
+//   (not just the output radius perturbed, which can never change the boundary's topology), the
+//   boundary wobble is multi-octave fBm instead of one Perlin call, and each landmass can scatter a
+//   few smaller "metaball" sub-seeds around its main seed so the union of several circles - not one
+//   - makes the actual coastline. Cheap: a pure per-point function, no whole-surface bake.
+// - VoronoiGrowth: Azgaar's Fantasy Map Generator (github.com/Azgaar/Fantasy-Map-Generator) - each
+//   landmass starts at one cell of this layer's own bake grid and randomly floods outward into
+//   unclaimed neighbor cells, losing "growth energy" by a randomized decay each hop, stopping once
+//   energy runs out. The randomized, graph-walk (not radial-formula) growth order is what actually
+//   produces bays/peninsulas/non-convex coastlines - and since a cell can only be claimed once,
+//   overlap between landmasses (poles included) is prevented by construction, not rejection-sampling.
+// - PlateTectonics: approximate, NOT a physics simulation, in the spirit of Cortial, Peytavie,
+//   Galin & Guerin's "Procedural Tectonic Planets" (Computer Graphics Forum 38:2, 2019) - partitions
+//   the sphere into randomly-drifting plates (nearest-seed/Worley assignment), classifies each
+//   plate boundary as convergent/divergent/transform from the two plates' relative drift, and
+//   shapes mountains/trenches/ridges/rifts from that classification. Continents are an emergent
+//   side effect of which plates are flagged oceanic vs continental, not an authored count - Num
+//   Continents/Islands do nothing in this mode.
 //
-// Islands are just smaller-radius versions of the same seed-growth mechanism as continents, not a
-// separate algorithm or a post-hoc size classification - Min/Max Continent Radius vs Min/Max
-// Island Radius is what actually distinguishes them, so both counts are independently authorable.
+// VoronoiGrowth and PlateTectonics share one bake grid (BakeGridWidth/Height) and one cached
+// TArray<float> height raster, the same whole-surface-bake-then-bilinear-sample pattern Erosion/
+// Terrace already use (see FSolarOrbzLatLongGrid) - RadialSeeds alone stays a pure per-point
+// function with no grid, unchanged from the original design.
 //
-// Continent/island seeds never overlap an enabled polar continent - Bake() rejection-samples each
-// one's position (re-rolling position+radius together, up to a fixed attempt cap) against both
-// pole flags before accepting it. Two randomly-placed continents/islands can still overlap each
-// other, though - this restriction only protects the poles' fixed, author-placed landmasses from
-// collateral damage, not every pair of seeds from each other.
+// Islands are just smaller-radius versions of the same seed-growth mechanism as continents in
+// RadialSeeds (and the same growth mechanism at a smaller energy budget in VoronoiGrowth) - not a
+// separate algorithm or a post-hoc size classification.
 //
-// Known simplification: seed placement is otherwise pure uniform-random on the sphere, not
-// blue-noise/Poisson-disc - so non-polar seeds can occasionally cluster closer together than a
-// hand-placed layout would, though this is what re-rolling Seed is for in practice.
+// Switching Algorithm, like changing Seed, re-rolls the whole layout - there is no cross-algorithm
+// layout compatibility, nor any attempt at it.
 // ================================================================================================
+
+UENUM(BlueprintType)
+enum class ESolarOrbzContinentAlgorithm : uint8
+{
+	RadialSeeds,
+	VoronoiGrowth,
+	PlateTectonics,
+};
+
 struct SOLARORBZ_API FSolarOrbzContinentSeedData
 {
 	FVector Direction = FVector::UpVector; // unit vector, seed center
@@ -734,38 +759,135 @@ public:
 	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Continent")
 	int32 Seed = 0;
 
-	/** How many continent-scale landmasses to place, at random positions on the sphere. */
-	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Continent", meta = (ClampMin = "0"))
+	/** Which generation algorithm places/shapes the landmasses below - see the class comment above for what each one actually does and where it came from. Changing this re-rolls the whole layout, the same as changing Seed. */
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Continent")
+	ESolarOrbzContinentAlgorithm Algorithm = ESolarOrbzContinentAlgorithm::RadialSeeds;
+
+	/** How many continent-scale landmasses to place, at random positions on the sphere. Ignored by Plate Tectonics, where continents emerge from the plate partition instead. */
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Continent", meta = (ClampMin = "0", EditCondition = "Algorithm != ESolarOrbzContinentAlgorithm::PlateTectonics"))
 	int32 NumContinents = 5;
 
-	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Continent", meta = (ClampMin = "1.0", ClampMax = "90.0"))
+	/** Radial Seeds: the circle's actual radius. Voronoi Growth: converted into a starting growth-energy budget (via this layer's bake grid resolution) so the two algorithms stay authored in the same units. */
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Continent", meta = (ClampMin = "1.0", ClampMax = "90.0", EditCondition = "Algorithm != ESolarOrbzContinentAlgorithm::PlateTectonics"))
 	float MinContinentRadiusDegrees = 15.0f;
 
-	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Continent", meta = (ClampMin = "1.0", ClampMax = "90.0"))
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Continent", meta = (ClampMin = "1.0", ClampMax = "90.0", EditCondition = "Algorithm != ESolarOrbzContinentAlgorithm::PlateTectonics"))
 	float MaxContinentRadiusDegrees = 35.0f;
 
-	/** How many smaller islands to scatter, at random positions on the sphere - independent of, and in addition to, the continents above. */
-	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Continent|Islands", meta = (ClampMin = "0"))
+	/** How many smaller islands to scatter, at random positions on the sphere - independent of, and in addition to, the continents above. Ignored by Plate Tectonics. */
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Continent|Islands", meta = (ClampMin = "0", EditCondition = "Algorithm != ESolarOrbzContinentAlgorithm::PlateTectonics"))
 	int32 NumIslands = 10;
 
-	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Continent|Islands", meta = (ClampMin = "0.1", ClampMax = "90.0"))
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Continent|Islands", meta = (ClampMin = "0.1", ClampMax = "90.0", EditCondition = "Algorithm != ESolarOrbzContinentAlgorithm::PlateTectonics"))
 	float MinIslandRadiusDegrees = 1.0f;
 
-	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Continent|Islands", meta = (ClampMin = "0.1", ClampMax = "90.0"))
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Continent|Islands", meta = (ClampMin = "0.1", ClampMax = "90.0", EditCondition = "Algorithm != ESolarOrbzContinentAlgorithm::PlateTectonics"))
 	float MaxIslandRadiusDegrees = 5.0f;
 
-	/** Places a landmass centered exactly on the north pole (an Antarctica-analogue, just at the other end) - not randomly positioned like continents/islands above. */
+	/** Places a landmass centered exactly on the north pole (an Antarctica-analogue, just at the other end) - not randomly positioned like continents/islands above. Works the same way under all three algorithms: Radial Seeds places an explicit polar seed, Voronoi Growth starts (and claims) a growth there before any other landmass, and Plate Tectonics overrides the polar cap's plate assignment to continental regardless of the Worley partition. */
 	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Continent|Poles")
 	bool bHasNorthPolarContinent = false;
 
 	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Continent|Poles")
 	bool bHasSouthPolarContinent = false;
 
-	/** Also defines the exclusion zone continents/islands are rejection-sampled against: a randomly-placed seed never ends up closer to an enabled pole than this radius plus its own radius, i.e. it never actually overlaps the polar continent. Raising this shrinks the sphere area still open to random placement - with both poles enabled and a large enough radius, random continents/islands may end up placed overlapping anyway (logged as a warning) once there's nowhere left that's clear. */
+	/** Also defines the exclusion zone continents/islands can't end up inside: Radial Seeds rejection-samples against this radius plus a candidate's own radius; Voronoi Growth and Plate Tectonics simply claim/override this radius before anything else is placed, so overlap there is impossible rather than merely rejected. Raising this shrinks the sphere area still open to random placement - under Radial Seeds specifically, with both poles enabled and a large enough radius, random continents/islands may end up placed overlapping anyway (logged as a warning) once there's nowhere left that's clear. */
 	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Continent|Poles", meta = (ClampMin = "1.0", ClampMax = "90.0", EditCondition = "bHasNorthPolarContinent || bHasSouthPolarContinent"))
 	float PolarContinentRadiusDegrees = 20.0f;
 
-	/** How much each landmass's coastline wiggles away from a perfect circle, as a fraction of that landmass's own radius. 0 = perfect circles. */
+	// --- Radial Seeds shape (domain warp, multi-octave boundary, metaball sub-seeds) ---
+
+	/** Radial Seeds only. How far each landmass's SAMPLE POINT is pushed, as a fraction of its own radius, before the circle test runs - this is what actually breaks the "circle with a wobbly edge" look (perturbing the output radius, below, cannot: it's still one smooth distance field around one center). 0 = no warp, a perfect (still boundary-noised) circle. See the class comment's Quilez reference. */
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Continent|Shape", meta = (ClampMin = "0.0", ClampMax = "1.0", EditCondition = "Algorithm == ESolarOrbzContinentAlgorithm::RadialSeeds"))
+	float CoastlineWarpStrength = 0.6f;
+
+	/** Radial Seeds only. Frequency of the warp field itself - low values warp in broad sweeps (big bays/peninsulas), high values warp in small, fine wrinkles. */
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Continent|Shape", meta = (ClampMin = "0.01", EditCondition = "Algorithm == ESolarOrbzContinentAlgorithm::RadialSeeds && CoastlineWarpStrength > 0.0"))
+	float CoastlineWarpFrequency = 1.2f;
+
+	/** Radial Seeds only. How many octaves of fBm noise make up the boundary wobble - 1 is the original single-Perlin-call wobble (a fairly smooth, single-frequency ripple); several octaves layer finer detail on top the way every other noise-based layer in this plugin already does. */
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Continent|Shape", meta = (ClampMin = "1", ClampMax = "6", EditCondition = "Algorithm == ESolarOrbzContinentAlgorithm::RadialSeeds"))
+	int32 CoastlineNoiseOctaves = 3;
+
+	/** Radial Seeds only. Amplitude falloff per boundary-noise octave - same meaning as every other fractal layer's Persistence. */
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Continent|Shape", meta = (ClampMin = "0.0", ClampMax = "1.0", EditCondition = "Algorithm == ESolarOrbzContinentAlgorithm::RadialSeeds && CoastlineNoiseOctaves > 1"))
+	float CoastlineNoisePersistence = 0.5f;
+
+	/** Radial Seeds only. Frequency multiplier per boundary-noise octave - same meaning as every other fractal layer's Lacunarity. */
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Continent|Shape", meta = (ClampMin = "1.0", EditCondition = "Algorithm == ESolarOrbzContinentAlgorithm::RadialSeeds && CoastlineNoiseOctaves > 1"))
+	float CoastlineNoiseLacunarity = 2.0f;
+
+	/** Radial Seeds only. Extra smaller "metaball" seeds scattered around each continent/island's main seed - the union of several overlapping circles reads far less like a single circle than one circle alone, and costs nothing extra in GetRawHeight (it already takes the max influence across every seed). 0 = off, the original one-circle-per-landmass look. Doesn't apply to the two fixed polar continents. */
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Continent|Shape", meta = (ClampMin = "0", ClampMax = "5", EditCondition = "Algorithm == ESolarOrbzContinentAlgorithm::RadialSeeds"))
+	int32 SubSeedsPerLandmass = 2;
+
+	/** Radial Seeds only. How far a sub-seed's center can land from its parent's, as a multiple of the parent's own radius - e.g. 0.7 lets a sub-seed's center land up to 70% of the parent's radius away. */
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Continent|Shape", meta = (ClampMin = "0.0", ClampMax = "2.0", EditCondition = "Algorithm == ESolarOrbzContinentAlgorithm::RadialSeeds && SubSeedsPerLandmass > 0"))
+	float SubSeedScatterFraction = 0.7f;
+
+	/** Radial Seeds only. A sub-seed's own radius, as a fraction of its parent's radius - rolled independently per sub-seed between these two. */
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Continent|Shape", meta = (ClampMin = "0.05", ClampMax = "1.0", EditCondition = "Algorithm == ESolarOrbzContinentAlgorithm::RadialSeeds && SubSeedsPerLandmass > 0"))
+	float MinSubSeedRadiusFraction = 0.3f;
+
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Continent|Shape", meta = (ClampMin = "0.05", ClampMax = "1.0", EditCondition = "Algorithm == ESolarOrbzContinentAlgorithm::RadialSeeds && SubSeedsPerLandmass > 0"))
+	float MaxSubSeedRadiusFraction = 0.7f;
+
+	// --- Voronoi Growth / Plate Tectonics bake grid (shared) ---
+
+	/** Voronoi Growth and Plate Tectonics only. Bake grid resolution, longitude axis - same idea as Erosion/Terrace's own bake grid, independent of mesh density. Higher gives finer coastline/boundary detail at the cost of a slower (one-time, per-regenerate) bake. */
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Continent|Grid", meta = (ClampMin = "32", EditCondition = "Algorithm != ESolarOrbzContinentAlgorithm::RadialSeeds"))
+	int32 BakeGridWidth = 256;
+
+	/** Voronoi Growth and Plate Tectonics only. Bake grid resolution, latitude axis. */
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Continent|Grid", meta = (ClampMin = "16", EditCondition = "Algorithm != ESolarOrbzContinentAlgorithm::RadialSeeds"))
+	int32 BakeGridHeight = 128;
+
+	// --- Voronoi Growth ---
+
+	/** Voronoi Growth only. Growth energy is multiplied by a random value in this range (plus Growth Jitter below) every time it floods into one more grid cell - lower values decay faster, giving smaller/rougher-edged landmasses for the same starting budget. */
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Continent|Growth", meta = (ClampMin = "0.0", ClampMax = "1.0", EditCondition = "Algorithm == ESolarOrbzContinentAlgorithm::VoronoiGrowth"))
+	float GrowthDecayMin = 0.90f;
+
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Continent|Growth", meta = (ClampMin = "0.0", ClampMax = "1.0", EditCondition = "Algorithm == ESolarOrbzContinentAlgorithm::VoronoiGrowth"))
+	float GrowthDecayMax = 0.985f;
+
+	/** Voronoi Growth only. Extra +/- random jitter applied to each hop's decay on top of Growth Decay Min/Max - this is what actually breaks growth-ring symmetry into organic, non-convex blobs rather than a smooth near-circle; 0 would make growth expand in nearly uniform rings. */
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Continent|Growth", meta = (ClampMin = "0.0", ClampMax = "0.5", EditCondition = "Algorithm == ESolarOrbzContinentAlgorithm::VoronoiGrowth"))
+	float GrowthJitter = 0.35f;
+
+	// --- Plate Tectonics ---
+
+	/** Plate Tectonics only. How many plates partition the sphere (nearest-seed/Worley assignment) - continents/oceans are an emergent side effect of this, not an authored count. */
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Continent|Plates", meta = (ClampMin = "2", ClampMax = "64", EditCondition = "Algorithm == ESolarOrbzContinentAlgorithm::PlateTectonics"))
+	int32 NumPlates = 12;
+
+	/** Plate Tectonics only. Fraction of plates randomly flagged oceanic (base height = Ocean Floor Depth) rather than continental (base height = Land Plateau Height), before any boundary mountain/trench/ridge/rift shaping on top. */
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Continent|Plates", meta = (ClampMin = "0.0", ClampMax = "1.0", EditCondition = "Algorithm == ESolarOrbzContinentAlgorithm::PlateTectonics"))
+	float OceanicPlateFraction = 0.55f;
+
+	/** Plate Tectonics only. How far from a plate boundary the mountain/trench/ridge/rift shaping below reaches before fading back to that plate's plain base height. */
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Continent|Plates", meta = (ClampMin = "1.0", ClampMax = "45.0", EditCondition = "Algorithm == ESolarOrbzContinentAlgorithm::PlateTectonics"))
+	float BoundaryInfluenceDegrees = 8.0f;
+
+	/** Plate Tectonics only. Peak extra height, meters, where two continental plates converge (collision mountains - the Himalaya case). */
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Continent|Plates", meta = (ClampMin = "0.0", Units = "m", EditCondition = "Algorithm == ESolarOrbzContinentAlgorithm::PlateTectonics"))
+	float MountainHeightMeters = 3000.0f;
+
+	/** Plate Tectonics only. Peak extra depth, meters, on the oceanic side where an oceanic plate converges with and subducts under another plate (the trench case). */
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Continent|Plates", meta = (ClampMax = "0.0", Units = "m", EditCondition = "Algorithm == ESolarOrbzContinentAlgorithm::PlateTectonics"))
+	float TrenchDepthMeters = -3000.0f;
+
+	/** Plate Tectonics only. Peak extra height, meters, where two oceanic plates diverge (mid-ocean ridge). */
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Continent|Plates", meta = (ClampMin = "0.0", Units = "m", EditCondition = "Algorithm == ESolarOrbzContinentAlgorithm::PlateTectonics"))
+	float RidgeHeightMeters = 600.0f;
+
+	/** Plate Tectonics only. Peak extra depth, meters, where two continental plates diverge (rift valley). */
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Continent|Plates", meta = (ClampMax = "0.0", Units = "m", EditCondition = "Algorithm == ESolarOrbzContinentAlgorithm::PlateTectonics"))
+	float RiftDepthMeters = -500.0f;
+
+	// --- Coastline texture (shared by all three algorithms) ---
+
+	/** Radial Seeds: how much each landmass's coastline wiggles away from a perfect circle, as a fraction of that landmass's own radius - 0 = perfect circles (before the warp/sub-seeds above still break that up). Voronoi Growth/Plate Tectonics: a smaller cosmetic wobble layered on top of their own grid-driven coastlines. */
 	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Continent|Coastline", meta = (ClampMin = "0.0", ClampMax = "1.0"))
 	float CoastlineNoiseAmplitude = 0.3f;
 
@@ -795,14 +917,16 @@ public:
 	 * this layer's own values regardless of any assigned Profile - useful for a secondary/detail
 	 * continent layer that shouldn't track the planet's "official" landmass count. Note this only
 	 * covers Num Continents/Islands/poles - Sea Level offsetting (below) always applies regardless
-	 * of this toggle, since it's a units/reference-point correction, not a per-planet override.
+	 * of this toggle, since it's a units/reference-point correction, not a per-planet override. Has
+	 * no effect on Plate Tectonics, which ignores Num Continents/Islands entirely regardless of
+	 * where they'd otherwise come from.
 	 */
 	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Continent")
 	bool bOverrideFromProfile = true;
 
 	//~ Begin USolarOrbzTerrainLayer interface
 	virtual void ApplyPlanetaryContext(const USolarOrbzPlanetProfile* Profile, float SeaLevelCm) override;
-	virtual bool RequiresWholeSurfaceBake() const override { return true; }
+	virtual bool RequiresWholeSurfaceBake() const override { return Algorithm != ESolarOrbzContinentAlgorithm::RadialSeeds; }
 	virtual void Bake(const TFunctionRef<float(const FVector& UnitDirection, const FVector2D& UV)>& PriorLayersHeight, double RadiusCm) override;
 	virtual float GetRawHeight(const FVector& UnitDirection, const FVector2D& UV) const override;
 	//~ End USolarOrbzTerrainLayer interface
@@ -814,6 +938,18 @@ private:
 	/** Sea Level, UE units (cm), cached from the last ApplyPlanetaryContext() call - 0 if never called or no ClimateSimulation is assigned. GetRawHeight adds this to the Ocean Floor Depth/Land Plateau Height result, so both are genuinely relative to Sea Level, not just the raw base radius. */
 	float CachedSeaLevelCm = 0.0f;
 
-	/** Regenerated each Bake() from Seed/NumContinents/NumIslands/poles - GetRawHeight only ever reads this, never regenerates it, so per-vertex cost stays a cheap linear scan. */
+	/** Regenerated each Bake() from Seed/NumContinents/NumIslands/poles when Algorithm == RadialSeeds - GetRawHeight only ever reads this, never regenerates it, so per-vertex cost stays a cheap linear scan. Unused (empty) under the other two algorithms. */
 	TArray<FSolarOrbzContinentSeedData> CachedSeeds;
+
+	/** Baked height, UE units (cm) above/below Sea Level, one row-major Width*Height array - populated by Bake() when Algorithm == VoronoiGrowth or PlateTectonics, sampled bilinearly by GetRawHeight via FSolarOrbzLatLongGrid. Empty under RadialSeeds. */
+	TArray<float> BakedHeightCm;
+	int32 BakedGridWidth = 0;
+	int32 BakedGridHeight = 0;
+
+	void BakeRadialSeeds(bool bEffectiveNorthPolar, bool bEffectiveSouthPolar, int32 EffectiveNumContinents, int32 EffectiveNumIslands);
+	void BakeVoronoiGrowth(bool bEffectiveNorthPolar, bool bEffectiveSouthPolar, int32 EffectiveNumContinents, int32 EffectiveNumIslands);
+	void BakePlateTectonics(bool bEffectiveNorthPolar, bool bEffectiveSouthPolar);
+
+	float GetRawHeightRadialSeeds(const FVector& UnitDirection) const;
+	float GetRawHeightFromBakedGrid(const FVector& UnitDirection) const;
 };
