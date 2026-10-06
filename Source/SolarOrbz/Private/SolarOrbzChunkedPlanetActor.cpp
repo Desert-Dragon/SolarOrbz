@@ -3,6 +3,9 @@
 
 #include "SolarOrbzChunkedPlanetActor.h"
 #include "SolarOrbzChunkResidentSetManager.h"
+#include "SolarOrbzTerrainLayers.h"
+#include "SolarOrbzProfiles.h"
+#include "SolarOrbzClimateSimulation.h"
 #include "Components/SceneComponent.h"
 #include "TimerManager.h"
 #include "Engine/World.h"
@@ -26,6 +29,26 @@ AASolarOrbzChunkedPlanetActor::~AASolarOrbzChunkedPlanetActor() = default;
 void AASolarOrbzChunkedPlanetActor::ConstructResidentSetManager()
 {
 	const double RadiusCm = RadiusMeters * 100.0;
+
+	if (TerrainStack)
+	{
+		// Same once-per-regenerate setup ASolarOrbzIcoSphereActor::RegenerateMesh performs before any
+		// per-vertex EvaluateHeight call (SolarOrbzIcoSphere.cpp) - a real, hands-on-reported gap:
+		// this actor never called it at all, so any whole-surface-baked layer (Erosion, Terrace,
+		// Continent's VoronoiGrowth/PlateTectonics - anything whose RequiresWholeSurfaceBake()
+		// returns true) had never run its Bake() pass by the time GenerateChunk started sampling
+		// GetRawHeight per vertex. Each of those layers' own "Bake() hasn't run yet" fallback returns
+		// a flat, direction-independent height (e.g. USolarOrbzContinentTerrainLayer::
+		// GetRawHeightFromBakedGrid falls back to plain OceanFloorDepthMeters everywhere), so the
+		// layer contributed a uniform offset instead of real per-point shape - exactly "not seeing a
+		// lot of vertex motion" with those algorithms enabled, while RadialSeeds (which doesn't
+		// require a bake) still worked. ApplyPlanetaryContext must run first - Bake() can read back
+		// CachedSeaLevelCm/Profile-derived data through it, same ordering RegenerateMesh uses.
+		const USolarOrbzPlanetProfile* PlanetProfile = Cast<USolarOrbzPlanetProfile>(Profile);
+		const float SeaLevelCm = ClimateSimulation ? ClimateSimulation->SeaLevel * 100.0f : 0.0f;
+		TerrainStack->ApplyPlanetaryContext(PlanetProfile, SeaLevelCm);
+		TerrainStack->PrepareLayers(RadiusCm);
+	}
 
 	// ClimateGridForMasking is forwarded as nullptr - no whole-planet climate grid is built by this
 	// actor yet, see this class's own header comment on ClimateSimulation/BiomeStack/Profile.

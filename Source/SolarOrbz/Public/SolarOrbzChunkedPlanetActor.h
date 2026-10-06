@@ -49,20 +49,23 @@
 // ================================================================================================
 // RadiusMeters and TerrainStack ARE forwarded into FSolarOrbzChunkResidentSetManager and therefore
 // into every generated chunk, exactly the way ASolarOrbzIcoSphereActor forwards its own RadiusMeters/
-// TerrainStack into RunTerrainPassA. BiomeStack, ClimateSimulation, and Profile are declared here
-// for parity with the whole-sphere actor's own property set (same framing the design doc's own item
-// 7 description uses: "owns the same kind of references the preview actor does") and so a designer
-// configuring this actor sees a familiar, consistent property set - but NONE of the three are
-// actually read or forwarded into chunk generation yet. This is a real, deliberate gap, not an
-// oversight: GenerateChunk's own output (FSolarOrbzIcoSphereMeshData) has no per-vertex color field
-// yet (see FSolarOrbzChunkResidentSetManager's own header comment), so there is nothing for
-// BiomeStack to actually feed into per-chunk, and running a whole-planet ClimateSimulation pass (the
-// way ASolarOrbzIcoSphereActor's own RegenerateMesh does, to build the FSolarOrbzClimateGrid that
-// feeds Climate Biome Masks and TerrainStack's own climate-masked layers) is real, separate plumbing
-// work not attempted here - this actor currently forwards nullptr for ClimateGridForMasking on
-// every chunk, same as leaving ClimateSimulation unset would do for the whole-sphere actor. Profile
-// (gravity/atmosphere) is likewise just held here for a future ASN_MK1 integration pass (see the
-// design doc's own "ASN_MK1 integration" section) - nothing in this actor reads it yet.
+// TerrainStack into RunTerrainPassA. ConstructResidentSetManager() also now reads ClimateSimulation
+// (just its SeaLevel float, converted to cm) and Profile (cast to USolarOrbzPlanetProfile) to call
+// TerrainStack->ApplyPlanetaryContext()/PrepareLayers() once per (re)construction - a real,
+// hands-on-reported gap, not a deliberate omission: without this, any whole-surface-baked layer
+// (Erosion, Terrace, Continent's VoronoiGrowth/PlateTectonics) never ran its Bake() pass, so
+// GenerateChunk's per-vertex GetRawHeight calls hit that layer's "Bake() hasn't run yet" flat
+// fallback instead of real per-point shape - terrain using those algorithms looked nearly
+// undisplaced even though RadialSeeds (which needs no bake) worked fine. BiomeStack and a full
+// whole-planet ClimateSimulation pass (building the FSolarOrbzClimateGrid that feeds Climate Biome
+// Masks and TerrainStack's own climate-masked layers) are still NOT wired in, and remain a real,
+// deliberate gap: GenerateChunk's own output (FSolarOrbzIcoSphereMeshData) has no per-vertex color
+// field yet (see FSolarOrbzChunkResidentSetManager's own header comment), so there is nothing for
+// BiomeStack to actually feed into per-chunk, and this actor still forwards nullptr for
+// ClimateGridForMasking on every chunk, same as leaving ClimateSimulation unset would do for the
+// whole-sphere actor. Profile's gravity/atmosphere data is likewise still just held here for a
+// future ASN_MK1 integration pass (see the design doc's own "ASN_MK1 integration" section) - only
+// its Planet-Profile-ness (for ApplyPlanetaryContext) is read, not its gravity/atmosphere values.
 //
 // ================================================================================================
 // Verification - this is pure actor/engine wiring, held to the same bar as the rest of this
@@ -82,7 +85,9 @@
 // ================================================================================================
 // - No per-chunk spawn budget for a large viewer jump - inherited unchanged from
 //   FSolarOrbzChunkResidentSetManager (item 5's own gap).
-// - No BiomeStack/ClimateSimulation/Profile wiring into chunk generation yet - see above.
+// - No BiomeStack wiring, and no whole-planet ClimateSimulation/climate-grid masking, into chunk
+//   generation yet - see above. (ClimateSimulation's SeaLevel and Profile's Planet-Profile-ness ARE
+//   now read, just for ApplyPlanetaryContext/PrepareLayers - not the full climate-masking picture.)
 // - No baking/Nanite path, no real vertex-stitching (skirts only) - unchanged from every earlier
 //   item in this checklist.
 // - UpdateChunks runs synchronously on the game thread when its timer fires (the heavy per-chunk

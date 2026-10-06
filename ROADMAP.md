@@ -638,6 +638,29 @@ commitment or a schedule - just a place these don't get lost between sessions.
     `bEnablePreviewCollision`; chunked-actor import only pulls Radius (the other three have no
     chunked-actor equivalent). See the design doc's own new "Use Selected Actor" section for the
     full behavior and its known trade-off (imported layers are reused directly, not duplicated).
+  - **Third hands-on report: Continent layer (VoronoiGrowth/PlateTectonics) showing almost no
+    vertex displacement when using only the chunked actor, not the whole-sphere one.** **Done
+    (fixed).** A real, genuine gap, not a tuning issue: `AASolarOrbzChunkedPlanetActor::
+    ConstructResidentSetManager()` never called `TerrainStack->ApplyPlanetaryContext()`/
+    `PrepareLayers()` at all - the once-per-regenerate setup `ASolarOrbzIcoSphereActor::
+    RegenerateMesh` performs before any per-vertex height query. Any layer whose
+    `RequiresWholeSurfaceBake()` returns `true` (Erosion, Terrace, and Continent whenever
+    `Algorithm != RadialSeeds`) needs that `Bake()` pass to run once across the whole planet before
+    `GetRawHeight` means anything; without it, each of those layers' own "`Bake()` hasn't run yet"
+    fallback kicks in instead - for Continent,
+    `USolarOrbzContinentTerrainLayer::GetRawHeightFromBakedGrid` returns a flat
+    `OceanFloorDepthMeters + CachedSeaLevelCm` for every single point on the planet (confirmed by
+    reading that fallback directly), which is a uniform offset, not real per-point shape - exactly
+    "not a lot of vertex motion." `RadialSeeds` (the one Continent algorithm that doesn't require a
+    bake) was unaffected, which is why the whole-sphere actor's planets (which DID call
+    `PrepareLayers`) looked fine while the chunked-only actor's didn't. Fixed by adding the same
+    `ApplyPlanetaryContext`/`PrepareLayers` calls to `ConstructResidentSetManager()` (resolving
+    `PlanetProfile`/`SeaLevelCm` from this actor's own `Profile`/`ClimateSimulation` properties, the
+    same way `RegenerateMesh` resolves them) - runs once per (re)construction of the resident-set
+    manager, i.e. once per `RebuildChunkedPlanetNow()`/first lazy construction, not per chunk. Does
+    NOT wire up `BiomeStack` or a full whole-planet climate grid for masking - those remain a
+    separate, already-documented gap (no per-vertex color field on chunk mesh data yet, no ASN_MK1
+    gravity/atmosphere read yet).
 
 - **Real-time orbit and rotation.** Planets need to actually orbit their star and rotate on their
   axis in real time, with players able to seamlessly leave one planet and travel to another. This

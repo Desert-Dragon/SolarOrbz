@@ -456,11 +456,17 @@ blocking Phase 1's icosphere-chunk-generation work starting in SolarOrbz itself 
   standalone post-process with nothing previously calling it. New, parallel to
   `ASolarOrbzIcoSphereActor` (not a replacement - the whole-sphere actor remains the right tool for a
   bounded preview/bake radius). Properties mirror the whole-sphere actor's own shape
-  (`RadiusMeters`/`TerrainStack`/`BiomeStack`/`ClimateSimulation`/`Profile`) for parity, but only
-  `RadiusMeters` and `TerrainStack` are actually forwarded into chunk generation yet -
-  `BiomeStack`/`ClimateSimulation`/`Profile` are held for a future pass (no per-vertex color field on
-  chunk mesh data yet, no whole-planet climate grid built here, no ASN_MK1 gravity/atmosphere read
-  yet) and said so plainly rather than silently appearing wired up. Viewer position resolves in order:
+  (`RadiusMeters`/`TerrainStack`/`BiomeStack`/`ClimateSimulation`/`Profile`) for parity. `RadiusMeters`
+  and `TerrainStack` are forwarded into chunk generation; `ClimateSimulation`'s `SeaLevel` and
+  `Profile` (cast to `USolarOrbzPlanetProfile`) are read too, but only to call
+  `TerrainStack->ApplyPlanetaryContext()`/`PrepareLayers()` once per (re)construction - a real,
+  hands-on-reported gap fixed after shipping: without this, any whole-surface-baked layer (Erosion,
+  Terrace, Continent's VoronoiGrowth/PlateTectonics) never ran its `Bake()` pass, so chunk terrain
+  using those algorithms showed almost no height variation (each one's own "`Bake()` hasn't run yet"
+  fallback returns a flat, direction-independent height). `BiomeStack` and a full whole-planet climate
+  grid for masking remain NOT wired in (no per-vertex color field on chunk mesh data yet, no ASN_MK1
+  gravity/atmosphere read yet) and said so plainly rather than silently appearing wired up. Viewer
+  position resolves in order:
   an assigned `ViewerActor`'s world location, else an explicit `ViewerWorldPositionOverride` (the
   design doc's own "just an explicit world position for Phase 1 testing" option), else a well-defined
   (if not meaningful) fallback treating the viewer as sitting at the planet's own center, logged once
