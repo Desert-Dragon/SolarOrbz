@@ -249,7 +249,6 @@ struct SOLARORBZ_API FSolarOrbzBiomeScatterEntry
 	float MaxSlope = 1.0f;
 };
 
-UCLASS(BlueprintType)
 /**
  * How USolarOrbzBiome::SelectMaterialIndex picks among Materials when a biome has more than one -
  * deliberately an enum rather than a bool, so a future selection rule (e.g. by elevation within
@@ -271,6 +270,7 @@ enum class ESolarOrbzBiomeMaterialSelector : uint8
 	Slope,
 };
 
+UCLASS(BlueprintType)
 class SOLARORBZ_API USolarOrbzBiome : public UPrimaryDataAsset
 {
 	GENERATED_BODY()
