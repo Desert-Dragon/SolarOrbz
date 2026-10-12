@@ -250,6 +250,27 @@ struct SOLARORBZ_API FSolarOrbzBiomeScatterEntry
 };
 
 UCLASS(BlueprintType)
+/**
+ * How USolarOrbzBiome::SelectMaterialIndex picks among Materials when a biome has more than one -
+ * deliberately an enum rather than a bool, so a future selection rule (e.g. by elevation within
+ * the biome, or deterministic random variation for texture-tiling breakup) is a new enum value
+ * plus a new branch in SelectMaterialIndex, not a redesign. Only Slope is implemented so far -
+ * requested that way directly, kept open for more later.
+ */
+UENUM(BlueprintType)
+enum class ESolarOrbzBiomeMaterialSelector : uint8
+{
+	/**
+	 * Materials[0] on the flattest ground this biome allows, Materials.Last() on the steepest,
+	 * any entries in between spread evenly across [FlatSlope, SteepSlope]. Hard cutoff at each
+	 * band boundary - no blend - since a baked static mesh triangle belongs to exactly one
+	 * material slot (see ASolarOrbzIcoSphereActor::BakeToStaticMeshAsset); this is a discrete
+	 * per-triangle choice, not a shader-side blend the way this plugin's old shared Biome Blend
+	 * Material used to work.
+	 */
+	Slope,
+};
+
 class SOLARORBZ_API USolarOrbzBiome : public UPrimaryDataAsset
 {
 	GENERATED_BODY()
@@ -280,14 +301,40 @@ public:
 	TObjectPtr<USolarOrbzTerrainLayerStack> TerrainDetail;
 
 	/**
-	 * This biome's ground texture. Fed into the owning Biome Stack's texture array (see
-	 * USolarOrbzBiomeStack::BuildBiomeTextureArray) rather than assigned to a material directly -
-	 * a single shared material blends up to 4 of these per point based on which biomes actually
-	 * apply there, so any number of biomes can exist on one planet even though only ~4 ever need to
-	 * render at any single point.
+	 * This biome's own ground material(s) - fed directly into the baked static mesh's material
+	 * slots (see ASolarOrbzIcoSphereActor::BakeToStaticMeshAsset), replacing the old shared
+	 * "one Texture2DArray + one blend material for the whole planet" system (BaseColorTexture/
+	 * BiomeTextureArray/BuildBiomeTextureArray/the actor's own BiomeBlendMaterial - all removed).
+	 * A single entry means "always use this one material, regardless of slope." With more than one
+	 * entry, MaterialSelector decides which point on the mesh gets which - see
+	 * SelectMaterialIndex().
 	 */
-	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Biome")
-	TObjectPtr<class UTexture2D> BaseColorTexture;
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Biome|Material")
+	TArray<TObjectPtr<class UMaterialInterface>> Materials;
+
+	/** How to choose among Materials when there's more than one. Ignored (Materials[0] always used) when Materials has 0 or 1 entries. */
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Biome|Material", meta = (EditCondition = "Materials.Num() > 1"))
+	ESolarOrbzBiomeMaterialSelector MaterialSelector = ESolarOrbzBiomeMaterialSelector::Slope;
+
+	/**
+	 * Slope selector only. At or below this slope, Materials[0] (the flattest-terrain entry) is
+	 * used exclusively - same 0=flat/1=vertical-cliff convention as
+	 * FSolarOrbzBiomeSampleContext::Slope, not degrees.
+	 */
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Biome|Material", meta = (EditCondition = "Materials.Num() > 1 && MaterialSelector == ESolarOrbzBiomeMaterialSelector::Slope", ClampMin = "0.0", ClampMax = "1.0"))
+	float FlatSlope = 0.15f;
+
+	/** Slope selector only. At or above this slope, Materials.Last() (the steepest-terrain entry) is used exclusively. Must be greater than Flat Slope, or every point collapses onto Materials[0]. */
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Biome|Material", meta = (EditCondition = "Materials.Num() > 1 && MaterialSelector == ESolarOrbzBiomeMaterialSelector::Slope", ClampMin = "0.0", ClampMax = "1.0"))
+	float SteepSlope = 0.6f;
+
+	/**
+	 * Picks which entry of Materials applies at this point - a hard, discrete choice (no blend),
+	 * since a baked static mesh triangle belongs to exactly one material slot. Returns INDEX_NONE
+	 * if Materials is empty; always 0 if Materials has exactly one entry (MaterialSelector/
+	 * FlatSlope/SteepSlope are only consulted once there are at least 2 to choose between).
+	 */
+	int32 SelectMaterialIndex(const FSolarOrbzBiomeSampleContext& Context) const;
 
 	/** Placeholder for the future PCG/PCGEx hookup - what this biome scatters, and how densely. */
 	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Biome")
@@ -307,10 +354,11 @@ public:
 // the topmost / highest priority. Where each biome applies comes from that Biome's own Mask now,
 // not a separate reference here.
 //
-// The stack also owns the texture-array bridge for material rendering: any number of biomes can
-// exist here, but a single point on the mesh only ever blends the top ~4 strongest-applying ones
-// (see EvaluateTopWeightedBiomes) - so ground texturing scales to a full biome palette without
-// needing a material with one texture slot per biome.
+// SelectMaterial() resolves which real UMaterialInterface a given point should bake with: the
+// single strongest-applying biome at that point (GetDominantBiome), asked which of its own
+// Materials it wants there (USolarOrbzBiome::SelectMaterialIndex) - a hard, single-material answer
+// per point, not a blend across several biomes at once (that's what EvaluateTopWeightedBiomes is
+// for, kept for a future shader-blend use case, but SelectMaterial doesn't call it).
 // ================================================================================================
 USTRUCT(BlueprintType)
 struct SOLARORBZ_API FSolarOrbzBiomeLayerEntry
@@ -335,15 +383,6 @@ public:
 	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Biome")
 	TArray<FSolarOrbzBiomeLayerEntry> Layers;
 
-	/**
-	 * Built by BuildBiomeTextureArray() below from every unique biome's Base Color Texture, in the
-	 * same order GetUniqueBiomes() returns - that order IS the array index each biome is addressed
-	 * by from a vertex's encoded indices. Assign a material with a Texture2DArray parameter named
-	 * "BiomeTextureArray" to the actor's Biome Blend Material to read this.
-	 */
-	UPROPERTY(VisibleAnywhere, Category = "SolarOrbz|Biome|Material")
-	TObjectPtr<class UTexture2DArray> BiomeTextureArray;
-
 	/** Per-layer weight (mask weight * opacity) at this point, same order as Layers - useful for baking vertex colors or per-point PCG attributes later. Also the precomputed input GetDominantBiome/EvaluateBiomeTerrainContribution/EvaluateTopWeightedBiomes' overloads below expect, so a caller needing more than one of them at the same point only evaluates every layer's mask once. */
 	void EvaluateLayerWeights(const FSolarOrbzBiomeSampleContext& Context, TArray<float>& OutWeights) const;
 
@@ -359,15 +398,15 @@ public:
 	/** Same as above, but reuses precomputed LayerWeights instead of re-evaluating every layer's mask - see GetDominantBiome's precomputed overload above. */
 	float EvaluateBiomeTerrainContribution(const FSolarOrbzBiomeSampleContext& Context, const TArray<float>& LayerWeights) const;
 
-	/** Every distinct Biome referenced anywhere in Layers, in first-appearance order - this order defines each biome's texture array index. Duplicate references to the same Biome across multiple layer entries only appear once. */
+	/** Every distinct Biome referenced anywhere in Layers, in first-appearance order. Duplicate references to the same Biome across multiple layer entries only appear once. */
 	void GetUniqueBiomes(TArray<USolarOrbzBiome*>& OutBiomes) const;
 
 	/**
 	 * Finds up to MaxBiomes of the strongest-applying biomes at this point, sorted strongest-first,
-	 * with weights renormalized to sum to 1 (ready to feed straight into a weighted material blend).
-	 * OutBiomeIndices are indices into GetUniqueBiomes()'s order, not into Layers - i.e. exactly the
-	 * indices BiomeTextureArray's slices are addressed by. Arrays returned shorter than MaxBiomes
-	 * when fewer than MaxBiomes biomes have any weight here at all.
+	 * with weights renormalized to sum to 1 - for a future genuine multi-biome shader blend; nothing
+	 * in this plugin calls this today (SelectMaterial always wants a single hard winner instead, via
+	 * GetDominantBiome). OutBiomeIndices are indices into GetUniqueBiomes()'s order, not into Layers.
+	 * Arrays returned shorter than MaxBiomes when fewer than MaxBiomes biomes have any weight here at all.
 	 */
 	void EvaluateTopWeightedBiomes(const FSolarOrbzBiomeSampleContext& Context, int32 MaxBiomes, TArray<int32>& OutBiomeIndices, TArray<float>& OutWeights) const;
 
@@ -375,12 +414,13 @@ public:
 	void EvaluateTopWeightedBiomes(const FSolarOrbzBiomeSampleContext& Context, const TArray<float>& LayerWeights, const TArray<USolarOrbzBiome*>& UniqueBiomes, int32 MaxBiomes, TArray<int32>& OutBiomeIndices, TArray<float>& OutWeights) const;
 
 	/**
-	 * Rebuilds BiomeTextureArray from every unique biome's Base Color Texture, in GetUniqueBiomes()
-	 * order. Editor-only. Call after adding/removing/reordering biomes in Layers, or changing a
-	 * biome's texture - the actor calls this automatically during Regenerate Mesh if the array looks
-	 * stale (wrong biome count), so you don't strictly have to remember it, but it's exposed here too
-	 * for an explicit rebuild (e.g. from a content pipeline script).
+	 * The material the dominant biome at this point wants to use (that biome's own
+	 * SelectMaterialIndex, applied to its Materials array) - nullptr if no biome's Mask applies
+	 * here at all, or the dominant biome has an empty Materials array. A hard, single-material
+	 * answer for one point, not a blend - see USolarOrbzBiome::Materials' own comment for why.
 	 */
-	UFUNCTION(CallInEditor, Category = "SolarOrbz|Biome|Material")
-	void BuildBiomeTextureArray();
+	class UMaterialInterface* SelectMaterial(const FSolarOrbzBiomeSampleContext& Context) const;
+
+	/** Same as above, but reuses precomputed LayerWeights instead of re-evaluating every layer's mask - see GetDominantBiome's precomputed overload above. */
+	class UMaterialInterface* SelectMaterial(const FSolarOrbzBiomeSampleContext& Context, const TArray<float>& LayerWeights) const;
 };

@@ -237,17 +237,6 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "SolarOrbz|Biome|Debug")
 	TObjectPtr<class UMaterialInterface> DefaultMaterial;
 
-	/**
-	 * Optional. A material with a Texture2DArray parameter named "BiomeTextureArray" that blends up
-	 * to 4 biome textures per point using the weights/indices baked into vertex color and UV1/UV2
-	 * each regenerate. When this and Biome Stack are both assigned (and Show Biome Debug Colors is
-	 * off), this drives rendering instead of Default Material - lets any number of biomes exist on
-	 * the planet while only ~4 ever need to blend at a single point. See the plugin docs for the
-	 * exact material graph setup this expects.
-	 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "SolarOrbz|Biome|Material")
-	TObjectPtr<class UMaterialInterface> BiomeBlendMaterial;
-
 	/** Build simple collision on the preview mesh. Leave off for large/high-density previews - cheap to add later on the baked mesh instead. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "SolarOrbz|IcoSphere")
 	bool bEnablePreviewCollision = false;
@@ -302,31 +291,34 @@ private:
 	int32 LastSubdivisionLevelUsed = 0;
 	int32 LastRequestedSubdivisionLevel = 0;
 
-	// Per-vertex Biome Blend Material inputs cached from the last RegenerateMesh() call, parallel to
-	// CachedMeshData.Vertices. Only populated when that regenerate had BiomeStack + BiomeBlendMaterial
-	// both assigned and Show Biome Debug Colors off (i.e. bWantsBlendMaterial was true) - empty
-	// otherwise. BakeToStaticMeshAsset writes these into the static mesh's vertex color and UV1/UV2
-	// channels so a Biome Blend Material assigned to the baked mesh keeps working post-bake, matching
-	// what ProcMesh already shows in the live preview.
-	TArray<FLinearColor> CachedBiomeBlendWeights; // vertex color RGBA = the 4 blended biomes' weights
-	TArray<FVector2D> CachedBiomeBlendUV1;        // UV1 = (biome index 0, biome index 1)
-	TArray<FVector2D> CachedBiomeBlendUV2;        // UV2 = (biome index 2, biome index 3)
-
-	/** Runtime-only Material Instance Dynamic wrapping BiomeBlendMaterial, with BiomeTextureArray bound. Reused across regenerates rather than recreated every time. */
-	UPROPERTY(Transient)
-	TObjectPtr<class UMaterialInstanceDynamic> BiomeBlendMID;
+	// Per-triangle material assignment cached from the last RegenerateMesh() call, built right after
+	// Pass B (see RegenerateMesh's own comment at that pass) when BiomeStack is assigned - one entry
+	// in CachedTriangleMaterialIndex per triangle (CachedMeshData.Triangles.Num() / 3), either an
+	// index into CachedBakeMaterials or INDEX_NONE ("no biome applies here, use DefaultMaterial").
+	// Read by BakeToStaticMeshAsset to build one real material slot per unique biome-selected
+	// material instead of baking with a single empty slot - replaces the old shared Biome Blend
+	// Material/BiomeTextureArray/vertex-color-weight system entirely (see ROADMAP.md), which blended
+	// several biomes' textures per point in a shader; this instead gives each triangle exactly one
+	// real UMaterialInterface, since that's what a baked static mesh's material slots actually are.
+	// NOT consumed by the live ProcMesh preview, which still renders as a single section (either
+	// DefaultMaterial, or DebugBiomeMaterial's per-vertex-color boundary view) - deepening the BAKE
+	// pipeline specifically was the ask, not a live multi-material preview.
+	TArray<int32> CachedTriangleMaterialIndex;
+	TArray<TObjectPtr<class UMaterialInterface>> CachedBakeMaterials;
 
 #if WITH_EDITOR
 	/**
 	 * Handles a property change that can be satisfied WITHOUT re-running the whole
-	 * geometry/terrain/climate/biome pipeline - today, just DefaultMaterial or BiomeBlendMaterial
-	 * changing while already in the matching rendering mode with cached per-vertex data that still
-	 * matches CachedMeshData's current vertex count. Returns true if it fully handled the change
-	 * (caller should NOT also call RegenerateMesh()); false means "not a case this knows how to fast-
-	 * path, fall back to a full regenerate" - always correct, just not always the fastest path.
-	 * Deliberately conservative: bShowBiomeDebugColors toggling and DebugBiomeMaterial changes always
-	 * fall through to a full regenerate, since BiomeDebugColors (unlike the blend arrays above) isn't
-	 * cached across calls today - nothing to reuse for the debug-color material.
+	 * geometry/terrain/climate/biome pipeline - today, just DefaultMaterial changing while it's
+	 * actually the live material slot (not debug-color mode). Returns true if it fully handled the
+	 * change (caller should NOT also call RegenerateMesh()); false means "not a case this knows how
+	 * to fast-path, fall back to a full regenerate" - always correct, just not always the fastest
+	 * path. Deliberately conservative: bShowBiomeDebugColors toggling and DebugBiomeMaterial changes
+	 * always fall through to a full regenerate, since BiomeDebugColors isn't cached across calls
+	 * today - nothing to reuse for the debug-color material. A biome's own Materials/slope settings
+	 * live on the Biome/BiomeStack assets, not as a property of this actor, so there's no equivalent
+	 * fast path for them either way - changing those always needs an explicit Regenerate/Bake, same
+	 * as any other asset-level (not actor-property) edit already does.
 	 */
 	bool TryApplyCosmeticOnlyChange(FName ChangedPropertyName);
 #endif

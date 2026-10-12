@@ -400,6 +400,39 @@ commitment or a schedule - just a place these don't get lost between sessions.
   Continent's coverage sampler, and Climate Simulation's grid/`Sample()` - is now one shared
   `FSolarOrbzLatLongGrid` utility (`Source/SolarOrbz/Public/SolarOrbzLatLongGrid.h`).
 
+- **Biome-owned materials for the bake-to-static-mesh pipeline**, requested directly: "I want to be
+  able to assign a few materials to a biome, and the biomes will carry the material information."
+  **Done**, scoped to the bake output only (see below) - replaces the old shared Biome Blend
+  Material/`Texture2DArray` system entirely rather than running alongside it, per explicit decision.
+  - `USolarOrbzBiome` no longer has a single `BaseColorTexture`. It now owns `Materials` (a
+    `TArray<UMaterialInterface*>`), an `ESolarOrbzBiomeMaterialSelector MaterialSelector` (one value
+    today, `Slope`, deliberately an enum rather than a bool so a future selector - e.g.
+    elevation-based - is a new enum value + switch branch, not a redesign), and `FlatSlope`/
+    `SteepSlope` (0..1, same unit convention `FSolarOrbzBiomeSampleContext::Slope` already used -
+    not degrees). `USolarOrbzBiome::SelectMaterialIndex` picks a hard (non-blended) index via
+    `T = Clamp((Slope - FlatSlope) / Max(SteepSlope - FlatSlope, KINDA_SMALL_NUMBER), 0, 1)` then
+    `RoundToInt(T * (Materials.Num() - 1))`; first/last bands are accepted as half-width of interior
+    bands as a deliberate simplification. `USolarOrbzBiomeStack::SelectMaterial` resolves the
+    dominant biome at a sample point and returns its chosen material (or null if biomeless).
+  - **Scope decision**: this only feeds `BakeToStaticMeshAsset`, not the live `ProcMeshComponent`
+    preview. The preview stays single-section (`DefaultMaterial`, or `DebugBiomeMaterial` in debug-
+    color mode) exactly as before. A baked mesh triangle can only belong to one material slot (no
+    shader-side blend at bake time), so this was the natural boundary, and matches the user's own
+    framing of this work as deepening the bake pipeline specifically.
+  - New bake-time pass in `RegenerateMesh` (after Pass B, parallel-safe): for each triangle, samples
+    a `FSolarOrbzBiomeSampleContext` at the triangle's centroid direction (average of its 3 corners'
+    unit directions, re-normalized - an accepted approximation, not a true spherical centroid) and
+    asks `BiomeStack->SelectMaterial`. Writes land in a flat `TArray<UMaterialInterface*>` indexed by
+    triangle with no shared mutable state, so the `ParallelFor` needs no locking; a second,
+    single-threaded pass then walks that array once to build `CachedBakeMaterials` (the unique
+    material list) and `CachedTriangleMaterialIndex` (each triangle's slot into it).
+  - `BakeToStaticMeshAsset` creates one `FPolygonGroupID` per entry in `CachedBakeMaterials`, plus a
+    `NoBiome_Default` fallback group for triangles with no resolved material (stale cache, or no
+    `BiomeStack`). Vertex instance colors are now always plain white - no blend-weight encoding, since
+    assignment is per-triangle, not per-vertex-blended. After `BuildFromMeshDescriptions`, the new
+    static mesh's material slots are populated in the same order the polygon groups were created
+    (matching this codebase's existing single-slot convention, now extended to N+1 slots).
+
 - **PCG Biome Core integration** for content scattering (trees, rocks, and eventually
   civilization - roads, farms, settlements). SolarOrbz's Climate + BiomeStack system stays the
   classification authority ("what biome is here"); PCG Biome Core would consume that as its

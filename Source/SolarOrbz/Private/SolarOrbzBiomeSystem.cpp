@@ -2,8 +2,7 @@
 
 #include "SolarOrbzBiomeSystem.h"
 #include "SolarOrbzTerrainLayers.h"
-#include "Engine/Texture2D.h"
-#include "Engine/Texture2DArray.h"
+#include "Materials/MaterialInterface.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogSolarOrbzBiome, Log, All);
 
@@ -243,6 +242,37 @@ float USolarOrbzBiome::GetWeight(const FSolarOrbzBiomeSampleContext& Context) co
 	return Weight;
 }
 
+int32 USolarOrbzBiome::SelectMaterialIndex(const FSolarOrbzBiomeSampleContext& Context) const
+{
+	if (Materials.Num() == 0)
+	{
+		return INDEX_NONE;
+	}
+	if (Materials.Num() == 1)
+	{
+		return 0;
+	}
+
+	switch (MaterialSelector)
+	{
+	case ESolarOrbzBiomeMaterialSelector::Slope:
+	default:
+	{
+		// Evenly split [FlatSlope, SteepSlope] into (Materials.Num() - 1) bands and round to the
+		// nearest index - hard cutoff at each band boundary, no blend (see Materials' own comment
+		// for why). Note the first and last bands are each half the width of an interior band
+		// (round-to-nearest-index maps [0, 0.5/LastIndex) to index 0 and (1-0.5/LastIndex, 1] to
+		// LastIndex, while an interior index gets the full 1/LastIndex span either side) - accepted
+		// as a minor, deliberate asymmetry rather than a special-cased remap, since with only 2
+		// materials (the common case) there's exactly one boundary and no asymmetry to speak of.
+		const float Range = FMath::Max(SteepSlope - FlatSlope, KINDA_SMALL_NUMBER);
+		const float T = FMath::Clamp((Context.Slope - FlatSlope) / Range, 0.0f, 1.0f);
+		const int32 LastIndex = Materials.Num() - 1;
+		return FMath::Clamp(FMath::RoundToInt(T * LastIndex), 0, LastIndex);
+	}
+	}
+}
+
 // ================================================================================================
 // USolarOrbzBiomeStack
 // ================================================================================================
@@ -286,6 +316,25 @@ USolarOrbzBiome* USolarOrbzBiomeStack::GetDominantBiome(const FSolarOrbzBiomeSam
 	}
 
 	return BestWeight > KINDA_SMALL_NUMBER ? Best : nullptr;
+}
+
+UMaterialInterface* USolarOrbzBiomeStack::SelectMaterial(const FSolarOrbzBiomeSampleContext& Context) const
+{
+	TArray<float> LayerWeights;
+	EvaluateLayerWeights(Context, LayerWeights);
+	return SelectMaterial(Context, LayerWeights);
+}
+
+UMaterialInterface* USolarOrbzBiomeStack::SelectMaterial(const FSolarOrbzBiomeSampleContext& Context, const TArray<float>& LayerWeights) const
+{
+	const USolarOrbzBiome* Dominant = GetDominantBiome(Context, LayerWeights);
+	if (!Dominant)
+	{
+		return nullptr;
+	}
+
+	const int32 MaterialIndex = Dominant->SelectMaterialIndex(Context);
+	return Dominant->Materials.IsValidIndex(MaterialIndex) ? Dominant->Materials[MaterialIndex] : nullptr;
 }
 
 float USolarOrbzBiomeStack::EvaluateBiomeTerrainContribution(const FSolarOrbzBiomeSampleContext& Context) const
@@ -397,7 +446,9 @@ void USolarOrbzBiomeStack::EvaluateTopWeightedBiomes(const FSolarOrbzBiomeSample
 		TotalWeight += Weight;
 	}
 
-	// Renormalize so the returned weights sum to 1 - ready to feed straight into a material blend.
+	// Renormalize so the returned weights sum to 1 - ready for a caller that wants a genuine
+	// multi-biome weighted blend (e.g. a future shader-side use); SelectMaterial below doesn't use
+	// this at all, since it always wants a single hard winner (GetDominantBiome), not a blend.
 	if (TotalWeight > KINDA_SMALL_NUMBER)
 	{
 		for (float& Weight : OutWeights)
@@ -407,58 +458,3 @@ void USolarOrbzBiomeStack::EvaluateTopWeightedBiomes(const FSolarOrbzBiomeSample
 	}
 }
 
-void USolarOrbzBiomeStack::BuildBiomeTextureArray()
-{
-#if WITH_EDITOR
-	TArray<USolarOrbzBiome*> UniqueBiomes;
-	GetUniqueBiomes(UniqueBiomes);
-
-	if (UniqueBiomes.Num() == 0)
-	{
-		UE_LOG(LogSolarOrbzBiome, Warning, TEXT("SolarOrbz Biome Texture Array: no biomes in Layers - nothing to build."));
-		return;
-	}
-
-	// Every unique biome needs a texture, or the array's slice indices would no longer line up
-	// with GetUniqueBiomes() order (what EvaluateTopWeightedBiomes' OutBiomeIndices addresses) -
-	// refuse to build rather than silently produce a misaligned array.
-	TArray<TObjectPtr<UTexture2D>> SourceTextures;
-	SourceTextures.Reserve(UniqueBiomes.Num());
-	bool bAllTexturesPresent = true;
-
-	for (USolarOrbzBiome* Biome : UniqueBiomes)
-	{
-		if (Biome && Biome->BaseColorTexture)
-		{
-			SourceTextures.Add(Biome->BaseColorTexture);
-		}
-		else
-		{
-			bAllTexturesPresent = false;
-			UE_LOG(LogSolarOrbzBiome, Error, TEXT("SolarOrbz Biome Texture Array: biome '%s' has no Base Color Texture assigned - every unique biome needs one for indices to stay in sync. Not rebuilding; any existing array is unchanged."), Biome ? *Biome->GetName() : TEXT("<null>"));
-		}
-	}
-
-	if (!bAllTexturesPresent)
-	{
-		return;
-	}
-
-	if (!BiomeTextureArray)
-	{
-		BiomeTextureArray = NewObject<UTexture2DArray>(this, NAME_None, RF_Public);
-	}
-
-	// NOTE: this is the same editor-only API the Content Browser's own "Create Texture Array"
-	// context menu action uses internally under the hood. This has shifted across engine versions
-	// before (same caveat as FSolarOrbzTextureHeightSampler's GetMipData use elsewhere in this
-	// plugin) - adjust here if 5.8's UTexture2DArray header differs from this.
-	BiomeTextureArray->SourceTextures = SourceTextures;
-	BiomeTextureArray->UpdateSourceFromSourceTextures();
-	BiomeTextureArray->PostEditChange();
-
-	MarkPackageDirty();
-
-	UE_LOG(LogSolarOrbzBiome, Log, TEXT("SolarOrbz Biome Texture Array: built from %d biome(s)."), SourceTextures.Num());
-#endif
-}

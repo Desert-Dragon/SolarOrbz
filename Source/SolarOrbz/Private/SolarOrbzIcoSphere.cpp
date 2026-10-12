@@ -552,48 +552,18 @@ bool ASolarOrbzIcoSphereActor::TryApplyCosmeticOnlyChange(FName ChangedPropertyN
 		return false; // nothing generated yet to swap a material on - let the normal path run
 	}
 
-	// Blend mode is "live" right now only if every one of its three preconditions holds AND the
-	// cached per-vertex arrays it needs still match the current mesh - i.e. a prior regenerate
-	// actually populated them for this exact vertex count, not just that the properties are set.
-	const bool bBlendModeCurrentlyLive = !bShowBiomeDebugColors && BiomeStack && BiomeBlendMaterial
-		&& CachedBiomeBlendWeights.Num() == CachedMeshData.Vertices.Num()
-		&& CachedBiomeBlendUV1.Num() == CachedMeshData.Vertices.Num()
-		&& CachedBiomeBlendUV2.Num() == CachedMeshData.Vertices.Num();
-
 	if (ChangedPropertyName == GET_MEMBER_NAME_CHECKED(ASolarOrbzIcoSphereActor, DefaultMaterial))
 	{
 		// Only a true no-op swap if DefaultMaterial is actually what drives material slot 0 right
-		// now - neither debug colors nor blend material active. If either of those IS active,
-		// DefaultMaterial isn't even visible yet, so there's nothing to swap - but it also doesn't
-		// need a regenerate for that same reason; just record it's handled (there's genuinely
-		// nothing to do) rather than paying for a full pipeline re-run over an invisible change.
-		if (!bShowBiomeDebugColors && !bBlendModeCurrentlyLive)
+		// now - i.e. debug colors isn't active. If it IS active, DefaultMaterial isn't even visible
+		// yet, so there's nothing to swap - but it also doesn't need a regenerate for that same
+		// reason; just record it's handled (there's genuinely nothing to do) rather than paying for
+		// a full pipeline re-run over an invisible change.
+		if (!bShowBiomeDebugColors)
 		{
 			ProcMesh->SetMaterial(0, DefaultMaterial);
 		}
 		return true;
-	}
-
-	if (ChangedPropertyName == GET_MEMBER_NAME_CHECKED(ASolarOrbzIcoSphereActor, BiomeBlendMaterial))
-	{
-		// Only a fast path when blend mode was ALREADY live with matching cached data - i.e. this is
-		// "swap to a different blend material", not "turn blend mode on for the first time" (no
-		// cached weights/UVs exist yet to reuse in that case, and RegenerateMesh also needs to run
-		// once to populate BiomeTextureArray - see its own bArrayStale check).
-		if (bBlendModeCurrentlyLive)
-		{
-			if (!BiomeBlendMID || BiomeBlendMID->Parent != BiomeBlendMaterial)
-			{
-				BiomeBlendMID = UMaterialInstanceDynamic::Create(BiomeBlendMaterial, this);
-			}
-			if (BiomeBlendMID)
-			{
-				BiomeBlendMID->SetTextureParameterValue(FName(TEXT("BiomeTextureArray")), BiomeStack->BiomeTextureArray);
-				ProcMesh->SetMaterial(0, BiomeBlendMID);
-				return true;
-			}
-		}
-		return false;
 	}
 
 	return false;
@@ -616,15 +586,15 @@ void ASolarOrbzIcoSphereActor::PostEditChangeProperty(FPropertyChangedEvent& Pro
 		GET_MEMBER_NAME_CHECKED(ASolarOrbzIcoSphereActor, bShowBiomeDebugColors),
 		GET_MEMBER_NAME_CHECKED(ASolarOrbzIcoSphereActor, DebugBiomeMaterial),
 		GET_MEMBER_NAME_CHECKED(ASolarOrbzIcoSphereActor, DefaultMaterial),
-		GET_MEMBER_NAME_CHECKED(ASolarOrbzIcoSphereActor, BiomeBlendMaterial),
 	};
 
 	const FName ChangedPropertyName = PropertyChangedEvent.GetPropertyName();
 
-	// DefaultMaterial/BiomeBlendMaterial are both still in RegenTriggers above (for the cases
-	// TryApplyCosmeticOnlyChange declines - first-time blend mode setup, or either changing while not
-	// the active rendering mode) - this fast path only short-circuits the ones it positively confirms
-	// it fully handled; everything else still falls through to the normal full-pipeline check below.
+	// DefaultMaterial is still in RegenTriggers above (for the case TryApplyCosmeticOnlyChange
+	// declines - debug colors currently active, so the change is invisible but still needs the
+	// normal full-pipeline path to run once debug colors turns back off) - this fast path only
+	// short-circuits the case it positively confirms it fully handled; everything else still falls
+	// through to the normal full-pipeline check below.
 	if (TryApplyCosmeticOnlyChange(ChangedPropertyName))
 	{
 		return;
@@ -856,16 +826,11 @@ void ASolarOrbzIcoSphereActor::RegenerateMesh()
 	}
 
 	// --- Pass B: biome-specific detail, masked by climate/composite conditions and blended on top. ---
-	// Rendering has three mutually-exclusive modes sharing the same vertex color + UV1/UV2 channels:
-	// debug colors (bShowBiomeDebugColors), texture-array blending (BiomeBlendMaterial assigned),
-	// or plain DefaultMaterial with none of this data populated.
-	const bool bWantsBlendMaterial = !bShowBiomeDebugColors && BiomeStack && BiomeBlendMaterial;
-	constexpr int32 MaxBlendedBiomes = 4; // matches vertex color's 4 channels (RGBA) and UV1/UV2's 2+2 float slots
-
+	// Rendering has two mutually-exclusive modes sharing the vertex color channel: debug colors
+	// (bShowBiomeDebugColors), or plain DefaultMaterial with none of this data populated. A biome's
+	// own real ground material(s) are resolved separately, per TRIANGLE not per vertex, by the new
+	// material-assignment pass right after this one - see its own comment below for why.
 	TArray<FLinearColor> BiomeDebugColors;
-	CachedBiomeBlendUV1.Reset();
-	CachedBiomeBlendUV2.Reset();
-	CachedBiomeBlendWeights.Reset();
 
 	if (BiomeStack)
 	{
@@ -893,44 +858,22 @@ void ASolarOrbzIcoSphereActor::RegenerateMesh()
 			}
 		}
 
-		if (bWantsBlendMaterial)
-		{
-#if WITH_EDITOR
-			// Auto-rebuild if the texture array looks out of sync with the current biome list, so
-			// first-time setup (and adding/removing a biome) just works without a separate manual
-			// step - BuildBiomeTextureArray is still exposed for an explicit rebuild too.
-			const bool bArrayStale = !BiomeStack->BiomeTextureArray
-				|| BiomeStack->BiomeTextureArray->SourceTextures.Num() != UniqueBiomes.Num();
-			if (bArrayStale)
-			{
-				BiomeStack->BuildBiomeTextureArray();
-			}
-#endif
-			CachedBiomeBlendUV1.SetNum(CachedMeshData.Vertices.Num());
-			CachedBiomeBlendUV2.SetNum(CachedMeshData.Vertices.Num());
-			CachedBiomeBlendWeights.Init(FLinearColor(0, 0, 0, 0), CachedMeshData.Vertices.Num());
-		}
-
-		// FThreadSafeCounter rather than plain int32 - these two are incremented from inside the
-		// ParallelFor below, and a bare `int32 += ` from multiple worker threads at once is a real
-		// data race (lost updates), not just a style nit.
+		// FThreadSafeCounter rather than plain int32 - incremented from inside the ParallelFor below,
+		// and a bare `int32 += ` from multiple worker threads at once is a real data race (lost
+		// updates), not just a style nit.
 		FThreadSafeCounter NumWithClimateData;
 		FThreadSafeCounter NumDominantBiomeHits;
 
 		ParallelFor(CachedMeshData.Vertices.Num(), [&](int32 i)
 		{
 			// Declared fresh per vertex rather than hoisted out of the loop (as a pre-ParallelFor pass
-			// over this same code did) - hoisted TArrays were reused/resized in place across
-			// iterations specifically to dodge a per-vertex heap allocation, but that only works when
-			// iterations run strictly one after another. Under ParallelFor, concurrent tasks would be
-			// writing into the SAME three arrays at once and corrupt each other. These are small,
-			// bounded-size arrays (one entry per biome layer, at most MaxBlendedBiomes for the other
-			// two) - the reintroduced small per-vertex allocation is an acceptable trade for correct
-			// concurrent execution, and is dwarfed by the actual mask/noise evaluation cost this
-			// parallelizes.
+			// over this same code did) - a hoisted TArray reused/resized in place across iterations
+			// only works when iterations run strictly one after another. Under ParallelFor, concurrent
+			// tasks would be writing into the SAME array at once and corrupt each other. One small,
+			// bounded-size array (one entry per biome layer) - the reintroduced small per-vertex
+			// allocation is an acceptable trade for correct concurrent execution, and is dwarfed by the
+			// actual mask/noise evaluation cost this parallelizes.
 			TArray<float> LayerWeights;
-			TArray<int32> TopBiomeIndices;
-			TArray<float> TopBiomeWeights;
 
 			const FVector& UnitDirection = OriginalUnitDirections[i];
 
@@ -968,21 +911,6 @@ void ASolarOrbzIcoSphereActor::RegenerateMesh()
 					BiomeDebugColors[i] = FLinearColor::Black; // no biome layer applies here
 				}
 			}
-			else if (bWantsBlendMaterial)
-			{
-				BiomeStack->EvaluateTopWeightedBiomes(Context, LayerWeights, UniqueBiomes, MaxBlendedBiomes, TopBiomeIndices, TopBiomeWeights);
-				if (TopBiomeIndices.Num() > 0)
-				{
-					NumDominantBiomeHits.Increment(); // reusing the same stat: "at least one biome matched here"
-				}
-
-				auto IndexOrPad = [&TopBiomeIndices](int32 Slot) { return TopBiomeIndices.IsValidIndex(Slot) ? (float)TopBiomeIndices[Slot] : -1.0f; };
-				auto WeightOrPad = [&TopBiomeWeights](int32 Slot) { return TopBiomeWeights.IsValidIndex(Slot) ? TopBiomeWeights[Slot] : 0.0f; };
-
-				CachedBiomeBlendUV1[i] = FVector2D(IndexOrPad(0), IndexOrPad(1));
-				CachedBiomeBlendUV2[i] = FVector2D(IndexOrPad(2), IndexOrPad(3));
-				CachedBiomeBlendWeights[i] = FLinearColor(WeightOrPad(0), WeightOrPad(1), WeightOrPad(2), WeightOrPad(3));
-			}
 		});
 
 		FSolarOrbzIcoSphereGenerator::RecomputeSmoothNormals(CachedMeshData);
@@ -998,17 +926,6 @@ void ASolarOrbzIcoSphereActor::RegenerateMesh()
 				UE_LOG(LogSolarOrbz, Warning, TEXT("SolarOrbz Biome Debug: not a single vertex matched any biome layer's mask - check each layer's Mask Preset ranges (Min/Max/Falloff) against the Moisture/Temperature/Elevation stats logged above."));
 			}
 		}
-		else if (bWantsBlendMaterial)
-		{
-			UE_LOG(LogSolarOrbz, Log,
-				TEXT("SolarOrbz Biome Blend: %d/%d verts had climate data, %d/%d verts matched at least one biome (rest render with all-zero weights - no biome applies there)."),
-				NumWithClimateData.GetValue(), CachedMeshData.Vertices.Num(), NumDominantBiomeHits.GetValue(), CachedMeshData.Vertices.Num());
-
-			if (NumDominantBiomeHits.GetValue() == 0)
-			{
-				UE_LOG(LogSolarOrbz, Warning, TEXT("SolarOrbz Biome Blend: not a single vertex matched any biome - check each biome's Mask ranges against the Moisture/Temperature/Elevation stats logged above."));
-			}
-		}
 	}
 	else if (bShowBiomeDebugColors)
 	{
@@ -1020,37 +937,101 @@ void ASolarOrbzIcoSphereActor::RegenerateMesh()
 		UE_LOG(LogSolarOrbz, Warning, TEXT("SolarOrbz Biome Debug: Show Biome Debug Colors is on but Debug Biome Material is not assigned - slot 0 will get a null material (default checker/gray) regardless of the vertex colors computed above."));
 	}
 
-	// --- Resolve which material actually goes in slot 0, and which vertex color / UV1 / UV2 data ---
-	// accompanies it - the three rendering modes above populated at most one of BiomeDebugColors /
-	// BiomeBlendWeights, so this just routes whichever one is live.
+	// --- Triangle material assignment: which real material each triangle should bake with - a hard, ---
+	// single per-triangle choice (BiomeStack->SelectMaterial, sampled once at the triangle's own
+	// centroid), not a blend, since a baked static mesh triangle belongs to exactly one material
+	// slot. Runs regardless of bShowBiomeDebugColors - this feeds Bake, not the live ProcMesh
+	// preview, which stays single-section either way (see CachedTriangleMaterialIndex's own header
+	// comment for the full "why not a live multi-material preview too" reasoning). Replaces the old
+	// shared Biome Blend Material/BiomeTextureArray/vertex-color-weight system entirely.
+	CachedTriangleMaterialIndex.Reset();
+	CachedBakeMaterials.Reset();
+
+	if (BiomeStack)
+	{
+		const int32 NumTriangles = CachedMeshData.Triangles.Num() / 3;
+		TArray<UMaterialInterface*> TriangleMaterials;
+		TriangleMaterials.SetNumZeroed(NumTriangles);
+
+		ParallelFor(NumTriangles, [&](int32 TriIndex)
+		{
+			const int32 I0 = CachedMeshData.Triangles[TriIndex * 3 + 0];
+			const int32 I1 = CachedMeshData.Triangles[TriIndex * 3 + 1];
+			const int32 I2 = CachedMeshData.Triangles[TriIndex * 3 + 2];
+
+			// Re-normalized average of the 3 corners' own unit directions - not a true spherical-
+			// triangle centroid, but close enough for "which biome applies to this triangle" at any
+			// resolution fine enough that a single triangle's own extent is itself invisible.
+			const FVector CentroidDirection = (OriginalUnitDirections[I0] + OriginalUnitDirections[I1] + OriginalUnitDirections[I2]).GetSafeNormal();
+
+			FSolarOrbzBiomeSampleContext Context;
+			Context.UnitDirection = CentroidDirection;
+			Context.UV = (CachedMeshData.UVs[I0] + CachedMeshData.UVs[I1] + CachedMeshData.UVs[I2]) / 3.0;
+			Context.Elevation = (
+				(FVector::DotProduct(CachedMeshData.Vertices[I0], OriginalUnitDirections[I0]) - RadiusCm) +
+				(FVector::DotProduct(CachedMeshData.Vertices[I1], OriginalUnitDirections[I1]) - RadiusCm) +
+				(FVector::DotProduct(CachedMeshData.Vertices[I2], OriginalUnitDirections[I2]) - RadiusCm)) / 3.0;
+			Context.Slope = FMath::Clamp(1.0f - (
+				FVector::DotProduct(CachedMeshData.Normals[I0], OriginalUnitDirections[I0]) +
+				FVector::DotProduct(CachedMeshData.Normals[I1], OriginalUnitDirections[I1]) +
+				FVector::DotProduct(CachedMeshData.Normals[I2], OriginalUnitDirections[I2])) / 3.0f, 0.0f, 1.0f);
+			Context.SeaLevel = ClimateSimulation ? ClimateSimulation->SeaLevel : 0.0f;
+
+			if (CachedClimateGrid.IsValid())
+			{
+				Context.bHasClimateData = true;
+				CachedClimateGrid.Sample(CentroidDirection, Context.Temperature, Context.Moisture);
+			}
+
+			TriangleMaterials[TriIndex] = BiomeStack->SelectMaterial(Context);
+		});
+
+		// Single-threaded, after the parallel sampling above completes: assigns each distinct
+		// UMaterialInterface* a stable slot index, first-encountered order. Keyed by raw pointer -
+		// material SLOT identity is what actually matters here, not which biome/slope-band chose
+		// it, so two biomes (or two slope bands of the same biome) sharing one material asset
+		// correctly collapse onto the same slot instead of duplicating it.
+		CachedTriangleMaterialIndex.SetNumUninitialized(NumTriangles);
+		TMap<UMaterialInterface*, int32> MaterialToSlot;
+		for (int32 TriIndex = 0; TriIndex < NumTriangles; ++TriIndex)
+		{
+			UMaterialInterface* Material = TriangleMaterials[TriIndex];
+			if (!Material)
+			{
+				CachedTriangleMaterialIndex[TriIndex] = INDEX_NONE; // no biome applies here - Bake falls back to DefaultMaterial
+				continue;
+			}
+
+			if (const int32* ExistingSlot = MaterialToSlot.Find(Material))
+			{
+				CachedTriangleMaterialIndex[TriIndex] = *ExistingSlot;
+			}
+			else
+			{
+				const int32 NewSlot = CachedBakeMaterials.Add(Material);
+				MaterialToSlot.Add(Material, NewSlot);
+				CachedTriangleMaterialIndex[TriIndex] = NewSlot;
+			}
+		}
+
+		UE_LOG(LogSolarOrbz, Log, TEXT("SolarOrbz Biome Material: %d unique material(s) across %d triangle(s) for baking."), CachedBakeMaterials.Num(), NumTriangles);
+	}
+
+	// --- Resolve which material actually goes in the live preview's one ProcMesh section, and ---
+	// which vertex color data accompanies it - the two rendering modes above populated at most one
+	// of BiomeDebugColors. The real per-biome materials computed just above are read by Bake, not
+	// by this live single-section preview - see CachedTriangleMaterialIndex's own comment.
 	UMaterialInterface* MaterialToUse = DefaultMaterial;
 	const TArray<FLinearColor>* VertexColorsToUse = &BiomeDebugColors; // empty unless debug mode populated it
-	const TArray<FVector2D>* UV1ToUse = nullptr;
-	const TArray<FVector2D>* UV2ToUse = nullptr;
 
 	if (bShowBiomeDebugColors)
 	{
 		MaterialToUse = DebugBiomeMaterial;
 	}
-	else if (bWantsBlendMaterial)
-	{
-		if (!BiomeBlendMID || BiomeBlendMID->Parent != BiomeBlendMaterial)
-		{
-			BiomeBlendMID = UMaterialInstanceDynamic::Create(BiomeBlendMaterial, this);
-		}
-		if (BiomeBlendMID)
-		{
-			BiomeBlendMID->SetTextureParameterValue(FName(TEXT("BiomeTextureArray")), BiomeStack->BiomeTextureArray);
-		}
-		MaterialToUse = BiomeBlendMID;
-		VertexColorsToUse = &CachedBiomeBlendWeights;
-		UV1ToUse = &CachedBiomeBlendUV1;
-		UV2ToUse = &CachedBiomeBlendUV2;
-	}
 
 	ProcMesh->SetMaterial(0, MaterialToUse);
-	UE_LOG(LogSolarOrbz, Log, TEXT("SolarOrbz: material slot 0 set to '%s' (bShowBiomeDebugColors=%s, blendMaterial=%s)"),
-		*GetNameSafe(MaterialToUse), bShowBiomeDebugColors ? TEXT("true") : TEXT("false"), bWantsBlendMaterial ? TEXT("true") : TEXT("false"));
+	UE_LOG(LogSolarOrbz, Log, TEXT("SolarOrbz: material slot 0 set to '%s' (bShowBiomeDebugColors=%s)"),
+		*GetNameSafe(MaterialToUse), bShowBiomeDebugColors ? TEXT("true") : TEXT("false"));
 
 	TArray<FProcMeshTangent> ProcTangents;
 	ProcTangents.Reserve(CachedMeshData.Tangents.Num());
@@ -1068,8 +1049,8 @@ void ASolarOrbzIcoSphereActor::RegenerateMesh()
 		CachedMeshData.Triangles,
 		CachedMeshData.Normals,
 		CachedMeshData.UVs,
-		UV1ToUse ? *UV1ToUse : EmptyUVChannel,
-		UV2ToUse ? *UV2ToUse : EmptyUVChannel,
+		EmptyUVChannel,
+		EmptyUVChannel,
 		EmptyUVChannel,
 		*VertexColorsToUse,
 		ProcTangents,
@@ -1126,22 +1107,35 @@ void ASolarOrbzIcoSphereActor::BakeToStaticMeshAsset()
 	TVertexInstanceAttributesRef<float> InstanceBinormalSigns = Attributes.GetVertexInstanceBinormalSigns();
 	TVertexInstanceAttributesRef<FVector4f> InstanceColors = Attributes.GetVertexInstanceColors();
 	TVertexInstanceAttributesRef<FVector2f> InstanceUVs = Attributes.GetVertexInstanceUVs();
+	InstanceUVs.SetNumChannels(1);
 
-	// The live preview's Biome Blend Material reads weights from vertex color and biome indices from
-	// UV1/UV2 (see RegenerateMesh) - carry that same data into the baked mesh so the material keeps
-	// working once it's applied here instead of driving the ProcMeshComponent.
-	const bool bHasBiomeBlendData = CachedBiomeBlendWeights.Num() == CachedMeshData.Vertices.Num()
-		&& CachedBiomeBlendUV1.Num() == CachedMeshData.Vertices.Num()
-		&& CachedBiomeBlendUV2.Num() == CachedMeshData.Vertices.Num();
-	InstanceUVs.SetNumChannels(bHasBiomeBlendData ? 3 : 1);
+	const int32 NumTriangles = CachedMeshData.Triangles.Num() / 3;
 
-	if (BiomeStack && BiomeBlendMaterial && !bHasBiomeBlendData)
+	// Cached by RegenerateMesh's own triangle-material-assignment pass (see CachedTriangleMaterialIndex's
+	// header comment) - stale (wrong triangle count) means Regenerate hasn't run since a parameter
+	// changed, same class of staleness check the old blend-data path used to make here.
+	const bool bHasTriangleMaterialData = CachedTriangleMaterialIndex.Num() == NumTriangles;
+	if (BiomeStack && !bHasTriangleMaterialData)
 	{
-		UE_LOG(LogSolarOrbz, Warning, TEXT("SolarOrbz Bake: Biome Stack and Biome Blend Material are both assigned, but no cached blend data matches the current vertex count (last Regenerate had Show Biome Debug Colors on, or hasn't run since a parameter changed) - baked vertex colors will be flat white and UV1/UV2 empty. Regenerate Mesh with Show Biome Debug Colors off, then Bake again."));
+		UE_LOG(LogSolarOrbz, Warning, TEXT("SolarOrbz Bake: Biome Stack is assigned, but no cached per-triangle material data matches the current triangle count (hasn't run since a parameter changed) - baking with a single Default Material slot only. Regenerate Mesh, then Bake again."));
 	}
 
-	const FPolygonGroupID PolygonGroupID = MeshDescription.CreatePolygonGroup();
-	Attributes.GetPolygonGroupMaterialSlotNames()[PolygonGroupID] = FName(TEXT("Default"));
+	// One polygon group per unique biome-selected material (CachedBakeMaterials, only meaningful
+	// when bHasTriangleMaterialData), plus exactly one more for the fallback/no-biome-applies case -
+	// GetStaticMaterials() below is populated in this exact same order so slot index lines up.
+	TArray<FPolygonGroupID> MaterialSlotGroups;
+	if (bHasTriangleMaterialData)
+	{
+		MaterialSlotGroups.Reserve(CachedBakeMaterials.Num());
+		for (UMaterialInterface* Material : CachedBakeMaterials)
+		{
+			const FPolygonGroupID GroupID = MeshDescription.CreatePolygonGroup();
+			Attributes.GetPolygonGroupMaterialSlotNames()[GroupID] = FName(*GetNameSafe(Material));
+			MaterialSlotGroups.Add(GroupID);
+		}
+	}
+	const FPolygonGroupID FallbackGroupID = MeshDescription.CreatePolygonGroup();
+	Attributes.GetPolygonGroupMaterialSlotNames()[FallbackGroupID] = FName(TEXT("NoBiome_Default"));
 
 	TMap<FVector, FVertexID> PositionToVertexID;
 	PositionToVertexID.Reserve(CachedMeshData.Vertices.Num());
@@ -1169,28 +1163,25 @@ void ASolarOrbzIcoSphereActor::BakeToStaticMeshAsset()
 		InstanceNormals[InstanceID] = FVector3f(CachedMeshData.Normals[i]);
 		InstanceTangents[InstanceID] = FVector3f(CachedMeshData.Tangents[i]);
 		InstanceBinormalSigns[InstanceID] = 1.0f;
-		InstanceColors[InstanceID] = bHasBiomeBlendData
-			? FVector4f(CachedBiomeBlendWeights[i].R, CachedBiomeBlendWeights[i].G, CachedBiomeBlendWeights[i].B, CachedBiomeBlendWeights[i].A)
-			: FVector4f(1.0f, 1.0f, 1.0f, 1.0f);
+		InstanceColors[InstanceID] = FVector4f(1.0f, 1.0f, 1.0f, 1.0f);
 		InstanceUVs.Set(InstanceID, 0, FVector2f(CachedMeshData.UVs[i]));
-		if (bHasBiomeBlendData)
-		{
-			InstanceUVs.Set(InstanceID, 1, FVector2f(CachedBiomeBlendUV1[i]));
-			InstanceUVs.Set(InstanceID, 2, FVector2f(CachedBiomeBlendUV2[i]));
-		}
 
 		InstanceIDs[i] = InstanceID;
 	}
 
-	for (int32 TriStart = 0; TriStart < CachedMeshData.Triangles.Num(); TriStart += 3)
+	for (int32 TriIndex = 0; TriIndex < NumTriangles; ++TriIndex)
 	{
+		const int32 TriStart = TriIndex * 3;
 		const FVertexInstanceID Corners[3] =
 		{
 			InstanceIDs[CachedMeshData.Triangles[TriStart]],
 			InstanceIDs[CachedMeshData.Triangles[TriStart + 1]],
 			InstanceIDs[CachedMeshData.Triangles[TriStart + 2]],
 		};
-		MeshDescription.CreateTriangle(PolygonGroupID, Corners);
+
+		const int32 MaterialIndex = bHasTriangleMaterialData ? CachedTriangleMaterialIndex[TriIndex] : INDEX_NONE;
+		const FPolygonGroupID GroupID = MaterialSlotGroups.IsValidIndex(MaterialIndex) ? MaterialSlotGroups[MaterialIndex] : FallbackGroupID;
+		MeshDescription.CreateTriangle(GroupID, Corners);
 	}
 
 	UStaticMesh::FBuildMeshDescriptionsParams BuildParams;
@@ -1204,8 +1195,17 @@ void ASolarOrbzIcoSphereActor::BakeToStaticMeshAsset()
 
 	NewStaticMesh->BuildFromMeshDescriptions({ &MeshDescription }, BuildParams);
 
+	// Same order MaterialSlotGroups/FallbackGroupID were created in above, so static mesh section
+	// index lines up with polygon group - one real material per unique biome-selected material,
+	// plus DefaultMaterial for the fallback/no-biome-applies slot (may be null, same as leaving
+	// DefaultMaterial unset on the live preview actor - a null slot just falls back to the engine's
+	// own default checker material, not a bake failure).
 	NewStaticMesh->GetStaticMaterials().Empty();
-	NewStaticMesh->GetStaticMaterials().Add(FStaticMaterial());
+	for (UMaterialInterface* Material : CachedBakeMaterials)
+	{
+		NewStaticMesh->GetStaticMaterials().Add(FStaticMaterial(Material, FName(*GetNameSafe(Material))));
+	}
+	NewStaticMesh->GetStaticMaterials().Add(FStaticMaterial(DefaultMaterial, FName(TEXT("NoBiome_Default"))));
 
 	// --- Attach celestial body metadata so it survives the bake - a plain UStaticMesh otherwise ---
 	// has no actor, no Profile reference, nothing at all once this function returns. One
