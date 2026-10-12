@@ -225,6 +225,38 @@ unaffected by the node-shape churn above since it all lives inside `AdvanceTecto
   per cell - a continuously-variable stress field or true geologic unloading/healing would be a
   further step beyond this pass.
 
+**Crash/restart safety net, requested directly: a temp-file backup of simulation progress.** Plates/
+BoundaryStates are already saved as part of the Terrain Layer Stack asset the normal way (ordinary
+`UPROPERTY` serialization) whenever the user hits Save - but simulation progress run between saves
+(potentially several "Run Simulation" clicks) would be lost entirely if the editor crashes or has to
+be restarted first. Rather than a SaveGame-style system (this is editor-time authoring data, not
+runtime game state), each layer backs its own simulation state up to a small file:
+
+- `TectonicBackupId` (`FGuid`, lazily assigned the same way `EditorNodeId` is) gives each Continent
+  Layer instance a stable identity independent of the owning asset's path - renaming/moving the
+  asset doesn't orphan an existing backup. The file lives at
+  `Saved/SolarOrbzTectonicSimBackups/<TectonicBackupId>.bin` - project-relative, so it's easy to find,
+  already covered by any existing `Saved/` cleanup/ignore conventions, and never touches source
+  control.
+- `SaveTectonicBackupToTempFile()` runs once at the end of every `AdvanceTectonicSimulation()` call
+  that actually advanced at least one step - an ad-hoc binary write (`FBufferArchive`/
+  `FFileHelper::SaveArrayToFile`, not the asset's own tagged-property serialization) of `Seed`,
+  `PlatesSeededFrom`/`PlatesSeededFromNumPlates`, `SimulatedAgeMyr`, `NextPlateId`, `Plates`, and
+  `BoundaryStates` - small and cheap enough (at most a few hundred flat structs) to do synchronously
+  on every click with no visible cost.
+- `TryRestoreTectonicBackupFromTempFile()` runs from a new `PostLoad()` override - every time this
+  layer loads (editor open, or any other load of the owning asset), it checks for a backup file and
+  restores from it ONLY if the backup is for the exact same seed basis just loaded (`Seed`/
+  `PlatesSeededFrom`/`PlatesSeededFromNumPlates` all match - a backup left over from a since-changed
+  Seed is silently ignored) AND is strictly more advanced (`SimulatedAgeMyr` greater) than what the
+  asset itself just loaded. That second check is what makes this safe to run unconditionally on every
+  load: a backup that's no more advanced than what's already saved just never applies, so there's no
+  risk of it clobbering legitimately saved progress with something older or unrelated.
+- Deliberately not implemented: no cleanup-on-save (an up-to-date backup is harmless to leave sitting
+  on disk - the age check above means it simply won't restore anything once the asset itself catches
+  up), and no attempt to reconcile two different backups for the same `TectonicBackupId` from
+  different machines/branches - this is a single-user crash-recovery aid, not a sync system.
+
 ### Phase 3 - explicitly future, not v1
 
 - Branching/merge nodes, once there's an actual runtime semantic for combining independent chains

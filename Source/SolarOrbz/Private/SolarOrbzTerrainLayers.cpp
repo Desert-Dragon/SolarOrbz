@@ -2,7 +2,12 @@
 
 #include "SolarOrbzTerrainLayers.h"
 #include "Engine/Texture2D.h"
+#include "HAL/FileManager.h"
 #include "Math/RandomStream.h"
+#include "Misc/FileHelper.h"
+#include "Misc/Paths.h"
+#include "Serialization/BufferArchive.h"
+#include "Serialization/MemoryReader.h"
 #include "SolarOrbzBiomeSystem.h"
 #include "SolarOrbzLatLongGrid.h"
 #include "SolarOrbzProfiles.h"
@@ -1021,6 +1026,16 @@ namespace SolarOrbzContinent
 	}
 }
 
+void USolarOrbzContinentTerrainLayer::PostLoad()
+{
+	Super::PostLoad();
+
+	if (Algorithm == ESolarOrbzContinentAlgorithm::PlateTectonics)
+	{
+		TryRestoreTectonicBackupFromTempFile();
+	}
+}
+
 void USolarOrbzContinentTerrainLayer::ApplyPlanetaryContext(const USolarOrbzPlanetProfile* Profile, float SeaLevelCm)
 {
 	// Deliberately not written into this layer's own NumContinents/etc UPROPERTY fields - see the
@@ -1702,9 +1717,99 @@ void USolarOrbzContinentTerrainLayer::AdvanceTectonicSimulation(int32 NumSteps, 
 
 	CurrentPlateCount = Plates.Num();
 
+	if (NumSteps > 0)
+	{
+		SaveTectonicBackupToTempFile();
+	}
+
 	UE_LOG(LogSolarOrbzContinent, Log,
 		TEXT("SolarOrbz Continent: advanced tectonic simulation by %d step(s) of %.2f Myr each - now at %.2f Myr simulated, %d plate(s) (was %d, %d split event(s)). Regenerate the planet to see the result."),
 		NumSteps, DeltaMyr, SimulatedAgeMyr, CurrentPlateCount, PlateCountBeforeSteps, SplitEventCount);
+}
+
+FString USolarOrbzContinentTerrainLayer::GetTectonicBackupFilePath()
+{
+	if (!TectonicBackupId.IsValid())
+	{
+		TectonicBackupId = FGuid::NewGuid();
+	}
+	return FPaths::ProjectSavedDir() / TEXT("SolarOrbzTectonicSimBackups") / (TectonicBackupId.ToString() + TEXT(".bin"));
+}
+
+void USolarOrbzContinentTerrainLayer::SaveTectonicBackupToTempFile()
+{
+	constexpr int32 BackupMagic = 0x534F5442; // 'SOTB' - SolarOrbz Tectonic Backup
+	constexpr int32 BackupVersion = 1;
+
+	FBufferArchive Ar;
+	int32 Magic = BackupMagic;
+	int32 Version = BackupVersion;
+	Ar << Magic << Version << Seed << PlatesSeededFrom << PlatesSeededFromNumPlates << bPlatesEverSeeded
+		<< SimulatedAgeMyr << NextPlateId << Plates << BoundaryStates;
+
+	const FString FilePath = GetTectonicBackupFilePath();
+	IFileManager::Get().MakeDirectory(*FPaths::GetPath(FilePath), /*Tree=*/true);
+
+	if (!FFileHelper::SaveArrayToFile(Ar, *FilePath))
+	{
+		UE_LOG(LogSolarOrbzContinent, Warning, TEXT("SolarOrbz Continent: failed to write tectonic simulation backup to %s - simulation progress won't survive an editor crash until this is fixed."), *FilePath);
+	}
+}
+
+void USolarOrbzContinentTerrainLayer::TryRestoreTectonicBackupFromTempFile()
+{
+	if (!TectonicBackupId.IsValid())
+	{
+		return; // never backed up - the ordinary case for a layer that's never run Run Simulation
+	}
+
+	const FString FilePath = GetTectonicBackupFilePath();
+	TArray<uint8> FileBytes;
+	if (!FFileHelper::LoadFileToArray(FileBytes, *FilePath))
+	{
+		return; // no backup on disk - the ordinary case
+	}
+
+	FMemoryReader Ar(FileBytes, /*bIsPersistent=*/true);
+	int32 Magic = 0, Version = 0;
+	Ar << Magic << Version;
+	if (Magic != 0x534F5442 || Version != 1)
+	{
+		UE_LOG(LogSolarOrbzContinent, Warning, TEXT("SolarOrbz Continent: tectonic backup at %s is unreadable (unexpected header) - ignoring it."), *FilePath);
+		return;
+	}
+
+	int32 BackupSeed = 0, BackupPlatesSeededFrom = 0, BackupPlatesSeededFromNumPlates = 0, BackupNextPlateId = 0;
+	bool bBackupPlatesEverSeeded = false;
+	float BackupSimulatedAgeMyr = 0.0f;
+	TArray<FSolarOrbzTectonicPlate> BackupPlates;
+	TArray<FSolarOrbzTectonicBoundaryState> BackupBoundaryStates;
+	Ar << BackupSeed << BackupPlatesSeededFrom << BackupPlatesSeededFromNumPlates << bBackupPlatesEverSeeded
+		<< BackupSimulatedAgeMyr << BackupNextPlateId << BackupPlates << BackupBoundaryStates;
+
+	// Only restore a backup for the SAME seed basis this layer was just loaded with (never apply one
+	// left over from a since-changed Seed/Num Plates) that's also genuinely more advanced than what
+	// was saved in the asset - never overwrite legitimately saved progress with a stale backup.
+	if (BackupSeed != Seed || BackupPlatesSeededFrom != PlatesSeededFrom || BackupPlatesSeededFromNumPlates != PlatesSeededFromNumPlates)
+	{
+		return;
+	}
+	if (BackupSimulatedAgeMyr <= SimulatedAgeMyr)
+	{
+		return; // the saved asset is already at least as advanced - nothing to recover
+	}
+
+	const float PreviousAgeMyr = SimulatedAgeMyr;
+	Plates = MoveTemp(BackupPlates);
+	BoundaryStates = MoveTemp(BackupBoundaryStates);
+	bPlatesEverSeeded = bBackupPlatesEverSeeded;
+	NextPlateId = BackupNextPlateId;
+	SimulatedAgeMyr = BackupSimulatedAgeMyr;
+	CurrentPlateCount = Plates.Num();
+
+	UE_LOG(LogSolarOrbzContinent, Log,
+		TEXT("SolarOrbz Continent: recovered %.2f Myr of unsaved tectonic simulation progress from a temp backup (%s) - the last saved asset only had %.2f Myr. Save the asset to make this permanent."),
+		BackupSimulatedAgeMyr, *FilePath, PreviousAgeMyr);
 }
 
 void USolarOrbzContinentTerrainLayer::UpdateBoundaryStress(float DeltaMyr)

@@ -801,6 +801,12 @@ struct SOLARORBZ_API FSolarOrbzTectonicPlate
 	{
 		return FVector::CrossProduct(RotationAxis, SeedDirection) * AngularRateRadPerMyr;
 	}
+
+	/** Ad-hoc binary serialization for USolarOrbzContinentTerrainLayer's tectonic-simulation temp-file backup (see SaveTectonicBackupToTempFile) - NOT the same path as this USTRUCT's normal tagged-property UPROPERTY serialization inside the owning asset. */
+	friend FArchive& operator<<(FArchive& Ar, FSolarOrbzTectonicPlate& Plate)
+	{
+		return Ar << Plate.PlateId << Plate.SeedDirection << Plate.RotationAxis << Plate.AngularRateRadPerMyr << Plate.bOceanic << Plate.AgeMyr;
+	}
 };
 
 /**
@@ -834,6 +840,12 @@ struct SOLARORBZ_API FSolarOrbzTectonicBoundaryState
 
 	UPROPERTY()
 	float AccumulatedDivergenceMyr = 0.0f;
+
+	/** Ad-hoc binary serialization for USolarOrbzContinentTerrainLayer's tectonic-simulation temp-file backup (see SaveTectonicBackupToTempFile) - NOT the same path as this USTRUCT's normal tagged-property UPROPERTY serialization inside the owning asset. */
+	friend FArchive& operator<<(FArchive& Ar, FSolarOrbzTectonicBoundaryState& State)
+	{
+		return Ar << State.PlateIdA << State.PlateIdB << State.AccumulatedConvergenceMyr << State.AccumulatedDivergenceMyr;
+	}
 };
 
 UCLASS(EditInlineNew, meta = (DisplayName = "Continent Layer"))
@@ -1067,6 +1079,11 @@ public:
 	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Continent")
 	bool bOverrideFromProfile = true;
 
+	//~ Begin UObject interface
+	/** Plate Tectonics only: checks for a newer temp-file backup of Plates/BoundaryStates (see TryRestoreTectonicBackupFromTempFile) than whatever this layer just loaded from the asset itself - recovers simulation progress a crash or an unexpected editor restart would otherwise have lost since the last manual save. A no-op for the other two algorithms. */
+	virtual void PostLoad() override;
+	//~ End UObject interface
+
 	//~ Begin USolarOrbzTerrainLayer interface
 	virtual void ApplyPlanetaryContext(const USolarOrbzPlanetProfile* Profile, float SeaLevelCm) override;
 	virtual bool RequiresWholeSurfaceBake() const override { return Algorithm != ESolarOrbzContinentAlgorithm::RadialSeeds; }
@@ -1156,6 +1173,40 @@ private:
 	/** True once Plates has been seeded at least once - lets EnsurePlatesInitialized() tell "never seeded yet" apart from "legitimately reseeded at Seed == 0" without a magic sentinel on PlatesSeededFrom. */
 	UPROPERTY()
 	bool bPlatesEverSeeded = false;
+
+	/**
+	 * Stable identity for this layer's tectonic-simulation temp-file backup (see
+	 * SaveTectonicBackupToTempFile/TryRestoreTectonicBackupFromTempFile below) - lazily assigned the
+	 * same way EditorNodeId is, so renaming/moving the owning asset doesn't orphan an existing backup
+	 * file. Only ever read/written by the backup mechanism; never read by GetRawHeight/Bake/anything
+	 * evaluation-related.
+	 */
+	UPROPERTY()
+	FGuid TectonicBackupId;
+
+	/** Returns this layer's on-disk backup file path (Saved/SolarOrbzTectonicSimBackups/<TectonicBackupId>.bin), lazily assigning TectonicBackupId first if it isn't valid yet. */
+	FString GetTectonicBackupFilePath();
+
+	/**
+	 * Writes Plates/BoundaryStates/SimulatedAgeMyr/etc to this layer's backup file - called once at
+	 * the end of every AdvanceTectonicSimulation() that actually ran at least one step, so simulation
+	 * progress survives an editor crash or restart that happens before the next manual asset save.
+	 * Cheap (the whole payload is at most a few hundred small structs) and synchronous - no need for
+	 * anything more elaborate for a safety-net write this infrequent.
+	 */
+	void SaveTectonicBackupToTempFile();
+
+	/**
+	 * Called from PostLoad() - reads this layer's backup file (if TectonicBackupId is valid and a
+	 * file exists for it) and restores Plates/BoundaryStates/etc from it ONLY if the backup is for the
+	 * same seed basis this layer was just loaded with (Seed/PlatesSeededFrom/PlatesSeededFromNumPlates
+	 * all match - never apply a backup left over from a since-changed Seed) AND is more advanced
+	 * (strictly greater SimulatedAgeMyr) than what the asset itself just loaded - never overwrites
+	 * progress that's already safely saved. Logs when it actually recovers something. Safe to call on
+	 * a layer that's never been backed up (TectonicBackupId invalid) or has no backup file on disk -
+	 * both are the ordinary case and silently no-op.
+	 */
+	void TryRestoreTectonicBackupFromTempFile();
 
 	/** Set by ApplyPlanetaryContext() each regenerate - null if no Profile was assigned, it wasn't a Planet Profile, ApplyPlanetaryContext() was never called, or bOverrideFromProfile is false. Bake() reads Num Continents/etc through this when valid, falling back to this layer's own authored properties otherwise. Weak, not a hard reference - a Profile's lifetime isn't tied to this layer's. */
 	TWeakObjectPtr<const USolarOrbzPlanetProfile> ProfileOverride;

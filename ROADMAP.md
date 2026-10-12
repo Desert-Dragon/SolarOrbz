@@ -353,6 +353,30 @@ commitment or a schedule - just a place these don't get lost between sessions.
         that accumulation persists even if their relative motion later changes) and per-cell stress
         isn't tracked (only per-PLATE-PAIR) - deliberate simplifications, not full geologic
         unloading/healing or a continuously-variable stress field.
+    - **Crash/restart safety net, requested directly: a temp-file backup of simulation progress.**
+      **Done.** `Plates`/`BoundaryStates` already save as part of the Terrain Layer Stack asset the
+      normal way whenever the user hits Save, but simulation progress run between saves (potentially
+      several Run Simulation clicks) would be lost entirely if the editor crashes or has to restart
+      first - this is editor-time authoring data, not runtime game state, so a SaveGame-style system
+      would be the wrong tool; instead each layer backs its own state up to a small file.
+      - New `TectonicBackupId` (`FGuid`, lazily assigned the same way `EditorNodeId` is) gives each
+        Continent Layer instance a stable backup identity independent of the owning asset's path.
+        File lives at `Saved/SolarOrbzTectonicSimBackups/<TectonicBackupId>.bin`.
+      - `SaveTectonicBackupToTempFile()` runs once at the end of every `AdvanceTectonicSimulation()`
+        call that actually advanced at least one step - an ad-hoc binary write (`FBufferArchive`/
+        `FFileHelper::SaveArrayToFile`, new `operator<<` overloads on `FSolarOrbzTectonicPlate`/
+        `FSolarOrbzTectonicBoundaryState` for this, separate from their normal tagged-property
+        UPROPERTY serialization) of `Seed`, the seed-basis trackers, `SimulatedAgeMyr`,
+        `NextPlateId`, `Plates`, and `BoundaryStates`.
+      - New `USolarOrbzContinentTerrainLayer::PostLoad()` override calls
+        `TryRestoreTectonicBackupFromTempFile()` on every load, restoring from the backup ONLY if it's
+        for the exact same seed basis just loaded (never apply one left over from a since-changed
+        Seed) AND strictly more advanced (`SimulatedAgeMyr` greater) than what the asset itself just
+        loaded - that second check is what makes this safe to run unconditionally on every load,
+        since a backup no more advanced than what's already saved simply never applies.
+      - Deliberately not implemented: no cleanup-on-save (a caught-up backup is harmless to leave on
+        disk) and no reconciliation between two backups sharing a `TectonicBackupId` - a single-user
+        crash-recovery aid, not a sync system.
 
 - **Erosion Rainfall Amount** is uniform across the planet by default, not yet driven by a Climate
   Simulation's actual computed moisture. Wiring the two together would let erosion carve more
