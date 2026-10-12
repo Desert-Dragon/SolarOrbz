@@ -989,7 +989,7 @@ public:
 	int32 StepsPerRun = 10;
 
 	/** Plate Tectonics only. Simulated time each step advances, in million years. */
-	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Continent|Plates|Simulation", meta = (ClampMin = "0.01", Units = "My", EditCondition = "Algorithm == ESolarOrbzContinentAlgorithm::PlateTectonics"))
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Continent|Plates|Simulation", meta = (ClampMin = "0.01", EditCondition = "Algorithm == ESolarOrbzContinentAlgorithm::PlateTectonics"))
 	float MillionYearsPerStep = 5.0f;
 
 	/**
@@ -1009,7 +1009,7 @@ public:
 	 * Simulation's steps, never during an ordinary Bake() - an ordinary regenerate reads whatever's
 	 * already accumulated but never adds to it.
 	 */
-	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Continent|Plates|Simulation", meta = (ClampMin = "0.1", Units = "My", EditCondition = "Algorithm == ESolarOrbzContinentAlgorithm::PlateTectonics"))
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Continent|Plates|Simulation", meta = (ClampMin = "0.1", EditCondition = "Algorithm == ESolarOrbzContinentAlgorithm::PlateTectonics"))
 	float StressMatureTimescaleMyr = 50.0f;
 
 	/** Plate Tectonics only. Extra multiplier a fully-matured (see Stress Mature Timescale above) boundary's mountain/trench/ridge/rift modifier gets on top of its base magnitude - 1.0 means a long-convergent boundary's mountains can reach up to double Mountain Height Meters. 0 disables mountain-building entirely (every boundary stays at its base magnitude regardless of how long it's been active, the original pre-simulation behavior). */
@@ -1025,7 +1025,7 @@ public:
 	 * (matches Num Plates' own authoring cap) - further divergence past the cap just keeps
 	 * accumulating Max Stress Multiplier's bonus instead of splitting again.
 	 */
-	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Continent|Plates|Simulation", meta = (ClampMin = "0.0", Units = "My", EditCondition = "Algorithm == ESolarOrbzContinentAlgorithm::PlateTectonics"))
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Continent|Plates|Simulation", meta = (ClampMin = "0.0", EditCondition = "Algorithm == ESolarOrbzContinentAlgorithm::PlateTectonics"))
 	float PlateSplitThresholdMyr = 200.0f;
 
 	// --- Coastline texture (shared by all three algorithms) ---
