@@ -159,96 +159,71 @@ not been run in-editor, per the review-only bar noted above.
     chain simply breaks there, same as an in-progress reconnect, until a new connection bridges the
     gap (or the delete is undone).
 
-### Control-only nodes - a node that isn't a height contributor
+### Tectonic plate simulation - requested directly, iterated to its current shape
 
-Requested directly: a "Run Simulation" node for driving the Continent Layer's Plate Tectonics
-algorithm forward in simulated time (see `Docs/ChunkedPlanetTerrain.md`'s sibling systems and
-`USolarOrbzContinentTerrainLayer::AdvanceTectonicSimulation` for the simulation itself) - exposed as
-a node in this same graph rather than a new UI surface. **Zero new graph/schema/toolkit code was
-needed for this** - it's just a new `USolarOrbzTerrainLayer` subclass
-(`USolarOrbzRunTectonicSimulationLayer`), so the existing reflection-driven "Add Layer" combo button
-(Phase 2, `GetDerivedClasses`) already lists it, the existing node-wraps-a-real-UObject pattern
-(Phase 1) already gives it a `USolarOrbzTerrainGraphNode`, and its `CallInEditor` `RunSimulation()`
-UFUNCTION already renders as a button in the Details panel that selecting a node already wires up to
-(Phase 2) - the same zero-new-UI-code promise `USolarOrbzBiome`'s `Materials[]` arrays got when the
-Details panel already knew how to edit them.
+Requested directly: a way to drive the Continent Layer's Plate Tectonics algorithm forward in
+simulated time (see `USolarOrbzContinentTerrainLayer::AdvanceTectonicSimulation`). Went through two
+tried-and-reverted shapes before landing here, each explicitly requested in turn:
 
-The one real gap this exposed: every existing layer type contributes height, so nothing previously
-stopped a layer whose `GetRawHeight` returns 0 from still corrupting the stack if misconfigured
-(placed first in the chain, where it'd become an implicit Replace-to-zero; or if its own `BlendMode`
-were set to `Replace`). Rather than rely on authors never making that mistake,
-`USolarOrbzTerrainLayer` grew one new virtual hook, `IsControlOnly()` (false by default, every real
-layer type unaffected), and `USolarOrbzTerrainLayerStack::EvaluateHeightUpTo` now skips a layer this
-returns true for entirely - as if it weren't in `Layers` at all, regardless of its own
-`BlendMode`/`Strength`/`Mask`. `USolarOrbzRunTectonicSimulationLayer` overrides it to `true`; this is
-now the documented way any future control-only node (not just this one) should behave.
+1. First built as a separate control-only `USolarOrbzRunTectonicSimulationLayer` graph node (a new
+   `USolarOrbzTerrainLayer` subclass whose `GetRawHeight` never runs, picking up the "Add Layer" combo
+   button/Details-panel-button machinery for free) that found its target Continent Layer by walking
+   backward through the stack from its own position.
+2. Then split further into that trigger node plus a separate `USolarOrbzSimulationTimestepLayer`
+   node holding `MillionYearsPerStep`, so multiple future simulation-trigger nodes could share one
+   declared step size.
+3. **Reverted both, per direct correction** ("integrate the timestep into continent layer or into
+   any of the other simulation nodes") **- simulation controls now live directly on
+   `USolarOrbzContinentTerrainLayer` itself**, not as separate graph nodes at all.
 
-`RunSimulation()` has no explicit "which Continent Layer" reference property to pick - it resolves
-its own owning `USolarOrbzTerrainLayerStack` via `GetTypedOuter()` (every layer's `Outer` is already
-the stack that owns it - see `AddLayerOfClass`'s `NewObject<USolarOrbzTerrainLayer>(EditingStack, ...)`
-call above), then walks backward from its own index in `Layers` for the nearest enabled Continent
-Layer running Plate Tectonics. This reads as "this control affects the Continent Layer below it in
-the chain" - the same stacking mental model as everything else in this editor - without needing a new
-object-picker widget for referencing a sibling instanced sub-object (which isn't a separate asset, so
-the standard content-browser-style object picker wouldn't resolve it). Logs a warning and does
-nothing if no such layer is found earlier in the stack, or if clicked twice with no Continent Layer
-present at all.
+**Current shape**: `StepsPerRun`, `MillionYearsPerStep`, and a `CallInEditor` `RunSimulation()`
+button are ordinary properties/a function on the Continent Layer, gated the same way every other
+Plate-Tectonics-only property on this class already is (`EditCondition = "Algorithm ==
+ESolarOrbzContinentAlgorithm::PlateTectonics"`). `RunSimulation()` is a one-line forwarder -
+`AdvanceTectonicSimulation(StepsPerRun, MillionYearsPerStep)` - since the layer already owns
+everything the simulation needs; no cross-node lookup, no `GetTypedOuter()`, no backward walk through
+`Layers`. This removed the only two call sites that ever needed `IsControlOnly()`, so that virtual
+hook came out of `USolarOrbzTerrainLayer` entirely rather than being kept as unused speculative
+generality - if a genuine non-height-contributing node is ever needed again, re-add the hook then,
+against that real design.
 
 `RunSimulation()` does not itself trigger the owning actor's regenerate - exactly like editing any
 other layer property through this same Details panel, seeing the result still requires the actor's
-own Regenerate control. Not a gap specific to this node; just how every other edit through this
-editor already works.
+own Regenerate control.
 
-**Follow-up, requested directly ("add in mountain and plate splitting, I want a fully in depth
-simulation"): mountain-building stress and plate splitting.** The scope cut the first pass called out
-("no accumulated per-boundary stress... no plate splitting/merging... a natural follow-up, not built
-now") is this follow-up - still driven entirely by the same `RunSimulation()` node, no new graph/UI
-surface needed.
+**Mountain-building stress and plate splitting** ("add in mountain and plate splitting, I want a
+fully in depth simulation") - requested once the basic step-the-plates mechanism existed, and
+unaffected by the node-shape churn above since it all lives inside `AdvanceTectonicSimulation`/
+`BakePlateTectonics`:
 
 - `FSolarOrbzTectonicBoundaryState` persists accumulated convergence/divergence (million years) per
-  PLATE PAIR, keyed by each plate's new stable `PlateId` rather than its array index - necessary
-  because a split removes a plate from the middle of `Plates`, which would otherwise silently
-  invalidate any index-keyed state. `UpdateBoundaryStress()` runs once per simulation step (a cheap,
-  low-resolution 48x24 Worley partition, independent of the much finer `BakeGridWidth`/`Height` used
-  for the actual height bake) to find currently-adjacent plate pairs and accumulate time into
-  whichever of the two buckets their current relative drift classifies as.
+  PLATE PAIR, keyed by each plate's stable `PlateId` rather than its array index - necessary because
+  a split removes a plate from the middle of `Plates`, which would otherwise silently invalidate any
+  index-keyed state. `UpdateBoundaryStress()` runs once per simulation step (a cheap, low-resolution
+  48x24 Worley partition, independent of the much finer `BakeGridWidth`/`Height` used for the actual
+  height bake) to find currently-adjacent plate pairs and accumulate time into whichever of the two
+  buckets their current relative drift classifies as.
 - **Mountains/trenches/ridges/rifts now scale with how long a boundary has been active** -
   `BakePlateTectonics`'s existing modifier multiplies by `1 + Clamp(AccumulatedMyr /
   StressMatureTimescaleMyr, 0, MaxStressMultiplier)`, so a boundary a simulation has driven for a long
   time reads taller/deeper than one that's only just started. Setting `MaxStressMultiplier` to 0
-  reproduces the original (pre-this-follow-up) behavior exactly - every boundary at its base
-  magnitude regardless of history.
+  reproduces the original pre-stress behavior exactly - every boundary at its base magnitude
+  regardless of history.
 - **A sustained rift eventually splits a plate** - once a pair's accumulated divergence crosses
   `PlateSplitThresholdMyr`, `SplitPlate()` bisects the larger of the two (by current grid coverage)
   along the separation direction toward its neighbor, so the new rift (the bisector between the two
   children) ends up perpendicular to that direction, matching a real spreading ridge's geometry. Each
   child's `RotationAxis` is built so its own drift points directly away from its sibling - continuing
   to pull the rift open. Hard-capped at 64 total plates regardless of how low the threshold is set.
-- **This exposed a real bug in the original pass, not just a missing feature**: reseed-detection
-  compared `Plates.Num()` against the clamped `NumPlates` property directly, which splitting now
-  legitimately makes diverge (more plates exist than were authored) without the user having touched
-  `NumPlates` - on the very next regenerate this would have silently reseeded from scratch, discarding
-  every split the user had just simulated. Fixed by tracking `PlatesSeededFromNumPlates` (the value at
-  the time of last seeding) instead of comparing live counts.
-
-**Follow-up, requested directly ("integrate the timestep node into the simulation nodes"): a shared
-`USolarOrbzSimulationTimestepLayer` node.** Until this pass, `MillionYearsPerStep` lived directly on
-`USolarOrbzRunTectonicSimulationLayer` - harmless with exactly one simulation-trigger node type, but
-duplicated per trigger node the moment a second one existed (the pattern this plugin's simulation
-nodes are meant to extend to). Pulled it out into its own control-only node instead:
-
-- `USolarOrbzSimulationTimestepLayer` owns `MillionYearsPerStep` alone - another `IsControlOnly()`
-  node, same reflection-driven "Add Layer" discovery, same zero new graph/toolkit code every other
-  control-only node here already gets for free.
-- `USolarOrbzRunTectonicSimulationLayer::RunSimulation()` now does a SECOND backward walk from its
-  own index (the same pattern it already used to find its target Continent Layer) looking for the
-  nearest preceding `USolarOrbzSimulationTimestepLayer`, and reads `MillionYearsPerStep` from there
-  instead of a private copy. Logs a warning and does nothing if no Timestep node precedes it in the
-  chain - a simulation-trigger node with no declared timestep has nothing well-defined to run.
-- Reads as: place one Timestep node once near the top of a chain with multiple simulation-trigger
-  nodes below it, and every one of them advances in lockstep at the same simulated-time-per-step,
-  the same "shared context earlier in the chain" mental model `ApplyPlanetaryContext` already uses
-  for Profile/Sea Level.
+- **This exposed a real bug, not just a missing feature**: reseed-detection compared `Plates.Num()`
+  against the clamped `NumPlates` property directly, which splitting now legitimately makes diverge
+  (more plates exist than were authored) without the user having touched `NumPlates` - on the very
+  next regenerate this would have silently reseeded from scratch, discarding every split the user had
+  just simulated. Fixed by tracking `PlatesSeededFromNumPlates` (the value at the time of last
+  seeding) instead of comparing live counts.
+- Deliberately not modeled: boundary stress never decays, and stress is tracked per plate PAIR, not
+  per cell - a continuously-variable stress field or true geologic unloading/healing would be a
+  further step beyond this pass.
 
 ### Phase 3 - explicitly future, not v1
 

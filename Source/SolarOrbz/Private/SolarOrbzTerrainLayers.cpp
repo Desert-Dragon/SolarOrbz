@@ -120,7 +120,7 @@ float USolarOrbzTerrainLayerStack::EvaluateHeightUpTo(int32 EndIndexExclusive, c
 	for (int32 i = 0; i < Count; ++i)
 	{
 		const TObjectPtr<USolarOrbzTerrainLayer>& Layer = Layers[i];
-		if (!Layer || !Layer->bEnabled || Layer->IsControlOnly())
+		if (!Layer || !Layer->bEnabled)
 		{
 			continue;
 		}
@@ -1985,49 +1985,7 @@ float USolarOrbzContinentTerrainLayer::GetRawHeightFromBakedGrid(const FVector& 
 	return FSolarOrbzLatLongGrid(BakedGridWidth, BakedGridHeight).SampleBilinear(BakedHeightCm, UnitDirection) + CachedSeaLevelCm;
 }
 
-void USolarOrbzRunTectonicSimulationLayer::RunSimulation()
+void USolarOrbzContinentTerrainLayer::RunSimulation()
 {
-	const USolarOrbzTerrainLayerStack* Stack = GetTypedOuter<USolarOrbzTerrainLayerStack>();
-	if (!Stack)
-	{
-		UE_LOG(LogSolarOrbzContinent, Warning, TEXT("SolarOrbz Run Tectonic Simulation: couldn't find an owning Terrain Layer Stack."));
-		return;
-	}
-
-	const int32 OwnIndex = Stack->Layers.IndexOfByKey(this);
-	USolarOrbzContinentTerrainLayer* TargetLayer = nullptr;
-	for (int32 i = OwnIndex - 1; i >= 0; --i)
-	{
-		USolarOrbzContinentTerrainLayer* Candidate = Cast<USolarOrbzContinentTerrainLayer>(Stack->Layers[i]);
-		if (Candidate && Candidate->Algorithm == ESolarOrbzContinentAlgorithm::PlateTectonics)
-		{
-			TargetLayer = Candidate;
-			break;
-		}
-	}
-
-	if (!TargetLayer)
-	{
-		UE_LOG(LogSolarOrbzContinent, Warning, TEXT("SolarOrbz Run Tectonic Simulation: no Plate Tectonics Continent Layer found earlier in this stack - nothing to simulate."));
-		return;
-	}
-
-	const USolarOrbzSimulationTimestepLayer* TimestepNode = nullptr;
-	for (int32 i = OwnIndex - 1; i >= 0; --i)
-	{
-		if (const USolarOrbzSimulationTimestepLayer* Candidate = Cast<USolarOrbzSimulationTimestepLayer>(Stack->Layers[i]))
-		{
-			TimestepNode = Candidate;
-			break;
-		}
-	}
-
-	if (!TimestepNode)
-	{
-		UE_LOG(LogSolarOrbzContinent, Warning, TEXT("SolarOrbz Run Tectonic Simulation: no Simulation Timestep node found earlier in this stack - add one to set how much simulated time each step advances."));
-		return;
-	}
-
-	TargetLayer->Modify();
-	TargetLayer->AdvanceTectonicSimulation(StepsPerRun, TimestepNode->MillionYearsPerStep);
+	AdvanceTectonicSimulation(StepsPerRun, MillionYearsPerStep);
 }

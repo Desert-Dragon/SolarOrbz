@@ -79,14 +79,6 @@ public:
 	virtual bool RequiresWholeSurfaceBake() const { return false; }
 
 	/**
-	 * True for layers that exist purely as an editor control (e.g. USolarOrbzRunTectonicSimulationLayer's
-	 * "Run Simulation" button) and contribute no height at all - USolarOrbzTerrainLayerStack::
-	 * EvaluateHeightUpTo skips a layer like this entirely, as if it weren't in the stack, regardless of
-	 * its own BlendMode/Strength/Mask. False (the default) for every real height-contributing layer.
-	 */
-	virtual bool IsControlOnly() const { return false; }
-
-	/**
 	 * Called once per regenerate, before GetRawHeight is ever called for this layer, only when
 	 * RequiresWholeSurfaceBake() returns true. PriorLayersHeight evaluates every layer below this
 	 * one in the stack (not including this layer) at an arbitrary point - i.e. exactly the terrain
@@ -761,7 +753,7 @@ struct SOLARORBZ_API FSolarOrbzContinentSeedData
  * Persistent per-plate state for ESolarOrbzContinentAlgorithm::PlateTectonics, carried forward across
  * every Bake() once seeded (see USolarOrbzContinentTerrainLayer::EnsurePlatesInitialized) rather than
  * rerandomized from Seed every regenerate the way this layer originally worked - that's what lets
- * USolarOrbzRunTectonicSimulationLayer's "Run Simulation" actually accumulate movement over time.
+ * this layer's own "Run Simulation" button actually accumulate movement over time.
  * Models each plate as drifting along a fixed great-circle path at a constant angular rate - a
  * deliberate simplification: RotationAxis/AngularRateRadPerMyr are rolled once at seed time (or at
  * split time, see SplitPlate) and never changed by simulation itself; no merging.
@@ -980,11 +972,11 @@ public:
 	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Continent|Plates", meta = (ClampMax = "0.0", Units = "m", EditCondition = "Algorithm == ESolarOrbzContinentAlgorithm::PlateTectonics"))
 	float RiftDepthMeters = -500.0f;
 
-	/** Plate Tectonics only. Drift speed each plate rolls a random fraction of when first seeded (or reseeded by changing Seed/Num Plates) - only affects freshly-seeded plates; has no effect on a layout a Run Tectonic Simulation node has already moved. */
+	/** Plate Tectonics only. Drift speed each plate rolls a random fraction of when first seeded (or reseeded by changing Seed/Num Plates) - only affects freshly-seeded plates; has no effect on a layout Run Simulation has already moved. */
 	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Continent|Plates", meta = (ClampMin = "0.0", ClampMax = "20.0", Units = "deg", EditCondition = "Algorithm == ESolarOrbzContinentAlgorithm::PlateTectonics"))
 	float InitialDriftSpeedDegreesPerMyr = 2.0f;
 
-	/** Plate Tectonics only, read-only. Total simulated time (million years) this layer's plates have drifted via a Run Tectonic Simulation node since they were last (re)seeded - 0 until the first simulation step ever runs. */
+	/** Plate Tectonics only, read-only. Total simulated time (million years) this layer's plates have drifted via Run Simulation since they were last (re)seeded - 0 until the first simulation step ever runs. */
 	UPROPERTY(VisibleAnywhere, Category = "SolarOrbz|Continent|Plates", meta = (EditCondition = "Algorithm == ESolarOrbzContinentAlgorithm::PlateTectonics"))
 	float SimulatedAgeMyr = 0.0f;
 
@@ -992,13 +984,30 @@ public:
 	UPROPERTY(VisibleAnywhere, Category = "SolarOrbz|Continent|Plates", meta = (EditCondition = "Algorithm == ESolarOrbzContinentAlgorithm::PlateTectonics"))
 	int32 CurrentPlateCount = 0;
 
+	/** Plate Tectonics only. How many simulation steps "Run Simulation" (below) advances per click. */
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Continent|Plates|Simulation", meta = (ClampMin = "1", ClampMax = "1000", EditCondition = "Algorithm == ESolarOrbzContinentAlgorithm::PlateTectonics"))
+	int32 StepsPerRun = 10;
+
+	/** Plate Tectonics only. Simulated time each step advances, in million years. */
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Continent|Plates|Simulation", meta = (ClampMin = "0.01", Units = "My", EditCondition = "Algorithm == ESolarOrbzContinentAlgorithm::PlateTectonics"))
+	float MillionYearsPerStep = 5.0f;
+
+	/**
+	 * Plate Tectonics only. Advances this layer's own plates by Steps Per Run steps of Million Years
+	 * Per Step each - see AdvanceTectonicSimulation(), which does the actual work; this is just the
+	 * button wired to this layer's own authored step size. Does not itself trigger a regenerate -
+	 * regenerate the planet afterward to see the result, same as any other property edit.
+	 */
+	UFUNCTION(CallInEditor, Category = "SolarOrbz|Continent|Plates|Simulation", meta = (EditCondition = "Algorithm == ESolarOrbzContinentAlgorithm::PlateTectonics"))
+	void RunSimulation();
+
 	/**
 	 * Plate Tectonics only. How many simulated million years of SUSTAINED convergence or divergence a
 	 * boundary needs to reach its full extra stress multiplier (Max Stress Multiplier below) - a
 	 * boundary that's only just started converging/diverging gets none of this bonus yet; one that's
-	 * been doing so for many simulation steps approaches the full amount. Only ever grows via a Run
-	 * Tectonic Simulation node's steps, never during an ordinary Bake() - a ordinary regenerate reads
-	 * whatever's already accumulated but never adds to it.
+	 * been doing so for many simulation steps approaches the full amount. Only ever grows via Run
+	 * Simulation's steps, never during an ordinary Bake() - an ordinary regenerate reads whatever's
+	 * already accumulated but never adds to it.
 	 */
 	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Continent|Plates|Simulation", meta = (ClampMin = "0.1", Units = "My", EditCondition = "Algorithm == ESolarOrbzContinentAlgorithm::PlateTectonics"))
 	float StressMatureTimescaleMyr = 50.0f;
@@ -1070,11 +1079,12 @@ public:
 	 * along its fixed RotationAxis, updating every live plate pair's accumulated convergence/
 	 * divergence stress (see UpdateBoundaryStress) - which can split a plate in two once a rift's
 	 * divergence crosses Plate Split Threshold Myr - and reclassifying boundaries from the plates'
-	 * new relative positions/drift. Called by USolarOrbzRunTectonicSimulationLayer's "Run Simulation"
-	 * button. (Re)seeds Plates first if this is the first call since this layer was created or
-	 * Seed/Num Plates last changed. No-op (with a log warning) if Algorithm isn't PlateTectonics.
-	 * Does NOT itself re-bake height or trigger the owning actor's regenerate - regenerate the planet
-	 * afterward to see the result, the same as changing any other layer property.
+	 * new relative positions/drift. Called by this layer's own "Run Simulation" button (RunSimulation(),
+	 * below) with StepsPerRun/MillionYearsPerStep. (Re)seeds Plates first if this is the first call
+	 * since this layer was created or Seed/Num Plates last changed. No-op (with a log warning) if
+	 * Algorithm isn't PlateTectonics. Does NOT itself re-bake height or trigger the owning actor's
+	 * regenerate - regenerate the planet afterward to see the result, the same as changing any other
+	 * layer property.
 	 */
 	void AdvanceTectonicSimulation(int32 NumSteps, float DeltaMyr);
 
@@ -1167,64 +1177,4 @@ private:
 
 	float GetRawHeightRadialSeeds(const FVector& UnitDirection) const;
 	float GetRawHeightFromBakedGrid(const FVector& UnitDirection) const;
-};
-
-// ================================================================================================
-// USolarOrbzSimulationTimestepLayer / USolarOrbzRunTectonicSimulationLayer - control-only nodes for
-// the Terrain Graph Editor (see Docs/SolarOrbzTerrainGraphEditor.md), neither a height contributor
-// (IsControlOnly() returns true for both, so USolarOrbzTerrainLayerStack::EvaluateHeightUpTo skips
-// them entirely regardless of their own BlendMode/Strength/Mask). A Timestep node defines "how much
-// simulated time is one step" ONCE; every simulation-trigger node below it in the same stack's
-// Layers array (today just Run Tectonic Simulation, but the pattern is meant to extend to future
-// simulation types) shares that same value rather than each owning its own private copy - requested
-// directly, to integrate the timestep into the simulation nodes instead of duplicating it per node.
-// ================================================================================================
-
-UCLASS(EditInlineNew, meta = (DisplayName = "Simulation Timestep"))
-class SOLARORBZ_API USolarOrbzSimulationTimestepLayer : public USolarOrbzTerrainLayer
-{
-	GENERATED_BODY()
-
-public:
-	/** Simulated time one step advances, in million years - read by every simulation-trigger node (e.g. Run Tectonic Simulation) positioned after this node in the same stack, via the nearest-preceding-node search each one already does for its own target layer. */
-	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Simulation", meta = (ClampMin = "0.01", Units = "My"))
-	float MillionYearsPerStep = 5.0f;
-
-	//~ Begin USolarOrbzTerrainLayer interface
-	virtual bool IsControlOnly() const override { return true; }
-	//~ End USolarOrbzTerrainLayer interface
-};
-
-/**
- * Drop anywhere after a Continent Layer running the Plate Tectonics algorithm AND a Simulation
- * Timestep node in the same stack; its "Run Simulation" button advances that Continent Layer's
- * plates forward in simulated time (see USolarOrbzContinentTerrainLayer::AdvanceTectonicSimulation)
- * - rerolls each plate's position along its fixed drift path, accumulates boundary stress, and
- * reclassifies/splits plates from the result. Requested directly: "allow simulating N steps... add a
- * 'Run Simulation' node to the terrain graph," later integrated with a shared Simulation Timestep
- * node rather than owning its own million-years-per-step.
- */
-UCLASS(EditInlineNew, meta = (DisplayName = "Run Tectonic Simulation"))
-class SOLARORBZ_API USolarOrbzRunTectonicSimulationLayer : public USolarOrbzTerrainLayer
-{
-	GENERATED_BODY()
-
-public:
-	/** How many simulation steps "Run Simulation" advances per click - each one MillionYearsPerStep long, read from the nearest Simulation Timestep node before this one in the stack. */
-	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Tectonics Simulation", meta = (ClampMin = "1", ClampMax = "1000"))
-	int32 StepsPerRun = 10;
-
-	/**
-	 * Advances the nearest Plate Tectonics Continent Layer at or before this node's own position in
-	 * the same stack's Layers array by StepsPerRun steps, each as long as the nearest preceding
-	 * Simulation Timestep node's MillionYearsPerStep. Logs a warning and does nothing if either isn't
-	 * found earlier in the stack. Does not itself trigger a regenerate - regenerate the planet
-	 * afterward to see the result, same as any other layer edit.
-	 */
-	UFUNCTION(CallInEditor, Category = "SolarOrbz|Tectonics Simulation")
-	void RunSimulation();
-
-	//~ Begin USolarOrbzTerrainLayer interface
-	virtual bool IsControlOnly() const override { return true; }
-	//~ End USolarOrbzTerrainLayer interface
 };
