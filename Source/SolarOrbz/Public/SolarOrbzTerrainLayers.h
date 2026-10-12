@@ -79,6 +79,14 @@ public:
 	virtual bool RequiresWholeSurfaceBake() const { return false; }
 
 	/**
+	 * True for layers that exist purely as an editor control (e.g. USolarOrbzRunTectonicSimulationLayer's
+	 * "Run Simulation" button) and contribute no height at all - USolarOrbzTerrainLayerStack::
+	 * EvaluateHeightUpTo skips a layer like this entirely, as if it weren't in the stack, regardless of
+	 * its own BlendMode/Strength/Mask. False (the default) for every real height-contributing layer.
+	 */
+	virtual bool IsControlOnly() const { return false; }
+
+	/**
 	 * Called once per regenerate, before GetRawHeight is ever called for this layer, only when
 	 * RequiresWholeSurfaceBake() returns true. PriorLayersHeight evaluates every layer below this
 	 * one in the stack (not including this layer) at an arbitrary point - i.e. exactly the terrain
@@ -749,6 +757,50 @@ struct SOLARORBZ_API FSolarOrbzContinentSeedData
 	FVector NoiseOffset = FVector::ZeroVector; // decorrelates this seed's coastline wiggle from every other seed's
 };
 
+/**
+ * Persistent per-plate state for ESolarOrbzContinentAlgorithm::PlateTectonics, carried forward across
+ * every Bake() once seeded (see USolarOrbzContinentTerrainLayer::EnsurePlatesInitialized) rather than
+ * rerandomized from Seed every regenerate the way this layer originally worked - that's what lets
+ * USolarOrbzRunTectonicSimulationLayer's "Run Simulation" actually accumulate movement over time.
+ * Models each plate as drifting along a fixed great-circle path at a constant angular rate - a
+ * deliberate simplification: no plate splitting/merging, no accumulated boundary stress, RotationAxis/
+ * AngularRateRadPerMyr are rolled once at seed time and never changed by simulation itself.
+ */
+USTRUCT()
+struct SOLARORBZ_API FSolarOrbzTectonicPlate
+{
+	GENERATED_BODY()
+
+	/** Current position - the point this plate's nearest-seed/Worley partition grows from. Moves every AdvanceTectonicSimulation() step; a never-simulated plate just sits at its original random seed point. */
+	UPROPERTY()
+	FVector SeedDirection = FVector::UpVector;
+
+	/** Fixed unit vector - the pole SeedDirection orbits around. Unlike SeedDirection, never changes once rolled at seed time. */
+	UPROPERTY()
+	FVector RotationAxis = FVector::UpVector;
+
+	/** How fast SeedDirection orbits RotationAxis, radians of simulated time per million years. */
+	UPROPERTY()
+	float AngularRateRadPerMyr = 0.0f;
+
+	UPROPERTY()
+	bool bOceanic = false;
+
+	/** Simulated million years since this plate was seeded - every plate starts at 0 and ages together today (no splitting), kept per-plate since a future split/merge would need it. */
+	UPROPERTY()
+	float AgeMyr = 0.0f;
+
+	/**
+	 * Instantaneous tangent-plane drift velocity at the CURRENT SeedDirection (v = RotationAxis x
+	 * SeedDirection * AngularRate) - the real-time replacement for the old static "PlateDrift" vector
+	 * BakePlateTectonics used to classify a boundary as convergent/divergent/transform.
+	 */
+	FVector GetInstantaneousDrift() const
+	{
+		return FVector::CrossProduct(RotationAxis, SeedDirection) * AngularRateRadPerMyr;
+	}
+};
+
 UCLASS(EditInlineNew, meta = (DisplayName = "Continent Layer"))
 class SOLARORBZ_API USolarOrbzContinentTerrainLayer : public USolarOrbzTerrainLayer
 {
@@ -885,6 +937,14 @@ public:
 	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Continent|Plates", meta = (ClampMax = "0.0", Units = "m", EditCondition = "Algorithm == ESolarOrbzContinentAlgorithm::PlateTectonics"))
 	float RiftDepthMeters = -500.0f;
 
+	/** Plate Tectonics only. Drift speed each plate rolls a random fraction of when first seeded (or reseeded by changing Seed/Num Plates) - only affects freshly-seeded plates; has no effect on a layout a Run Tectonic Simulation node has already moved. */
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Continent|Plates", meta = (ClampMin = "0.0", ClampMax = "20.0", Units = "deg", EditCondition = "Algorithm == ESolarOrbzContinentAlgorithm::PlateTectonics"))
+	float InitialDriftSpeedDegreesPerMyr = 2.0f;
+
+	/** Plate Tectonics only, read-only. Total simulated time (million years) this layer's plates have drifted via a Run Tectonic Simulation node since they were last (re)seeded - 0 until the first simulation step ever runs. */
+	UPROPERTY(VisibleAnywhere, Category = "SolarOrbz|Continent|Plates", meta = (EditCondition = "Algorithm == ESolarOrbzContinentAlgorithm::PlateTectonics"))
+	float SimulatedAgeMyr = 0.0f;
+
 	// --- Coastline texture (shared by all three algorithms) ---
 
 	/** Radial Seeds: how much each landmass's coastline wiggles away from a perfect circle, as a fraction of that landmass's own radius - 0 = perfect circles (before the warp/sub-seeds above still break that up). Voronoi Growth/Plate Tectonics: a smaller cosmetic wobble layered on top of their own grid-driven coastlines. */
@@ -931,7 +991,38 @@ public:
 	virtual float GetRawHeight(const FVector& UnitDirection, const FVector2D& UV) const override;
 	//~ End USolarOrbzTerrainLayer interface
 
+	/**
+	 * Plate Tectonics only. Advances every plate NumSteps times by DeltaMyr each, moving SeedDirection
+	 * along its fixed RotationAxis and reclassifying boundaries from the plates' new relative
+	 * positions/drift - called by USolarOrbzRunTectonicSimulationLayer's "Run Simulation" button.
+	 * (Re)seeds Plates first if this is the first call since this layer was created or Seed/Num Plates
+	 * last changed. No-op (with a log warning) if Algorithm isn't PlateTectonics. Does NOT itself
+	 * re-bake height or trigger the owning actor's regenerate - regenerate the planet afterward to see
+	 * the result, the same as changing any other layer property.
+	 */
+	void AdvanceTectonicSimulation(int32 NumSteps, float DeltaMyr);
+
 private:
+	/**
+	 * (Re)seeds Plates from FRandomStream(Seed) if this is the first call ever (bPlatesEverSeeded is
+	 * false), Seed changed since Plates was last seeded, or Num Plates changed - otherwise leaves
+	 * Plates (and anything AdvanceTectonicSimulation has already done to it) untouched. Called by both
+	 * BakePlateTectonics() and AdvanceTectonicSimulation().
+	 */
+	void EnsurePlatesInitialized();
+
+	/** See FSolarOrbzTectonicPlate. Empty under the other two algorithms. */
+	UPROPERTY()
+	TArray<FSolarOrbzTectonicPlate> Plates;
+
+	/** Seed value Plates was last (re)seeded from - compared against Seed each EnsurePlatesInitialized() call to detect "the user changed Seed, reroll from scratch," the same way every other algorithm already does. */
+	UPROPERTY()
+	int32 PlatesSeededFrom = 0;
+
+	/** True once Plates has been seeded at least once - lets EnsurePlatesInitialized() tell "never seeded yet" apart from "legitimately reseeded at Seed == 0" without a magic sentinel on PlatesSeededFrom. */
+	UPROPERTY()
+	bool bPlatesEverSeeded = false;
+
 	/** Set by ApplyPlanetaryContext() each regenerate - null if no Profile was assigned, it wasn't a Planet Profile, ApplyPlanetaryContext() was never called, or bOverrideFromProfile is false. Bake() reads Num Continents/etc through this when valid, falling back to this layer's own authored properties otherwise. Weak, not a hard reference - a Profile's lifetime isn't tied to this layer's. */
 	TWeakObjectPtr<const USolarOrbzPlanetProfile> ProfileOverride;
 
@@ -952,4 +1043,43 @@ private:
 
 	float GetRawHeightRadialSeeds(const FVector& UnitDirection) const;
 	float GetRawHeightFromBakedGrid(const FVector& UnitDirection) const;
+};
+
+// ================================================================================================
+// USolarOrbzRunTectonicSimulationLayer - a control-only node for the Terrain Graph Editor (see
+// Docs/SolarOrbzTerrainGraphEditor.md), not a height contributor (IsControlOnly() returns true, so
+// USolarOrbzTerrainLayerStack::EvaluateHeightUpTo skips it entirely regardless of its own BlendMode/
+// Strength/Mask). Drop it anywhere after a Continent Layer running the Plate Tectonics algorithm in
+// the same stack; its "Run Simulation" button advances that Continent Layer's plates forward in
+// simulated time (see USolarOrbzContinentTerrainLayer::AdvanceTectonicSimulation) - rerolls each
+// plate's position along its fixed drift path and reclassifies plate boundaries from the result.
+// Requested directly: "allow simulating N steps... add a 'Run Simulation' node to the terrain graph."
+// ================================================================================================
+
+UCLASS(EditInlineNew, meta = (DisplayName = "Run Tectonic Simulation"))
+class SOLARORBZ_API USolarOrbzRunTectonicSimulationLayer : public USolarOrbzTerrainLayer
+{
+	GENERATED_BODY()
+
+public:
+	/** How many simulation steps "Run Simulation" advances per click. */
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Tectonics Simulation", meta = (ClampMin = "1", ClampMax = "1000"))
+	int32 StepsPerRun = 10;
+
+	/** Simulated time each step advances, in million years. */
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Tectonics Simulation", meta = (ClampMin = "0.01", Units = "My"))
+	float MillionYearsPerStep = 5.0f;
+
+	/**
+	 * Advances the nearest Plate Tectonics Continent Layer at or before this node's own position in
+	 * the same stack's Layers array by StepsPerRun steps of MillionYearsPerStep each. Logs a warning
+	 * and does nothing if no such layer is found earlier in the stack. Does not itself trigger a
+	 * regenerate - regenerate the planet afterward to see the result, same as any other layer edit.
+	 */
+	UFUNCTION(CallInEditor, Category = "SolarOrbz|Tectonics Simulation")
+	void RunSimulation();
+
+	//~ Begin USolarOrbzTerrainLayer interface
+	virtual bool IsControlOnly() const override { return true; }
+	//~ End USolarOrbzTerrainLayer interface
 };

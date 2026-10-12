@@ -120,7 +120,7 @@ float USolarOrbzTerrainLayerStack::EvaluateHeightUpTo(int32 EndIndexExclusive, c
 	for (int32 i = 0; i < Count; ++i)
 	{
 		const TObjectPtr<USolarOrbzTerrainLayer>& Layer = Layers[i];
-		if (!Layer || !Layer->bEnabled)
+		if (!Layer || !Layer->bEnabled || Layer->IsControlOnly())
 		{
 			continue;
 		}
@@ -1424,26 +1424,15 @@ void USolarOrbzContinentTerrainLayer::BakePlateTectonics(bool bEffectiveNorthPol
 	CellDirections.SetNumUninitialized(NumCells);
 	Grid.ForEachCell([&](int32 Idx, const FVector& Dir, const FVector2D& UV) { CellDirections[Idx] = Dir; });
 
-	FRandomStream Stream(Seed);
-
-	// Each plate: a random seed direction (for the nearest-seed/Worley partition below), a random
-	// "drift" direction (magnitude is never used - only two plates' drift directions RELATIVE to
-	// each other classify their shared boundary, below), and oceanic-vs-continental. This is the
-	// approximate (NOT a physics simulation) model "Procedural Tectonic Planets" (Cortial, Peytavie,
-	// Galin & Guerin, CGF 38:2, 2019) describes - see the class comment above.
-	const int32 PlateCount = FMath::Max(NumPlates, 2);
-	TArray<FVector> PlateSeedDirection;
-	TArray<FVector> PlateDrift;
-	TArray<bool> PlateOceanic;
-	PlateSeedDirection.SetNumUninitialized(PlateCount);
-	PlateDrift.SetNumUninitialized(PlateCount);
-	PlateOceanic.SetNumUninitialized(PlateCount);
-	for (int32 P = 0; P < PlateCount; ++P)
-	{
-		PlateSeedDirection[P] = RandomPointOnUnitSphere(Stream);
-		PlateDrift[P] = RandomPointOnUnitSphere(Stream); // an independent random unit vector reused purely as a direction, not a position
-		PlateOceanic[P] = Stream.FRand() < OceanicPlateFraction;
-	}
+	// Plates persist across bakes (see EnsurePlatesInitialized/AdvanceTectonicSimulation) rather than
+	// being rerandomized from Seed every regenerate the way this used to work - that's what lets a
+	// Run Tectonic Simulation node's moves actually accumulate instead of being thrown away the next
+	// time this layer bakes. This is still the approximate (NOT a physics simulation) model
+	// "Procedural Tectonic Planets" (Cortial, Peytavie, Galin & Guerin, CGF 38:2, 2019) describes -
+	// see the class comment above - now with each plate's drift genuinely moving it over simulated
+	// time instead of a fixed drift direction used only to classify boundaries once.
+	EnsurePlatesInitialized();
+	const int32 PlateCount = Plates.Num();
 
 	// Nearest-seed (Worley) plate assignment, one brute-force scan over PlateCount per cell -
 	// trivially cheap even at NumPlates' max (64) against a few hundred thousand cells, since this
@@ -1456,7 +1445,7 @@ void USolarOrbzContinentTerrainLayer::BakePlateTectonics(bool bEffectiveNorthPol
 		float BestDot = -2.0f;
 		for (int32 P = 0; P < PlateCount; ++P)
 		{
-			const float Dot = FVector::DotProduct(CellDirections[Idx], PlateSeedDirection[P]);
+			const float Dot = FVector::DotProduct(CellDirections[Idx], Plates[P].SeedDirection);
 			if (Dot > BestDot)
 			{
 				BestDot = Dot;
@@ -1492,8 +1481,8 @@ void USolarOrbzContinentTerrainLayer::BakePlateTectonics(bool bEffectiveNorthPol
 		ApplyPolarOverride(FVector(0.0f, 0.0f, -1.0f));
 	}
 
-	auto IsOceanic = [&PlateOceanic](int32 Plate) { return Plate >= 0 && PlateOceanic[Plate]; };
-	auto IsContinental = [&PlateOceanic](int32 Plate) { return Plate == PolarContinentalSentinel || (Plate >= 0 && !PlateOceanic[Plate]); };
+	auto IsOceanic = [this](int32 Plate) { return Plate >= 0 && Plates[Plate].bOceanic; };
+	auto IsContinental = [this](int32 Plate) { return Plate == PolarContinentalSentinel || (Plate >= 0 && !Plates[Plate].bOceanic); };
 
 	// Multi-source BFS from every plate-boundary cell (any cell with a 4-connected neighbor on a
 	// different plate), carrying forward that boundary's classified height modifier - this is what
@@ -1530,11 +1519,11 @@ void USolarOrbzContinentTerrainLayer::BakePlateTectonics(bool bEffectiveNorthPol
 			// between their seeds - a cheap proxy for "are they closing (convergent), opening
 			// (divergent), or sliding past (transform) each other," in the same approximate spirit
 			// the class comment's paper reference uses (no actual physics simulation).
-			const FVector SeedDirA = (PlateA >= 0) ? PlateSeedDirection[PlateA] : CellDirections[Idx];
-			const FVector SeedDirB = (PlateB >= 0) ? PlateSeedDirection[PlateB] : CellDirections[NeighborIdx];
+			const FVector SeedDirA = (PlateA >= 0) ? Plates[PlateA].SeedDirection : CellDirections[Idx];
+			const FVector SeedDirB = (PlateB >= 0) ? Plates[PlateB].SeedDirection : CellDirections[NeighborIdx];
 			const FVector BoundaryAxis = (SeedDirB - SeedDirA).GetSafeNormal();
-			const FVector DriftA = (PlateA >= 0) ? PlateDrift[PlateA] : FVector::ZeroVector; // the polar sentinel is treated as stationary
-			const FVector DriftB = (PlateB >= 0) ? PlateDrift[PlateB] : FVector::ZeroVector;
+			const FVector DriftA = (PlateA >= 0) ? Plates[PlateA].GetInstantaneousDrift() : FVector::ZeroVector; // the polar sentinel is treated as stationary
+			const FVector DriftB = (PlateB >= 0) ? Plates[PlateB].GetInstantaneousDrift() : FVector::ZeroVector;
 			const float Closure = FVector::DotProduct(DriftA, BoundaryAxis) - FVector::DotProduct(DriftB, BoundaryAxis);
 
 			constexpr float TransformThreshold = 0.25f;
@@ -1619,6 +1608,62 @@ void USolarOrbzContinentTerrainLayer::BakePlateTectonics(bool bEffectiveNorthPol
 	}
 }
 
+void USolarOrbzContinentTerrainLayer::EnsurePlatesInitialized()
+{
+	const int32 PlateCount = FMath::Max(NumPlates, 2);
+	if (bPlatesEverSeeded && PlatesSeededFrom == Seed && Plates.Num() == PlateCount)
+	{
+		return;
+	}
+
+	using namespace SolarOrbzContinent;
+
+	FRandomStream Stream(Seed);
+	Plates.SetNum(PlateCount);
+	for (int32 P = 0; P < PlateCount; ++P)
+	{
+		FSolarOrbzTectonicPlate& Plate = Plates[P];
+		Plate.SeedDirection = RandomPointOnUnitSphere(Stream);
+		Plate.RotationAxis = RandomPointOnUnitSphere(Stream);
+		Plate.AngularRateRadPerMyr = FMath::DegreesToRadians(Stream.FRandRange(0.1f, 1.0f) * InitialDriftSpeedDegreesPerMyr);
+		Plate.bOceanic = Stream.FRand() < OceanicPlateFraction;
+		Plate.AgeMyr = 0.0f;
+	}
+
+	PlatesSeededFrom = Seed;
+	bPlatesEverSeeded = true;
+	SimulatedAgeMyr = 0.0f;
+}
+
+void USolarOrbzContinentTerrainLayer::AdvanceTectonicSimulation(int32 NumSteps, float DeltaMyr)
+{
+	if (Algorithm != ESolarOrbzContinentAlgorithm::PlateTectonics)
+	{
+		UE_LOG(LogSolarOrbzContinent, Warning, TEXT("SolarOrbz Continent: AdvanceTectonicSimulation ignored - Algorithm is not Plate Tectonics."));
+		return;
+	}
+
+	EnsurePlatesInitialized();
+
+	NumSteps = FMath::Max(NumSteps, 0);
+	DeltaMyr = FMath::Max(DeltaMyr, 0.0f);
+
+	for (int32 Step = 0; Step < NumSteps; ++Step)
+	{
+		for (FSolarOrbzTectonicPlate& Plate : Plates)
+		{
+			const FQuat Rotation(Plate.RotationAxis, Plate.AngularRateRadPerMyr * DeltaMyr);
+			Plate.SeedDirection = Rotation.RotateVector(Plate.SeedDirection).GetSafeNormal();
+			Plate.AgeMyr += DeltaMyr;
+		}
+		SimulatedAgeMyr += DeltaMyr;
+	}
+
+	UE_LOG(LogSolarOrbzContinent, Log,
+		TEXT("SolarOrbz Continent: advanced tectonic simulation by %d step(s) of %.2f Myr each - now at %.2f Myr simulated. Regenerate the planet to see the result."),
+		NumSteps, DeltaMyr, SimulatedAgeMyr);
+}
+
 float USolarOrbzContinentTerrainLayer::GetRawHeight(const FVector& UnitDirection, const FVector2D& UV) const
 {
 	switch (Algorithm)
@@ -1692,4 +1737,35 @@ float USolarOrbzContinentTerrainLayer::GetRawHeightFromBakedGrid(const FVector& 
 	// Level offset baked in, exactly like CachedSeeds' RadialSeeds path - Sea Level is added once,
 	// here, at sample time, so moving Sea Level later never requires re-baking the grid.
 	return FSolarOrbzLatLongGrid(BakedGridWidth, BakedGridHeight).SampleBilinear(BakedHeightCm, UnitDirection) + CachedSeaLevelCm;
+}
+
+void USolarOrbzRunTectonicSimulationLayer::RunSimulation()
+{
+	const USolarOrbzTerrainLayerStack* Stack = GetTypedOuter<USolarOrbzTerrainLayerStack>();
+	if (!Stack)
+	{
+		UE_LOG(LogSolarOrbzContinent, Warning, TEXT("SolarOrbz Run Tectonic Simulation: couldn't find an owning Terrain Layer Stack."));
+		return;
+	}
+
+	const int32 OwnIndex = Stack->Layers.IndexOfByKey(this);
+	USolarOrbzContinentTerrainLayer* TargetLayer = nullptr;
+	for (int32 i = OwnIndex - 1; i >= 0; --i)
+	{
+		USolarOrbzContinentTerrainLayer* Candidate = Cast<USolarOrbzContinentTerrainLayer>(Stack->Layers[i]);
+		if (Candidate && Candidate->Algorithm == ESolarOrbzContinentAlgorithm::PlateTectonics)
+		{
+			TargetLayer = Candidate;
+			break;
+		}
+	}
+
+	if (!TargetLayer)
+	{
+		UE_LOG(LogSolarOrbzContinent, Warning, TEXT("SolarOrbz Run Tectonic Simulation: no Plate Tectonics Continent Layer found earlier in this stack - nothing to simulate."));
+		return;
+	}
+
+	TargetLayer->Modify();
+	TargetLayer->AdvanceTectonicSimulation(StepsPerRun, MillionYearsPerStep);
 }

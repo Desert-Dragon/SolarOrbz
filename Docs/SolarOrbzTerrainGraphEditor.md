@@ -159,6 +159,46 @@ not been run in-editor, per the review-only bar noted above.
     chain simply breaks there, same as an in-progress reconnect, until a new connection bridges the
     gap (or the delete is undone).
 
+### Control-only nodes - a node that isn't a height contributor
+
+Requested directly: a "Run Simulation" node for driving the Continent Layer's Plate Tectonics
+algorithm forward in simulated time (see `Docs/ChunkedPlanetTerrain.md`'s sibling systems and
+`USolarOrbzContinentTerrainLayer::AdvanceTectonicSimulation` for the simulation itself) - exposed as
+a node in this same graph rather than a new UI surface. **Zero new graph/schema/toolkit code was
+needed for this** - it's just a new `USolarOrbzTerrainLayer` subclass
+(`USolarOrbzRunTectonicSimulationLayer`), so the existing reflection-driven "Add Layer" combo button
+(Phase 2, `GetDerivedClasses`) already lists it, the existing node-wraps-a-real-UObject pattern
+(Phase 1) already gives it a `USolarOrbzTerrainGraphNode`, and its `CallInEditor` `RunSimulation()`
+UFUNCTION already renders as a button in the Details panel that selecting a node already wires up to
+(Phase 2) - the same zero-new-UI-code promise `USolarOrbzBiome`'s `Materials[]` arrays got when the
+Details panel already knew how to edit them.
+
+The one real gap this exposed: every existing layer type contributes height, so nothing previously
+stopped a layer whose `GetRawHeight` returns 0 from still corrupting the stack if misconfigured
+(placed first in the chain, where it'd become an implicit Replace-to-zero; or if its own `BlendMode`
+were set to `Replace`). Rather than rely on authors never making that mistake,
+`USolarOrbzTerrainLayer` grew one new virtual hook, `IsControlOnly()` (false by default, every real
+layer type unaffected), and `USolarOrbzTerrainLayerStack::EvaluateHeightUpTo` now skips a layer this
+returns true for entirely - as if it weren't in `Layers` at all, regardless of its own
+`BlendMode`/`Strength`/`Mask`. `USolarOrbzRunTectonicSimulationLayer` overrides it to `true`; this is
+now the documented way any future control-only node (not just this one) should behave.
+
+`RunSimulation()` has no explicit "which Continent Layer" reference property to pick - it resolves
+its own owning `USolarOrbzTerrainLayerStack` via `GetTypedOuter()` (every layer's `Outer` is already
+the stack that owns it - see `AddLayerOfClass`'s `NewObject<USolarOrbzTerrainLayer>(EditingStack, ...)`
+call above), then walks backward from its own index in `Layers` for the nearest enabled Continent
+Layer running Plate Tectonics. This reads as "this control affects the Continent Layer below it in
+the chain" - the same stacking mental model as everything else in this editor - without needing a new
+object-picker widget for referencing a sibling instanced sub-object (which isn't a separate asset, so
+the standard content-browser-style object picker wouldn't resolve it). Logs a warning and does
+nothing if no such layer is found earlier in the stack, or if clicked twice with no Continent Layer
+present at all.
+
+`RunSimulation()` does not itself trigger the owning actor's regenerate - exactly like editing any
+other layer property through this same Details panel, seeing the result still requires the actor's
+own Regenerate control. Not a gap specific to this node; just how every other edit through this
+editor already works.
+
 ### Phase 3 - explicitly future, not v1
 
 - Branching/merge nodes, once there's an actual runtime semantic for combining independent chains

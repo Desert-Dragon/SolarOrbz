@@ -266,6 +266,51 @@ commitment or a schedule - just a place these don't get lost between sessions.
       per-point function with no grid, unchanged in kind from the original design.
     - Switching `Algorithm` re-rolls the whole layout, the same as changing `Seed` - no attempt at
       cross-algorithm layout compatibility.
+  - **Plate Tectonics gained actual simulation time.** Requested directly, inspired by a reference to
+    spherical-plate-simulation planet generation. **Done**, scoped as "simulate N steps, exposed as a
+    node in the Terrain Graph Editor" per the user's own suggested shape for it. Previously, every
+    single `Bake()` call rerandomized all `NumPlates` from `FRandomStream(Seed)` from scratch and
+    discarded them immediately after - "drift" was a random unit vector whose magnitude was never
+    used, good only for a one-shot classification of each boundary, with zero notion of time.
+    - New `FSolarOrbzTectonicPlate` (`SeedDirection`, `RotationAxis`, `AngularRateRadPerMyr`,
+      `bOceanic`, `AgeMyr`) now PERSISTS on `USolarOrbzContinentTerrainLayer` across every `Bake()`
+      (`Plates`, serialized) instead of being thrown away - each plate drifts along a fixed
+      great-circle path (`RotationAxis`) at a constant angular rate, a deliberate simplification (no
+      splitting/merging/accumulated stress). `EnsurePlatesInitialized()` lazily (re)seeds `Plates`
+      only when empty, or `Seed`/`NumPlates` changed since it was last seeded - otherwise leaves it
+      (and anything simulation has already done to it) untouched, so `Bake()` stays idempotent across
+      ordinary regenerates the way every other layer already is, while still letting movement
+      accumulate across them.
+    - `AdvanceTectonicSimulation(NumSteps, DeltaMyr)` rotates every plate's `SeedDirection` around its
+      `RotationAxis` by `AngularRateRadPerMyr * DeltaMyr` each step via `FQuat`, accumulating
+      `AgeMyr`/this layer's own `SimulatedAgeMyr`. `BakePlateTectonics` now reads the Worley
+      partition/boundary classification from `Plates` directly - boundary convergent/divergent/
+      transform classification uses each plate's `GetInstantaneousDrift()` (`RotationAxis x
+      SeedDirection * AngularRate`, the real current tangent-plane velocity at wherever the plate has
+      drifted to), replacing the old fixed, never-moving drift vector with one that's genuinely
+      correct after any number of simulation steps.
+    - New `USolarOrbzRunTectonicSimulationLayer` - a `CallInEditor` "Run Simulation" button
+      (`StepsPerRun`/`MillionYearsPerStep`) exposed as its own node in the Terrain Graph Editor,
+      directly per the user's own suggested shape for this feature ("maybe just add a 'Run
+      Simulation' node to the terrain graph"). Needed exactly zero new graph/schema/toolkit code -
+      it's just another `USolarOrbzTerrainLayer` subclass, so the existing reflection-driven "Add
+      Layer" menu, node-wraps-a-real-object pattern, and `CallInEditor`-renders-as-a-Details-button
+      behavior all already cover it. Resolves which Continent Layer to advance by walking backward
+      from its own position in the owning stack's `Layers` (via `GetTypedOuter<USolarOrbzTerrainLayerStack>()`)
+      for the nearest Plate-Tectonics Continent Layer - reads as "this control affects the Continent
+      Layer below it in the chain," the same stacking mental model as everything else in this editor,
+      with no new reference-picker widget needed for pointing at a sibling instanced sub-object.
+    - This exposed a real, previously-nonexistent gap: nothing stopped a 0-height "control" layer from
+      corrupting the stack if placed first (implicit Replace-to-zero) or set to `BlendMode::Replace`.
+      Fixed with a new `USolarOrbzTerrainLayer::IsControlOnly()` virtual (false by default, every real
+      layer type unaffected) that `USolarOrbzTerrainLayerStack::EvaluateHeightUpTo` now checks and
+      skips entirely, regardless of `BlendMode`/`Strength`/`Mask` - the documented way any future
+      control-only node should behave, not just this one.
+    - Scope choice, not an oversight: no accumulated per-boundary stress (a mountain doesn't grow
+      taller the longer two plates have been converging) and no plate splitting/merging - plates
+      genuinely move and boundaries genuinely reclassify as relative drift changes, but the
+      height-modifier magnitudes stay exactly what they were pre-simulation. A natural follow-up, not
+      built now to keep this pass scoped to "plates actually move."
 
 - **Erosion Rainfall Amount** is uniform across the planet by default, not yet driven by a Climate
   Simulation's actual computed moisture. Wiring the two together would let erosion carve more
