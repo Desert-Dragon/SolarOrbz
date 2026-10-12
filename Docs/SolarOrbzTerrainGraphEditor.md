@@ -231,6 +231,25 @@ surface needed.
   every split the user had just simulated. Fixed by tracking `PlatesSeededFromNumPlates` (the value at
   the time of last seeding) instead of comparing live counts.
 
+**Follow-up, requested directly ("integrate the timestep node into the simulation nodes"): a shared
+`USolarOrbzSimulationTimestepLayer` node.** Until this pass, `MillionYearsPerStep` lived directly on
+`USolarOrbzRunTectonicSimulationLayer` - harmless with exactly one simulation-trigger node type, but
+duplicated per trigger node the moment a second one existed (the pattern this plugin's simulation
+nodes are meant to extend to). Pulled it out into its own control-only node instead:
+
+- `USolarOrbzSimulationTimestepLayer` owns `MillionYearsPerStep` alone - another `IsControlOnly()`
+  node, same reflection-driven "Add Layer" discovery, same zero new graph/toolkit code every other
+  control-only node here already gets for free.
+- `USolarOrbzRunTectonicSimulationLayer::RunSimulation()` now does a SECOND backward walk from its
+  own index (the same pattern it already used to find its target Continent Layer) looking for the
+  nearest preceding `USolarOrbzSimulationTimestepLayer`, and reads `MillionYearsPerStep` from there
+  instead of a private copy. Logs a warning and does nothing if no Timestep node precedes it in the
+  chain - a simulation-trigger node with no declared timestep has nothing well-defined to run.
+- Reads as: place one Timestep node once near the top of a chain with multiple simulation-trigger
+  nodes below it, and every one of them advances in lockstep at the same simulated-time-per-step,
+  the same "shared context earlier in the chain" mental model `ApplyPlanetaryContext` already uses
+  for Profile/Sea Level.
+
 ### Phase 3 - explicitly future, not v1
 
 - Branching/merge nodes, once there's an actual runtime semantic for combining independent chains

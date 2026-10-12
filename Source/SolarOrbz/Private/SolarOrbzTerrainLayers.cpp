@@ -2012,6 +2012,22 @@ void USolarOrbzRunTectonicSimulationLayer::RunSimulation()
 		return;
 	}
 
+	const USolarOrbzSimulationTimestepLayer* TimestepNode = nullptr;
+	for (int32 i = OwnIndex - 1; i >= 0; --i)
+	{
+		if (const USolarOrbzSimulationTimestepLayer* Candidate = Cast<USolarOrbzSimulationTimestepLayer>(Stack->Layers[i]))
+		{
+			TimestepNode = Candidate;
+			break;
+		}
+	}
+
+	if (!TimestepNode)
+	{
+		UE_LOG(LogSolarOrbzContinent, Warning, TEXT("SolarOrbz Run Tectonic Simulation: no Simulation Timestep node found earlier in this stack - add one to set how much simulated time each step advances."));
+		return;
+	}
+
 	TargetLayer->Modify();
-	TargetLayer->AdvanceTectonicSimulation(StepsPerRun, MillionYearsPerStep);
+	TargetLayer->AdvanceTectonicSimulation(StepsPerRun, TimestepNode->MillionYearsPerStep);
 }

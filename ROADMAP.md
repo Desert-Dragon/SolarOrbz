@@ -356,6 +356,20 @@ commitment or a schedule - just a place these don't get lost between sessions.
         that accumulation persists even if their relative motion later changes) and per-cell stress
         isn't tracked (only per-PLATE-PAIR) - deliberate simplifications, not full geologic
         unloading/healing or a continuously-variable stress field.
+    - **Follow-up, requested directly ("integrate the timestep node into the simulation nodes"): a
+      shared `USolarOrbzSimulationTimestepLayer` node.** **Done.** `MillionYearsPerStep` used to live
+      directly on `USolarOrbzRunTectonicSimulationLayer` - harmless with exactly one simulation-
+      trigger node type, but duplicated per trigger node the moment a second one exists, which this
+      plugin's control-only-node pattern is meant to extend to. Pulled it into its own control-only
+      node (`USolarOrbzSimulationTimestepLayer`, same `IsControlOnly()` contract, same zero new
+      graph/toolkit code every control-only node here gets for free) instead.
+      `USolarOrbzRunTectonicSimulationLayer::RunSimulation()` now does a second backward walk from
+      its own index (the same pattern it already used to find its target Continent Layer) for the
+      nearest preceding Timestep node, reading `MillionYearsPerStep` from there rather than a private
+      copy - logs a warning and does nothing if none precedes it. Reads as: place one Timestep node
+      once near the top of a chain with multiple simulation-trigger nodes below it, and every one of
+      them advances in lockstep at the same simulated-time-per-step - the same "shared context
+      earlier in the chain" mental model `ApplyPlanetaryContext` already uses for Profile/Sea Level.
 
 - **Erosion Rainfall Amount** is uniform across the planet by default, not yet driven by a Climate
   Simulation's actual computed moisture. Wiring the two together would let erosion carve more

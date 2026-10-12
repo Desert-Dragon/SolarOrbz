@@ -1170,35 +1170,56 @@ private:
 };
 
 // ================================================================================================
-// USolarOrbzRunTectonicSimulationLayer - a control-only node for the Terrain Graph Editor (see
-// Docs/SolarOrbzTerrainGraphEditor.md), not a height contributor (IsControlOnly() returns true, so
-// USolarOrbzTerrainLayerStack::EvaluateHeightUpTo skips it entirely regardless of its own BlendMode/
-// Strength/Mask). Drop it anywhere after a Continent Layer running the Plate Tectonics algorithm in
-// the same stack; its "Run Simulation" button advances that Continent Layer's plates forward in
-// simulated time (see USolarOrbzContinentTerrainLayer::AdvanceTectonicSimulation) - rerolls each
-// plate's position along its fixed drift path and reclassifies plate boundaries from the result.
-// Requested directly: "allow simulating N steps... add a 'Run Simulation' node to the terrain graph."
+// USolarOrbzSimulationTimestepLayer / USolarOrbzRunTectonicSimulationLayer - control-only nodes for
+// the Terrain Graph Editor (see Docs/SolarOrbzTerrainGraphEditor.md), neither a height contributor
+// (IsControlOnly() returns true for both, so USolarOrbzTerrainLayerStack::EvaluateHeightUpTo skips
+// them entirely regardless of their own BlendMode/Strength/Mask). A Timestep node defines "how much
+// simulated time is one step" ONCE; every simulation-trigger node below it in the same stack's
+// Layers array (today just Run Tectonic Simulation, but the pattern is meant to extend to future
+// simulation types) shares that same value rather than each owning its own private copy - requested
+// directly, to integrate the timestep into the simulation nodes instead of duplicating it per node.
 // ================================================================================================
 
+UCLASS(EditInlineNew, meta = (DisplayName = "Simulation Timestep"))
+class SOLARORBZ_API USolarOrbzSimulationTimestepLayer : public USolarOrbzTerrainLayer
+{
+	GENERATED_BODY()
+
+public:
+	/** Simulated time one step advances, in million years - read by every simulation-trigger node (e.g. Run Tectonic Simulation) positioned after this node in the same stack, via the nearest-preceding-node search each one already does for its own target layer. */
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Simulation", meta = (ClampMin = "0.01", Units = "My"))
+	float MillionYearsPerStep = 5.0f;
+
+	//~ Begin USolarOrbzTerrainLayer interface
+	virtual bool IsControlOnly() const override { return true; }
+	//~ End USolarOrbzTerrainLayer interface
+};
+
+/**
+ * Drop anywhere after a Continent Layer running the Plate Tectonics algorithm AND a Simulation
+ * Timestep node in the same stack; its "Run Simulation" button advances that Continent Layer's
+ * plates forward in simulated time (see USolarOrbzContinentTerrainLayer::AdvanceTectonicSimulation)
+ * - rerolls each plate's position along its fixed drift path, accumulates boundary stress, and
+ * reclassifies/splits plates from the result. Requested directly: "allow simulating N steps... add a
+ * 'Run Simulation' node to the terrain graph," later integrated with a shared Simulation Timestep
+ * node rather than owning its own million-years-per-step.
+ */
 UCLASS(EditInlineNew, meta = (DisplayName = "Run Tectonic Simulation"))
 class SOLARORBZ_API USolarOrbzRunTectonicSimulationLayer : public USolarOrbzTerrainLayer
 {
 	GENERATED_BODY()
 
 public:
-	/** How many simulation steps "Run Simulation" advances per click. */
+	/** How many simulation steps "Run Simulation" advances per click - each one MillionYearsPerStep long, read from the nearest Simulation Timestep node before this one in the stack. */
 	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Tectonics Simulation", meta = (ClampMin = "1", ClampMax = "1000"))
 	int32 StepsPerRun = 10;
 
-	/** Simulated time each step advances, in million years. */
-	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Tectonics Simulation", meta = (ClampMin = "0.01", Units = "My"))
-	float MillionYearsPerStep = 5.0f;
-
 	/**
 	 * Advances the nearest Plate Tectonics Continent Layer at or before this node's own position in
-	 * the same stack's Layers array by StepsPerRun steps of MillionYearsPerStep each. Logs a warning
-	 * and does nothing if no such layer is found earlier in the stack. Does not itself trigger a
-	 * regenerate - regenerate the planet afterward to see the result, same as any other layer edit.
+	 * the same stack's Layers array by StepsPerRun steps, each as long as the nearest preceding
+	 * Simulation Timestep node's MillionYearsPerStep. Logs a warning and does nothing if either isn't
+	 * found earlier in the stack. Does not itself trigger a regenerate - regenerate the planet
+	 * afterward to see the result, same as any other layer edit.
 	 */
 	UFUNCTION(CallInEditor, Category = "SolarOrbz|Tectonics Simulation")
 	void RunSimulation();
