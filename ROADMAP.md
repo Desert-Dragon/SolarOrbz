@@ -456,6 +456,42 @@ commitment or a schedule - just a place these don't get lost between sessions.
     neither implemented here. Worth a follow-up pass if it shows up as a real bottleneck once the two
     bigger loops above are no longer the dominant cost.
 
+- **Live preview for edits made outside this actor - requested directly ("I'm tired of having to
+  press the regenerate button").** **Done**, for `ASolarOrbzIcoSphereActor` only (the chunked planet
+  actor remains explicitly deprioritized - see its own ROADMAP entries). `PostEditChangeProperty`/
+  `RegenTriggers` already auto-regenerated on edits to the actor's OWN properties (`RadiusMeters`,
+  `TerrainStack` itself being reassigned, etc.) - the real gap was editing something INSIDE one of
+  those referenced assets (a layer's `NumPlates` in the Terrain Graph Editor, a Biome's `Materials[]`,
+  Climate Simulation's `SeaLevel`, a Planet Profile's gravity) producing zero signal to the actor at
+  all, since none of `USolarOrbzTerrainLayerStack`/`USolarOrbzTerrainLayer`/`USolarOrbzBiomeStack`/
+  `USolarOrbzBiome`/`USolarOrbzClimateSimulationAsset`/`USolarOrbzCelestialBodyProfile` have any
+  "notify changed" hook of their own, and the Terrain Graph Editor's own `IDetailsView` has no
+  `FNotifyHook`/`OnFinishedChangingProperties` binding either - confirmed by grepping all of them
+  before writing any code.
+  - New `ASolarOrbzIcoSphereActor::HandleAnyObjectPropertyChanged`, bound (from `OnConstruction`, once
+    per instance via a `bRegisteredForLivePreview` guard) to `FCoreUObjectDelegates::OnObjectPropertyChanged`
+    - a global, editor-only delegate that fires after ANY UObject's `PostEditChangeProperty` runs,
+    anywhere in the editor. Unbound in a new `BeginDestroy()` override. This was the only available
+    hook, since nothing more targeted existed to subscribe to.
+  - `IsObjectRelevantToLivePreview` filters the (very noisy - this fires for every object edited
+    anywhere) global delegate down to edits that actually matter: the changed object's Outer chain
+    walked against `TerrainStack`, `BiomeStack` AND each Biome asset `BiomeStack->Layers` currently
+    references, `ClimateSimulation`, and `Profile`. Known, accepted gap: only one hop into
+    `BiomeStack`'s own references - a Composite Mask inside a referenced Biome pointing at a second,
+    different Biome asset won't be noticed if that second Biome is edited directly. Not full
+    transitive-reference tracking, which would need walking an unbounded asset graph (Composite Masks
+    can reference arbitrary other Biomes).
+  - `ScheduleDebouncedRegenerate` restarts a `FTimerHandle` for `LiveRegenerateDebounceSeconds`
+    (default 0.3s) via `GetWorldTimerManager()`, so a slider drag (one property-changed event per
+    frame) or a burst of edits pays for one regenerate after things settle, not one per edit - no
+    throttling existed anywhere in this actor before this (the existing direct-property path already
+    ran the full pipeline synchronously on every single edit, slider-drag included; left unchanged,
+    since those are cheap/already-tuned and this only adds the missing external-asset path).
+  - New `bLiveRegenerateInEditor` toggle (default true) turns the whole mechanism off for batching
+    several edits to an expensive stack before one manual Regenerate click. All of this - the toggle,
+    the debounce property, the listener, the timer - is `#if WITH_EDITOR`, so it's compiled out of
+    packaged builds entirely and can never fire at runtime, matching "editor only" directly.
+
 ## Climate / Biome
 
 - **Per-layer terrain masking.** **Done.** Any layer in the main `USolarOrbzTerrainLayerStack` can

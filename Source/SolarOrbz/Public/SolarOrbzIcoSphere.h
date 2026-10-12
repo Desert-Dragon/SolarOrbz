@@ -245,6 +245,32 @@ public:
 	UFUNCTION(CallInEditor, Category = "SolarOrbz|IcoSphere")
 	void RegenerateMesh();
 
+#if WITH_EDITOR
+	/**
+	 * Editor-only. When true, editing ANY property this actor's terrain actually depends on - not
+	 * just this actor's own fields above (already regenerate immediately via RegenTriggers below),
+	 * but also any layer inside the assigned Terrain Stack, Biome Stack and the Biome assets it
+	 * references, Climate Simulation, or Profile - automatically regenerates this preview a short
+	 * pause after the last edit. No more needing to click Regenerate after a tweak made in the
+	 * Terrain Graph Editor or on another asset's own Details panel. Purely an editor convenience -
+	 * the whole mechanism (a global FCoreUObjectDelegates::OnObjectPropertyChanged listener) is
+	 * compiled out of packaged builds via WITH_EDITOR, so it can never fire at runtime. Turn this off
+	 * if you're about to make several edits to an expensive stack and would rather batch them before
+	 * one manual Regenerate click.
+	 */
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Live Preview")
+	bool bLiveRegenerateInEditor = true;
+
+	/**
+	 * Editor-only. How long to wait, in seconds, after the last qualifying edit before actually
+	 * regenerating - restarted by every new qualifying edit, so a rapid run of edits (or a slider
+	 * drag, which fires one property-changed event per frame) pays for one regenerate after you stop,
+	 * not one per edit.
+	 */
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Live Preview", meta = (ClampMin = "0.0", ClampMax = "5.0", EditCondition = "bLiveRegenerateInEditor"))
+	float LiveRegenerateDebounceSeconds = 0.3f;
+#endif
+
 	/** Content-browser folder the baked asset is written to, e.g. "/Game/SolarOrbz/Meshes". */
 	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Bake")
 	FString BakePackagePath = TEXT("/Game/SolarOrbz/Meshes");
@@ -279,6 +305,7 @@ protected:
 	virtual void OnConstruction(const FTransform& Transform) override;
 #if WITH_EDITOR
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
+	virtual void BeginDestroy() override;
 #endif
 
 	UPROPERTY(VisibleAnywhere, Category = "SolarOrbz|IcoSphere")
@@ -321,5 +348,39 @@ private:
 	 * as any other asset-level (not actor-property) edit already does.
 	 */
 	bool TryApplyCosmeticOnlyChange(FName ChangedPropertyName);
+
+	/**
+	 * Bound to FCoreUObjectDelegates::OnObjectPropertyChanged (a global, editor-only delegate that
+	 * fires after ANY UObject's PostEditChangeProperty runs, anywhere in the editor) from
+	 * OnConstruction - the only way this actor can find out a property changed on an object it
+	 * doesn't own outright (a layer inside Terrain Stack, a Biome Stack entry's Biome asset, Climate
+	 * Simulation, Profile), since none of those classes have any "notify changed" hook of their own.
+	 * Ignores this actor's own properties (ModifiedObject == this) - those already go through
+	 * PostEditChangeProperty/RegenTriggers above, immediately and not debounced; this only ever
+	 * schedules a DEBOUNCED regenerate for everything else.
+	 */
+	void HandleAnyObjectPropertyChanged(UObject* ModifiedObject, FPropertyChangedEvent& PropertyChangedEvent);
+
+	/**
+	 * True if Object is (or is nested inside, via its Outer chain) TerrainStack, BiomeStack, any
+	 * Biome asset BiomeStack's Layers currently reference, ClimateSimulation, or Profile - i.e. "this
+	 * is something regenerating this preview should actually react to," not just any object anywhere
+	 * being edited. Known gap, not fixed here: doesn't walk further than one hop into cross-asset
+	 * references (e.g. a Composite Mask inside one referenced Biome pointing at a second, different
+	 * Biome asset) - editing that second Biome directly won't be noticed. A deliberate simplification,
+	 * not exhaustive transitive-reference tracking.
+	 */
+	bool IsObjectRelevantToLivePreview(const UObject* Object) const;
+
+	/**
+	 * (Re)starts LiveRegenerateTimerHandle for LiveRegenerateDebounceSeconds from now, calling
+	 * RegenerateMesh() once it fires - repeated calls before it fires just push the fire time back
+	 * out, which is what actually debounces a run of edits into one regenerate. Regenerates
+	 * immediately instead if this actor has no World to own a timer (e.g. an asset-preview context).
+	 */
+	void ScheduleDebouncedRegenerate();
+
+	bool bRegisteredForLivePreview = false;
+	FTimerHandle LiveRegenerateTimerHandle;
 #endif
 };

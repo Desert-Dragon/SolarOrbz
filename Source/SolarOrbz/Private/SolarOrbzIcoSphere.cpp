@@ -21,6 +21,8 @@
 #include "Misc/PackageName.h"
 #include "Async/ParallelFor.h"
 #include "HAL/ThreadSafeCounter.h"
+#include "TimerManager.h"
+#include "UObject/UObjectGlobals.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogSolarOrbz, Log, All);
 
@@ -541,6 +543,15 @@ float ASolarOrbzIcoSphereActor::GetResolvedSurfaceGravity() const
 void ASolarOrbzIcoSphereActor::OnConstruction(const FTransform& Transform)
 {
 	Super::OnConstruction(Transform);
+
+#if WITH_EDITOR
+	if (!bRegisteredForLivePreview)
+	{
+		bRegisteredForLivePreview = true;
+		FCoreUObjectDelegates::OnObjectPropertyChanged.AddUObject(this, &ASolarOrbzIcoSphereActor::HandleAnyObjectPropertyChanged);
+	}
+#endif
+
 	RegenerateMesh();
 }
 
@@ -603,6 +614,85 @@ void ASolarOrbzIcoSphereActor::PostEditChangeProperty(FPropertyChangedEvent& Pro
 	if (RegenTriggers.Contains(ChangedPropertyName))
 	{
 		RegenerateMesh();
+	}
+}
+
+void ASolarOrbzIcoSphereActor::BeginDestroy()
+{
+	FCoreUObjectDelegates::OnObjectPropertyChanged.RemoveAll(this);
+	Super::BeginDestroy();
+}
+
+void ASolarOrbzIcoSphereActor::HandleAnyObjectPropertyChanged(UObject* ModifiedObject, FPropertyChangedEvent& PropertyChangedEvent)
+{
+	if (!bLiveRegenerateInEditor || !ModifiedObject || ModifiedObject == this)
+	{
+		return; // this actor's own properties already regenerate immediately via PostEditChangeProperty/RegenTriggers above
+	}
+
+	if (!IsObjectRelevantToLivePreview(ModifiedObject))
+	{
+		return;
+	}
+
+	ScheduleDebouncedRegenerate();
+}
+
+bool ASolarOrbzIcoSphereActor::IsObjectRelevantToLivePreview(const UObject* Object) const
+{
+	if (!Object)
+	{
+		return false;
+	}
+
+	TArray<const UObject*, TInlineAllocator<16>> Roots;
+	if (TerrainStack)
+	{
+		Roots.Add(TerrainStack);
+	}
+	if (BiomeStack)
+	{
+		Roots.Add(BiomeStack);
+		for (const FSolarOrbzBiomeLayerEntry& Entry : BiomeStack->Layers)
+		{
+			if (Entry.Biome)
+			{
+				Roots.Add(Entry.Biome);
+			}
+		}
+	}
+	if (ClimateSimulation)
+	{
+		Roots.Add(ClimateSimulation);
+	}
+	if (Profile)
+	{
+		Roots.Add(Profile);
+	}
+
+	for (const UObject* Root : Roots)
+	{
+		for (const UObject* Walk = Object; Walk; Walk = Walk->GetOuter())
+		{
+			if (Walk == Root)
+			{
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
+void ASolarOrbzIcoSphereActor::ScheduleDebouncedRegenerate()
+{
+	if (UWorld* World = GetWorld())
+	{
+		World->GetTimerManager().SetTimer(LiveRegenerateTimerHandle, this, &ASolarOrbzIcoSphereActor::RegenerateMesh,
+			FMath::Max(LiveRegenerateDebounceSeconds, 0.0f), /*bLoop=*/false);
+	}
+	else
+	{
+		RegenerateMesh(); // no World to own a timer (e.g. an asset-preview context) - regenerate immediately rather than silently doing nothing
 	}
 }
 #endif
