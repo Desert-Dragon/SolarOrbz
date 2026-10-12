@@ -306,11 +306,56 @@ commitment or a schedule - just a place these don't get lost between sessions.
       layer type unaffected) that `USolarOrbzTerrainLayerStack::EvaluateHeightUpTo` now checks and
       skips entirely, regardless of `BlendMode`/`Strength`/`Mask` - the documented way any future
       control-only node should behave, not just this one.
-    - Scope choice, not an oversight: no accumulated per-boundary stress (a mountain doesn't grow
-      taller the longer two plates have been converging) and no plate splitting/merging - plates
-      genuinely move and boundaries genuinely reclassify as relative drift changes, but the
-      height-modifier magnitudes stay exactly what they were pre-simulation. A natural follow-up, not
-      built now to keep this pass scoped to "plates actually move."
+    - **Follow-up, requested directly ("add in mountain and plate splitting, I want a fully in depth
+      simulation"): mountain-building stress and plate splitting.** **Done.** The scope cut above
+      (no accumulated stress, no splitting) was explicitly called out as a natural follow-up, not a
+      permanent limitation - this is that follow-up.
+      - New `FSolarOrbzTectonicBoundaryState` (`PlateIdA`/`PlateIdB`/`AccumulatedConvergenceMyr`/
+        `AccumulatedDivergenceMyr`) persists per PLATE PAIR, keyed by each plate's new stable
+        `PlateId` (not array index, which shifts whenever a split removes a plate).
+        `UpdateBoundaryStress(DeltaMyr)` runs once per `AdvanceTectonicSimulation` step (never from
+        an ordinary `Bake()`, which only ever reads this - ordinary regenerates can't accumulate
+        stress, only a Run Tectonic Simulation node's steps can) - a cheap, low-resolution (48x24,
+        independent of and much coarser than `BakeGridWidth`/`Height`) Worley partition purely to
+        find which plate pairs are currently adjacent and accumulate DeltaMyr into whichever
+        accumulator their current `Closure` classifies as.
+      - **Mountain building.** `BakePlateTectonics`'s existing Modifier (Mountain/Trench/Ridge/Rift)
+        now scales by `1 + Clamp(RelevantAccumulatedMyr / StressMatureTimescaleMyr, 0, MaxStressMultiplier)`
+        - a boundary that's only just started converging/diverging gets no bonus yet; one a
+        simulation has driven for a long time approaches the full extra magnitude. New authored
+        properties: `StressMatureTimescaleMyr` (default 50), `MaxStressMultiplier` (default 1.0, so
+        a fully-matured boundary can reach double its base magnitude; 0 fully disables this and
+        reproduces the original pre-stress behavior exactly).
+      - **Plate splitting.** New `PlateSplitThresholdMyr` (default 200, 0 disables): once a plate
+        pair's `AccumulatedDivergenceMyr` crosses it, `SplitPlate()` splits the LARGER of the two
+        plates (by current cell coverage on the same detection grid - the classic
+        supercontinent-rifts-apart case, not the smaller plate it's diverging from) into two new
+        plates. Geometry: the two new seed points are placed symmetrically offset from the parent's
+        original seed ALONG the separation direction toward the other plate, so the nearest-seed
+        partition's bisector between them (the new rift) ends up perpendicular to it - exactly like
+        a real spreading ridge. Each child's `RotationAxis` is constructed (verified via the vector
+        triple-product identity `(S×T)×S = T` for unit orthogonal S/T) so its own
+        `GetInstantaneousDrift()` points directly away from its sibling, continuing to pull the rift
+        open rather than inheriting the parent's original (now geometrically meaningless for a new
+        plate) drift unchanged. Children inherit the parent's oceanic/continental flag (splitting a
+        continent makes two continents, not two fresh ocean floors - deliberately not modeling "a
+        new strip of ocean crust forms in the gap" as a third plate) and reset `AgeMyr` to 0.
+        Hard-capped at 64 total plates (matches `NumPlates`'s own authoring ceiling) regardless of
+        `PlateSplitThresholdMyr` - further divergence past the cap just keeps accumulating
+        `MaxStressMultiplier`'s bonus instead of splitting again. New read-only `CurrentPlateCount`
+        shows the live count once it's diverged from authored `NumPlates`.
+      - **This exposed the one real correctness bug in the original "simulate N steps" pass**:
+        `EnsurePlatesInitialized`'s reseed-detection compared `Plates.Num() != PlateCount` - which
+        splitting now legitimately makes true (`Plates.Num()` grows past `NumPlates`) without the
+        user having changed `NumPlates` at all, which would have silently thrown away every
+        simulated split's work on the very next regenerate. Fixed by tracking
+        `PlatesSeededFromNumPlates` (the clamped `NumPlates` value AT THE TIME `Plates` was last
+        seeded) and comparing against that instead - `Plates.Num()` itself is now free to differ
+        from `NumPlates` indefinitely once splitting starts.
+      - Boundary stress history is never decayed (once a pair has spent time convergent/divergent,
+        that accumulation persists even if their relative motion later changes) and per-cell stress
+        isn't tracked (only per-PLATE-PAIR) - deliberate simplifications, not full geologic
+        unloading/healing or a continuously-variable stress field.
 
 - **Erosion Rainfall Amount** is uniform across the planet by default, not yet driven by a Climate
   Simulation's actual computed moisture. Wiring the two together would let erosion carve more

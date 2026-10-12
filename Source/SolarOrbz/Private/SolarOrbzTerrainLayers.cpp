@@ -1553,6 +1553,22 @@ void USolarOrbzContinentTerrainLayer::BakePlateTectonics(bool bEffectiveNorthPol
 			}
 			// else: transform - no height modifier, just the plain plate-boundary seam.
 
+			// Scale by however long this specific plate pair has been sustained-convergent/divergent
+			// (see FSolarOrbzTectonicBoundaryState) - a boundary that's only just started
+			// converging/diverging gets none of this bonus yet; one a Run Tectonic Simulation node has
+			// driven for a long time approaches MaxStressMultiplier's full extra magnitude. Neither
+			// plate being the polar sentinel (no plate id, no simulation history) just means no bonus.
+			if (Modifier != 0.0f && PlateA >= 0 && PlateB >= 0 && MaxStressMultiplier > 0.0f)
+			{
+				if (const FSolarOrbzTectonicBoundaryState* State = FindBoundaryState(Plates[PlateA].PlateId, Plates[PlateB].PlateId))
+				{
+					const float RelevantMyr = (Closure > TransformThreshold) ? State->AccumulatedConvergenceMyr
+						: (Closure < -TransformThreshold ? State->AccumulatedDivergenceMyr : 0.0f);
+					const float StressMultiplier = 1.0f + FMath::Clamp(RelevantMyr / StressMatureTimescaleMyr, 0.0f, MaxStressMultiplier);
+					Modifier *= StressMultiplier;
+				}
+			}
+
 			if (FMath::Abs(Modifier) > FMath::Abs(BestModifier))
 			{
 				BestModifier = Modifier;
@@ -1608,10 +1624,20 @@ void USolarOrbzContinentTerrainLayer::BakePlateTectonics(bool bEffectiveNorthPol
 	}
 }
 
+namespace SolarOrbzContinent
+{
+	/** Hard cap on live plates regardless of simulated splitting - matches Num Plates' own ClampMax, so a layout that's split up to this point reads no differently from one authored at this count from the start. */
+	static constexpr int32 MaxSimulatedPlateCount = 64;
+
+	/** Internal grid resolution for UpdateBoundaryStress's adjacency detection - deliberately much cheaper than BakeGridWidth/Height, since this runs once per simulation STEP (potentially hundreds of times per "Run Simulation" click) rather than once per regenerate. Coarser than the final height bake costs nothing here - this pass only needs to know WHICH plates currently touch and at what closure, not reproduce fine boundary detail. */
+	static constexpr int32 AdjacencyDetectionGridWidth = 48;
+	static constexpr int32 AdjacencyDetectionGridHeight = 24;
+}
+
 void USolarOrbzContinentTerrainLayer::EnsurePlatesInitialized()
 {
 	const int32 PlateCount = FMath::Max(NumPlates, 2);
-	if (bPlatesEverSeeded && PlatesSeededFrom == Seed && Plates.Num() == PlateCount)
+	if (bPlatesEverSeeded && PlatesSeededFrom == Seed && PlatesSeededFromNumPlates == PlateCount)
 	{
 		return;
 	}
@@ -1620,19 +1646,24 @@ void USolarOrbzContinentTerrainLayer::EnsurePlatesInitialized()
 
 	FRandomStream Stream(Seed);
 	Plates.SetNum(PlateCount);
+	NextPlateId = 0;
 	for (int32 P = 0; P < PlateCount; ++P)
 	{
 		FSolarOrbzTectonicPlate& Plate = Plates[P];
+		Plate.PlateId = NextPlateId++;
 		Plate.SeedDirection = RandomPointOnUnitSphere(Stream);
 		Plate.RotationAxis = RandomPointOnUnitSphere(Stream);
 		Plate.AngularRateRadPerMyr = FMath::DegreesToRadians(Stream.FRandRange(0.1f, 1.0f) * InitialDriftSpeedDegreesPerMyr);
 		Plate.bOceanic = Stream.FRand() < OceanicPlateFraction;
 		Plate.AgeMyr = 0.0f;
 	}
+	BoundaryStates.Reset();
 
 	PlatesSeededFrom = Seed;
+	PlatesSeededFromNumPlates = PlateCount;
 	bPlatesEverSeeded = true;
 	SimulatedAgeMyr = 0.0f;
+	CurrentPlateCount = Plates.Num();
 }
 
 void USolarOrbzContinentTerrainLayer::AdvanceTectonicSimulation(int32 NumSteps, float DeltaMyr)
@@ -1648,6 +1679,9 @@ void USolarOrbzContinentTerrainLayer::AdvanceTectonicSimulation(int32 NumSteps, 
 	NumSteps = FMath::Max(NumSteps, 0);
 	DeltaMyr = FMath::Max(DeltaMyr, 0.0f);
 
+	int32 SplitEventCount = 0;
+	const int32 PlateCountBeforeSteps = Plates.Num();
+
 	for (int32 Step = 0; Step < NumSteps; ++Step)
 	{
 		for (FSolarOrbzTectonicPlate& Plate : Plates)
@@ -1657,11 +1691,223 @@ void USolarOrbzContinentTerrainLayer::AdvanceTectonicSimulation(int32 NumSteps, 
 			Plate.AgeMyr += DeltaMyr;
 		}
 		SimulatedAgeMyr += DeltaMyr;
+
+		const int32 PlateCountBeforeThisStep = Plates.Num();
+		UpdateBoundaryStress(DeltaMyr);
+		if (Plates.Num() != PlateCountBeforeThisStep)
+		{
+			++SplitEventCount;
+		}
 	}
 
+	CurrentPlateCount = Plates.Num();
+
 	UE_LOG(LogSolarOrbzContinent, Log,
-		TEXT("SolarOrbz Continent: advanced tectonic simulation by %d step(s) of %.2f Myr each - now at %.2f Myr simulated. Regenerate the planet to see the result."),
-		NumSteps, DeltaMyr, SimulatedAgeMyr);
+		TEXT("SolarOrbz Continent: advanced tectonic simulation by %d step(s) of %.2f Myr each - now at %.2f Myr simulated, %d plate(s) (was %d, %d split event(s)). Regenerate the planet to see the result."),
+		NumSteps, DeltaMyr, SimulatedAgeMyr, CurrentPlateCount, PlateCountBeforeSteps, SplitEventCount);
+}
+
+void USolarOrbzContinentTerrainLayer::UpdateBoundaryStress(float DeltaMyr)
+{
+	using namespace SolarOrbzContinent;
+
+	const int32 GridW = AdjacencyDetectionGridWidth;
+	const int32 GridH = AdjacencyDetectionGridHeight;
+	const int32 NumCells = GridW * GridH;
+	const FSolarOrbzLatLongGrid Grid(GridW, GridH);
+
+	TArray<FVector> CellDirections;
+	CellDirections.SetNumUninitialized(NumCells);
+	Grid.ForEachCell([&](int32 Idx, const FVector& Dir, const FVector2D& UV) { CellDirections[Idx] = Dir; });
+
+	const int32 PlateCount = Plates.Num();
+	TArray<int32> PlateIdx;
+	PlateIdx.SetNumUninitialized(NumCells);
+	for (int32 Idx = 0; Idx < NumCells; ++Idx)
+	{
+		int32 BestPlate = 0;
+		float BestDot = -2.0f;
+		for (int32 P = 0; P < PlateCount; ++P)
+		{
+			const float Dot = FVector::DotProduct(CellDirections[Idx], Plates[P].SeedDirection);
+			if (Dot > BestDot)
+			{
+				BestDot = Dot;
+				BestPlate = P;
+			}
+		}
+		PlateIdx[Idx] = BestPlate;
+	}
+
+	// Prune any boundary state left over from a plate a previous step's SplitPlate() already removed.
+	TSet<int32> LivePlateIds;
+	LivePlateIds.Reserve(PlateCount);
+	for (const FSolarOrbzTectonicPlate& Plate : Plates)
+	{
+		LivePlateIds.Add(Plate.PlateId);
+	}
+	BoundaryStates.RemoveAll([&LivePlateIds](const FSolarOrbzTectonicBoundaryState& State)
+	{
+		return !LivePlateIds.Contains(State.PlateIdA) || !LivePlateIds.Contains(State.PlateIdB);
+	});
+
+	constexpr float TransformThreshold = 0.25f;
+	TSet<int64> SeenThisStep;
+	TMap<int32, int32> PendingSplitsByPlateId; // plate id to split -> other plate id (for the rift axis)
+
+	for (int32 Idx = 0; Idx < NumCells; ++Idx)
+	{
+		int32 Neighbors[4];
+		GetGridNeighbors4(Idx, GridW, GridH, Neighbors);
+
+		const int32 PlateA = PlateIdx[Idx];
+		for (int32 NeighborIdx : Neighbors)
+		{
+			const int32 PlateB = PlateIdx[NeighborIdx];
+			if (PlateB == PlateA)
+			{
+				continue;
+			}
+
+			const int32 IdA = Plates[PlateA].PlateId;
+			const int32 IdB = Plates[PlateB].PlateId;
+			const int32 KeyLo = FMath::Min(IdA, IdB);
+			const int32 KeyHi = FMath::Max(IdA, IdB);
+			const int64 PairKey = (int64(KeyLo) << 32) | uint32(KeyHi);
+			if (SeenThisStep.Contains(PairKey))
+			{
+				continue; // one update per pair per step, not per boundary cell
+			}
+			SeenThisStep.Add(PairKey);
+
+			const FVector BoundaryAxis = (Plates[PlateB].SeedDirection - Plates[PlateA].SeedDirection).GetSafeNormal();
+			const float Closure = FVector::DotProduct(Plates[PlateA].GetInstantaneousDrift(), BoundaryAxis)
+								 - FVector::DotProduct(Plates[PlateB].GetInstantaneousDrift(), BoundaryAxis);
+
+			FSolarOrbzTectonicBoundaryState& State = FindOrAddBoundaryState(IdA, IdB);
+			if (Closure > TransformThreshold)
+			{
+				State.AccumulatedConvergenceMyr = FMath::Min(State.AccumulatedConvergenceMyr + DeltaMyr, 1.0e6f);
+			}
+			else if (Closure < -TransformThreshold)
+			{
+				State.AccumulatedDivergenceMyr = FMath::Min(State.AccumulatedDivergenceMyr + DeltaMyr, 1.0e6f);
+
+				if (PlateSplitThresholdMyr > 0.0f && State.AccumulatedDivergenceMyr >= PlateSplitThresholdMyr
+					&& Plates.Num() < MaxSimulatedPlateCount)
+				{
+					// Split whichever of the pair currently covers more of this detection grid - the
+					// classic "supercontinent rifts apart" case is splitting the bigger landmass, not
+					// the smaller one it's diverging from.
+					int32 CountA = 0, CountB = 0;
+					for (int32 P : PlateIdx)
+					{
+						if (P == PlateA) ++CountA;
+						else if (P == PlateB) ++CountB;
+					}
+					const bool bSplitA = CountA >= CountB;
+					PendingSplitsByPlateId.Add(bSplitA ? IdA : IdB, bSplitA ? IdB : IdA);
+				}
+			}
+		}
+	}
+
+	for (const TPair<int32, int32>& SplitRequest : PendingSplitsByPlateId)
+	{
+		SplitPlate(SplitRequest.Key, SplitRequest.Value);
+	}
+}
+
+void USolarOrbzContinentTerrainLayer::SplitPlate(int32 PlateIdToSplit, int32 OtherPlateId)
+{
+	using namespace SolarOrbzContinent;
+
+	if (Plates.Num() >= MaxSimulatedPlateCount)
+	{
+		return;
+	}
+
+	const int32 SplitIdx = Plates.IndexOfByPredicate([PlateIdToSplit](const FSolarOrbzTectonicPlate& P) { return P.PlateId == PlateIdToSplit; });
+	const int32 OtherIdx = Plates.IndexOfByPredicate([OtherPlateId](const FSolarOrbzTectonicPlate& P) { return P.PlateId == OtherPlateId; });
+	if (SplitIdx == INDEX_NONE || OtherIdx == INDEX_NONE)
+	{
+		return;
+	}
+
+	const FSolarOrbzTectonicPlate Parent = Plates[SplitIdx]; // copy - SplitIdx is about to be removed from the array
+	const FVector& OriginalSeed = Parent.SeedDirection;
+	const FVector SeparationDirection = (Plates[OtherIdx].SeedDirection - OriginalSeed).GetSafeNormal();
+	// Project onto the tangent plane at OriginalSeed and renormalize - SeparationDirection is already
+	// nearly tangent (both points are nearby on the unit sphere) but this keeps the geometry below
+	// exact rather than relying on that approximation.
+	const FVector SeparationTangent = (SeparationDirection - OriginalSeed * FVector::DotProduct(SeparationDirection, OriginalSeed)).GetSafeNormal();
+
+	// How far apart the two new seeds start - small enough that each child's own tangent plane is
+	// still close enough to OriginalSeed's for the drift-direction construction below to hold well.
+	constexpr float OffsetAngleRadians = PI / 18.0f; // 10 degrees
+
+	FSolarOrbzTectonicPlate ChildA = Parent;
+	ChildA.PlateId = NextPlateId++;
+	ChildA.SeedDirection = (OriginalSeed * FMath::Cos(OffsetAngleRadians) + SeparationTangent * FMath::Sin(OffsetAngleRadians)).GetSafeNormal();
+	// GetInstantaneousDrift() = Cross(RotationAxis, SeedDirection) * Rate. For unit, mutually
+	// orthogonal S (SeedDirection) and T (a tangent), Cross(Cross(S,T), S) == T (BAC-CAB identity),
+	// so RotationAxis = Cross(Seed, +SeparationTangent) makes this child's drift point AWAY from the
+	// rift along +SeparationTangent - continuing to pull the two children apart rather than
+	// inheriting the parent's original (now geometrically meaningless, since this is a new plate)
+	// RotationAxis unchanged.
+	ChildA.RotationAxis = FVector::CrossProduct(ChildA.SeedDirection, SeparationTangent).GetSafeNormal();
+	ChildA.AgeMyr = 0.0f;
+
+	FSolarOrbzTectonicPlate ChildB = Parent;
+	ChildB.PlateId = NextPlateId++;
+	ChildB.SeedDirection = (OriginalSeed * FMath::Cos(OffsetAngleRadians) - SeparationTangent * FMath::Sin(OffsetAngleRadians)).GetSafeNormal();
+	ChildB.RotationAxis = FVector::CrossProduct(ChildB.SeedDirection, -SeparationTangent).GetSafeNormal();
+	ChildB.AgeMyr = 0.0f;
+
+	Plates.RemoveAt(SplitIdx);
+	Plates.Add(ChildA);
+	Plates.Add(ChildB);
+
+	BoundaryStates.RemoveAll([PlateIdToSplit](const FSolarOrbzTectonicBoundaryState& State)
+	{
+		return State.PlateIdA == PlateIdToSplit || State.PlateIdB == PlateIdToSplit;
+	});
+
+	UE_LOG(LogSolarOrbzContinent, Log,
+		TEXT("SolarOrbz Continent: plate %d split into %d/%d after sustained divergence with plate %d."),
+		PlateIdToSplit, ChildA.PlateId, ChildB.PlateId, OtherPlateId);
+}
+
+FSolarOrbzTectonicBoundaryState& USolarOrbzContinentTerrainLayer::FindOrAddBoundaryState(int32 PlateIdA, int32 PlateIdB)
+{
+	const int32 KeyLo = FMath::Min(PlateIdA, PlateIdB);
+	const int32 KeyHi = FMath::Max(PlateIdA, PlateIdB);
+	for (FSolarOrbzTectonicBoundaryState& State : BoundaryStates)
+	{
+		if (State.PlateIdA == KeyLo && State.PlateIdB == KeyHi)
+		{
+			return State;
+		}
+	}
+
+	FSolarOrbzTectonicBoundaryState NewState;
+	NewState.PlateIdA = KeyLo;
+	NewState.PlateIdB = KeyHi;
+	return BoundaryStates[BoundaryStates.Add(NewState)];
+}
+
+const FSolarOrbzTectonicBoundaryState* USolarOrbzContinentTerrainLayer::FindBoundaryState(int32 PlateIdA, int32 PlateIdB) const
+{
+	const int32 KeyLo = FMath::Min(PlateIdA, PlateIdB);
+	const int32 KeyHi = FMath::Max(PlateIdA, PlateIdB);
+	for (const FSolarOrbzTectonicBoundaryState& State : BoundaryStates)
+	{
+		if (State.PlateIdA == KeyLo && State.PlateIdB == KeyHi)
+		{
+			return &State;
+		}
+	}
+	return nullptr;
 }
 
 float USolarOrbzContinentTerrainLayer::GetRawHeight(const FVector& UnitDirection, const FVector2D& UV) const

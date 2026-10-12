@@ -199,6 +199,38 @@ other layer property through this same Details panel, seeing the result still re
 own Regenerate control. Not a gap specific to this node; just how every other edit through this
 editor already works.
 
+**Follow-up, requested directly ("add in mountain and plate splitting, I want a fully in depth
+simulation"): mountain-building stress and plate splitting.** The scope cut the first pass called out
+("no accumulated per-boundary stress... no plate splitting/merging... a natural follow-up, not built
+now") is this follow-up - still driven entirely by the same `RunSimulation()` node, no new graph/UI
+surface needed.
+
+- `FSolarOrbzTectonicBoundaryState` persists accumulated convergence/divergence (million years) per
+  PLATE PAIR, keyed by each plate's new stable `PlateId` rather than its array index - necessary
+  because a split removes a plate from the middle of `Plates`, which would otherwise silently
+  invalidate any index-keyed state. `UpdateBoundaryStress()` runs once per simulation step (a cheap,
+  low-resolution 48x24 Worley partition, independent of the much finer `BakeGridWidth`/`Height` used
+  for the actual height bake) to find currently-adjacent plate pairs and accumulate time into
+  whichever of the two buckets their current relative drift classifies as.
+- **Mountains/trenches/ridges/rifts now scale with how long a boundary has been active** -
+  `BakePlateTectonics`'s existing modifier multiplies by `1 + Clamp(AccumulatedMyr /
+  StressMatureTimescaleMyr, 0, MaxStressMultiplier)`, so a boundary a simulation has driven for a long
+  time reads taller/deeper than one that's only just started. Setting `MaxStressMultiplier` to 0
+  reproduces the original (pre-this-follow-up) behavior exactly - every boundary at its base
+  magnitude regardless of history.
+- **A sustained rift eventually splits a plate** - once a pair's accumulated divergence crosses
+  `PlateSplitThresholdMyr`, `SplitPlate()` bisects the larger of the two (by current grid coverage)
+  along the separation direction toward its neighbor, so the new rift (the bisector between the two
+  children) ends up perpendicular to that direction, matching a real spreading ridge's geometry. Each
+  child's `RotationAxis` is built so its own drift points directly away from its sibling - continuing
+  to pull the rift open. Hard-capped at 64 total plates regardless of how low the threshold is set.
+- **This exposed a real bug in the original pass, not just a missing feature**: reseed-detection
+  compared `Plates.Num()` against the clamped `NumPlates` property directly, which splitting now
+  legitimately makes diverge (more plates exist than were authored) without the user having touched
+  `NumPlates` - on the very next regenerate this would have silently reseeded from scratch, discarding
+  every split the user had just simulated. Fixed by tracking `PlatesSeededFromNumPlates` (the value at
+  the time of last seeding) instead of comparing live counts.
+
 ### Phase 3 - explicitly future, not v1
 
 - Branching/merge nodes, once there's an actual runtime semantic for combining independent chains

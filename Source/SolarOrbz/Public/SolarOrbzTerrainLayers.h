@@ -763,19 +763,29 @@ struct SOLARORBZ_API FSolarOrbzContinentSeedData
  * rerandomized from Seed every regenerate the way this layer originally worked - that's what lets
  * USolarOrbzRunTectonicSimulationLayer's "Run Simulation" actually accumulate movement over time.
  * Models each plate as drifting along a fixed great-circle path at a constant angular rate - a
- * deliberate simplification: no plate splitting/merging, no accumulated boundary stress, RotationAxis/
- * AngularRateRadPerMyr are rolled once at seed time and never changed by simulation itself.
+ * deliberate simplification: RotationAxis/AngularRateRadPerMyr are rolled once at seed time (or at
+ * split time, see SplitPlate) and never changed by simulation itself; no merging.
  */
 USTRUCT()
 struct SOLARORBZ_API FSolarOrbzTectonicPlate
 {
 	GENERATED_BODY()
 
+	/**
+	 * Stable identity, assigned once from USolarOrbzContinentTerrainLayer::NextPlateId at seed or
+	 * split time and never reused - lets FSolarOrbzTectonicBoundaryState track a plate pair's
+	 * accumulated stress across simulation steps even though this plate's own index in Plates shifts
+	 * whenever an earlier plate is removed (e.g. by SplitPlate). INDEX_NONE on a default-constructed
+	 * plate that hasn't been through EnsurePlatesInitialized/SplitPlate yet.
+	 */
+	UPROPERTY()
+	int32 PlateId = INDEX_NONE;
+
 	/** Current position - the point this plate's nearest-seed/Worley partition grows from. Moves every AdvanceTectonicSimulation() step; a never-simulated plate just sits at its original random seed point. */
 	UPROPERTY()
 	FVector SeedDirection = FVector::UpVector;
 
-	/** Fixed unit vector - the pole SeedDirection orbits around. Unlike SeedDirection, never changes once rolled at seed time. */
+	/** Fixed unit vector - the pole SeedDirection orbits around. Unlike SeedDirection, never changes once rolled at seed (or split) time. */
 	UPROPERTY()
 	FVector RotationAxis = FVector::UpVector;
 
@@ -786,7 +796,7 @@ struct SOLARORBZ_API FSolarOrbzTectonicPlate
 	UPROPERTY()
 	bool bOceanic = false;
 
-	/** Simulated million years since this plate was seeded - every plate starts at 0 and ages together today (no splitting), kept per-plate since a future split/merge would need it. */
+	/** Simulated million years since this plate was seeded (or split off its parent, where it resets to 0 - a reasonable simplification; the crust itself isn't literally new, but this plate's identity is). */
 	UPROPERTY()
 	float AgeMyr = 0.0f;
 
@@ -799,6 +809,39 @@ struct SOLARORBZ_API FSolarOrbzTectonicPlate
 	{
 		return FVector::CrossProduct(RotationAxis, SeedDirection) * AngularRateRadPerMyr;
 	}
+};
+
+/**
+ * Persistent per-plate-PAIR state for ESolarOrbzContinentAlgorithm::PlateTectonics - how long
+ * (simulated million years) two specific plates have been sustained-convergent or sustained-
+ * divergent, keyed by their stable FSolarOrbzTectonicPlate::PlateId (PlateIdA < PlateIdB always, so
+ * lookup doesn't care which order the two plates were found in). Built up incrementally by
+ * USolarOrbzContinentTerrainLayer::UpdateBoundaryStress (called once per AdvanceTectonicSimulation
+ * step, NOT on every ordinary Bake()) rather than recomputed fresh each time - this is what lets a
+ * mountain range genuinely grow taller the longer two plates have been pushing into each other,
+ * instead of every bake seeing the same instantaneous classification no matter how long it's been
+ * true. AccumulatedConvergenceMyr drives USolarOrbzContinentTerrainLayer::MaxStressMultiplier (taller
+ * mountains/deeper trenches); AccumulatedDivergenceMyr drives PlateSplitThresholdMyr (sustained rifts
+ * eventually split one of the two plates in two - see SplitPlate). Neither value decays - once two
+ * plates have spent time convergent or divergent, that history persists even if their relative motion
+ * later changes, a deliberate simplification over tracking true geologic unloading/healing.
+ */
+USTRUCT()
+struct SOLARORBZ_API FSolarOrbzTectonicBoundaryState
+{
+	GENERATED_BODY()
+
+	UPROPERTY()
+	int32 PlateIdA = INDEX_NONE;
+
+	UPROPERTY()
+	int32 PlateIdB = INDEX_NONE;
+
+	UPROPERTY()
+	float AccumulatedConvergenceMyr = 0.0f;
+
+	UPROPERTY()
+	float AccumulatedDivergenceMyr = 0.0f;
 };
 
 UCLASS(EditInlineNew, meta = (DisplayName = "Continent Layer"))
@@ -945,6 +988,37 @@ public:
 	UPROPERTY(VisibleAnywhere, Category = "SolarOrbz|Continent|Plates", meta = (EditCondition = "Algorithm == ESolarOrbzContinentAlgorithm::PlateTectonics"))
 	float SimulatedAgeMyr = 0.0f;
 
+	/** Plate Tectonics only, read-only. How many plates currently exist - starts at Num Plates, grows whenever a sustained rift splits one in two (see Plate Split Threshold below). */
+	UPROPERTY(VisibleAnywhere, Category = "SolarOrbz|Continent|Plates", meta = (EditCondition = "Algorithm == ESolarOrbzContinentAlgorithm::PlateTectonics"))
+	int32 CurrentPlateCount = 0;
+
+	/**
+	 * Plate Tectonics only. How many simulated million years of SUSTAINED convergence or divergence a
+	 * boundary needs to reach its full extra stress multiplier (Max Stress Multiplier below) - a
+	 * boundary that's only just started converging/diverging gets none of this bonus yet; one that's
+	 * been doing so for many simulation steps approaches the full amount. Only ever grows via a Run
+	 * Tectonic Simulation node's steps, never during an ordinary Bake() - a ordinary regenerate reads
+	 * whatever's already accumulated but never adds to it.
+	 */
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Continent|Plates|Simulation", meta = (ClampMin = "0.1", Units = "My", EditCondition = "Algorithm == ESolarOrbzContinentAlgorithm::PlateTectonics"))
+	float StressMatureTimescaleMyr = 50.0f;
+
+	/** Plate Tectonics only. Extra multiplier a fully-matured (see Stress Mature Timescale above) boundary's mountain/trench/ridge/rift modifier gets on top of its base magnitude - 1.0 means a long-convergent boundary's mountains can reach up to double Mountain Height Meters. 0 disables mountain-building entirely (every boundary stays at its base magnitude regardless of how long it's been active, the original pre-simulation behavior). */
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Continent|Plates|Simulation", meta = (ClampMin = "0.0", ClampMax = "5.0", EditCondition = "Algorithm == ESolarOrbzContinentAlgorithm::PlateTectonics"))
+	float MaxStressMultiplier = 1.0f;
+
+	/**
+	 * Plate Tectonics only. How many simulated million years of sustained divergence a boundary needs
+	 * before the larger of its two plates splits in two at the rift (a supercontinent-rifting-apart
+	 * event, not a physically complete model - see SplitPlate's own comment). The two new plates
+	 * inherit the parent's oceanic/continental flag and drift apart along the original separation
+	 * direction. 0 disables splitting entirely. Capped at 64 total plates regardless of this value
+	 * (matches Num Plates' own authoring cap) - further divergence past the cap just keeps
+	 * accumulating Max Stress Multiplier's bonus instead of splitting again.
+	 */
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Continent|Plates|Simulation", meta = (ClampMin = "0.0", Units = "My", EditCondition = "Algorithm == ESolarOrbzContinentAlgorithm::PlateTectonics"))
+	float PlateSplitThresholdMyr = 200.0f;
+
 	// --- Coastline texture (shared by all three algorithms) ---
 
 	/** Radial Seeds: how much each landmass's coastline wiggles away from a perfect circle, as a fraction of that landmass's own radius - 0 = perfect circles (before the warp/sub-seeds above still break that up). Voronoi Growth/Plate Tectonics: a smaller cosmetic wobble layered on top of their own grid-driven coastlines. */
@@ -993,31 +1067,81 @@ public:
 
 	/**
 	 * Plate Tectonics only. Advances every plate NumSteps times by DeltaMyr each, moving SeedDirection
-	 * along its fixed RotationAxis and reclassifying boundaries from the plates' new relative
-	 * positions/drift - called by USolarOrbzRunTectonicSimulationLayer's "Run Simulation" button.
-	 * (Re)seeds Plates first if this is the first call since this layer was created or Seed/Num Plates
-	 * last changed. No-op (with a log warning) if Algorithm isn't PlateTectonics. Does NOT itself
-	 * re-bake height or trigger the owning actor's regenerate - regenerate the planet afterward to see
-	 * the result, the same as changing any other layer property.
+	 * along its fixed RotationAxis, updating every live plate pair's accumulated convergence/
+	 * divergence stress (see UpdateBoundaryStress) - which can split a plate in two once a rift's
+	 * divergence crosses Plate Split Threshold Myr - and reclassifying boundaries from the plates'
+	 * new relative positions/drift. Called by USolarOrbzRunTectonicSimulationLayer's "Run Simulation"
+	 * button. (Re)seeds Plates first if this is the first call since this layer was created or
+	 * Seed/Num Plates last changed. No-op (with a log warning) if Algorithm isn't PlateTectonics.
+	 * Does NOT itself re-bake height or trigger the owning actor's regenerate - regenerate the planet
+	 * afterward to see the result, the same as changing any other layer property.
 	 */
 	void AdvanceTectonicSimulation(int32 NumSteps, float DeltaMyr);
 
 private:
 	/**
 	 * (Re)seeds Plates from FRandomStream(Seed) if this is the first call ever (bPlatesEverSeeded is
-	 * false), Seed changed since Plates was last seeded, or Num Plates changed - otherwise leaves
-	 * Plates (and anything AdvanceTectonicSimulation has already done to it) untouched. Called by both
-	 * BakePlateTectonics() and AdvanceTectonicSimulation().
+	 * false), Seed changed since Plates was last seeded, or Num Plates (the AUTHORED property, not
+	 * the live Plates.Num() - see PlatesSeededFromNumPlates) changed - otherwise leaves Plates (and
+	 * anything AdvanceTectonicSimulation has already done to it, split plates included) untouched.
+	 * Called by both BakePlateTectonics() and AdvanceTectonicSimulation().
 	 */
 	void EnsurePlatesInitialized();
+
+	/**
+	 * Called once per AdvanceTectonicSimulation() step (never from an ordinary Bake(), which only
+	 * ever reads accumulated stress, not adds to it) - runs a cheap, low-resolution Worley partition
+	 * purely to find which plate pairs are CURRENTLY adjacent, updates each pair's
+	 * FSolarOrbzTectonicBoundaryState by DeltaMyr (convergence or divergence, whichever this pair's
+	 * current relative drift classifies as - see BakePlateTectonics' own classification, duplicated
+	 * here at lower resolution since this runs far more often), prunes any boundary state referencing
+	 * a plate that no longer exists, and calls SplitPlate() for any pair whose divergence just crossed
+	 * Plate Split Threshold Myr.
+	 */
+	void UpdateBoundaryStress(float DeltaMyr);
+
+	/**
+	 * Splits the plate identified by PlateIdToSplit into two new plates, triggered by sustained
+	 * divergence against OtherPlateId (used only to find the rift's separation axis). The new
+	 * boundary runs perpendicular to the original separation direction - geometrically, the two new
+	 * seed points are placed symmetrically offset from the parent's original seed ALONG that
+	 * direction, so the nearest-seed partition's bisector between them (the new rift) ends up
+	 * perpendicular to it, same as a real spreading ridge. Each child's RotationAxis is set so its
+	 * own GetInstantaneousDrift() points directly away from the other child along that same
+	 * direction (verified via the vector triple-product identity (SxT)xS = T for unit, orthogonal
+	 * S/T) - continuing to pull the rift open rather than inheriting the parent's original drift
+	 * unchanged. Both children inherit the parent's oceanic/continental flag (splitting a continent
+	 * makes two continents, not two fresh ocean floors - a deliberate simplification, not a full
+	 * rift-forms-new-ocean-crust model) and reset AgeMyr to 0. No-op if either plate can't be found by
+	 * id, or Plates is already at its 64-plate cap.
+	 */
+	void SplitPlate(int32 PlateIdToSplit, int32 OtherPlateId);
+
+	/** Finds (adding a zeroed entry if needed) the FSolarOrbzTectonicBoundaryState for this plate pair - PlateIdA/PlateIdB order doesn't matter, the entry itself always stores the smaller id first. */
+	FSolarOrbzTectonicBoundaryState& FindOrAddBoundaryState(int32 PlateIdA, int32 PlateIdB);
+
+	/** Const lookup only (BakePlateTectonics' use case - read accumulated stress, never create an entry for a pair that's never been seen by UpdateBoundaryStress). Returns null if this pair has no recorded history. */
+	const FSolarOrbzTectonicBoundaryState* FindBoundaryState(int32 PlateIdA, int32 PlateIdB) const;
 
 	/** See FSolarOrbzTectonicPlate. Empty under the other two algorithms. */
 	UPROPERTY()
 	TArray<FSolarOrbzTectonicPlate> Plates;
 
+	/** See FSolarOrbzTectonicBoundaryState. Empty until AdvanceTectonicSimulation has run at least one step; ordinary Bake() never adds to this, only reads it. */
+	UPROPERTY()
+	TArray<FSolarOrbzTectonicBoundaryState> BoundaryStates;
+
+	/** Next FSolarOrbzTectonicPlate::PlateId to hand out - incremented by both EnsurePlatesInitialized (initial seeding) and SplitPlate (each new child), never reused, so a stale FSolarOrbzTectonicBoundaryState can always be told apart from one that legitimately refers to a plate that still exists. */
+	UPROPERTY()
+	int32 NextPlateId = 0;
+
 	/** Seed value Plates was last (re)seeded from - compared against Seed each EnsurePlatesInitialized() call to detect "the user changed Seed, reroll from scratch," the same way every other algorithm already does. */
 	UPROPERTY()
 	int32 PlatesSeededFrom = 0;
+
+	/** Num Plates (clamped the same way Bake() clamps it) at the time Plates was last (re)seeded - compared against the CURRENT clamped Num Plates, not Plates.Num() itself, since splitting legitimately grows Plates.Num() beyond this without that meaning "the user asked to reroll." */
+	UPROPERTY()
+	int32 PlatesSeededFromNumPlates = 0;
 
 	/** True once Plates has been seeded at least once - lets EnsurePlatesInitialized() tell "never seeded yet" apart from "legitimately reseeded at Seed == 0" without a magic sentinel on PlatesSeededFrom. */
 	UPROPERTY()
