@@ -856,6 +856,24 @@ commitment or a schedule - just a place these don't get lost between sessions.
   but nothing yet drives a star-appropriate material or surface behavior (turbulence, emissive
   look) from it.
 
+- **Standalone Continent Generator tool.** **Done.** `Tools/StandaloneContinentGenerator/` - a
+  non-UE, non-UObject C++17 port of just the Continent Layer and its Plate Tectonics simulation
+  (all 3 algorithms; persistent plates, mountain-building stress, plate splitting), built because
+  iterating on this layer's generation math from inside the editor is slow (reimport/rebuild cycle
+  per tweak). Config properties are named identically to the real `UPROPERTY`s so a config file
+  reads like the Details panel; verified 1:1 against every Continent/Tectonics property in
+  `SolarOrbzTerrainLayers.h`. Two frontends share one core library (`solarorbz_core`): `solarorbz_cli`
+  (JSON config in, heightmap PNG + land-coverage/plate stats out) and `solarorbz_gui` (raylib +
+  raygui interactive 3D orbit-camera preview with live sliders and a Run Simulation button). Three
+  deliberate, documented fidelity trade-offs: RNG is `std::mt19937`, not UE's actual `FRandomStream`
+  (same algorithm shape, not bit-identical layouts for a given Seed); Perlin noise uses the public
+  Ken Perlin 2002 reference implementation instead of Epic-internal `FMath::PerlinNoise3D`; the
+  preview mesh is a plain lat/long UV-sphere (pole-pinched), not a port of the plugin's icosphere.
+  Noise/Heightmap/Stamp/Erosion/Terrace/Canyon layers, Climate Simulation, and Biomes are explicitly
+  out of scope for this tool. See `Tools/StandaloneContinentGenerator/README.md` (what it does,
+  scope, usage) and `BUILDING.md` (compile steps) - a standalone CMake project, not part of the
+  plugin's own UE build.
+
 ## Documentation
 
 - The `Docs/SolarOrbz_Reference_Guide.pdf` is stale as of the Profile system and the retrofit of
