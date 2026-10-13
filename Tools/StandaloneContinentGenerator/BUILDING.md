@@ -20,7 +20,21 @@ compile steps.
 
 ## Build
 
-From this directory:
+**Quick scripts** - from this directory:
+
+```sh
+./build.sh              # Linux: CLI + GUI
+./build.sh --no-gui     # Linux: CLI only
+```
+
+```bat
+build.bat                :: Windows 10: CLI + GUI
+build.bat --no-gui       :: Windows 10: CLI only
+```
+
+Each just wraps the manual steps below and prints where the binaries land.
+
+**Manual steps**, from this directory:
 
 ```sh
 mkdir build && cd build
@@ -37,6 +51,9 @@ To skip the GUI entirely (CLI only, no raylib/raygui fetch, no X11 headers neede
 cmake -DSOLARORBZ_BUILD_GUI=OFF ..
 cmake --build . -j
 ```
+
+On Windows, `cmake --build .` needs `--config Release` (or `Debug`) added if CMake picked a
+multi-config generator (Visual Studio); `build.bat` already does this for you.
 
 ## Run
 
