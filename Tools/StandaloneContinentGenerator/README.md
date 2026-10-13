@@ -145,6 +145,14 @@ color had any local contrast, which the shading incidentally smooths over too.
 
 The left panel follows the pipeline order:
 
+- **Planet** - **Radius (km)**: the actual planet radius the preview sphere is built at (not a
+  visualization fake-out - `BuildSphereMesh` displaces real vertices against this exact value), range
+  1 km to 100,000 km (small moons through gas-giant scale). **Grid Resolution**: the pipeline's bake
+  resolution and the preview mesh resolution, kept in lockstep, range 64-352 (always 2:1 width:height;
+  capped so vertex count stays under the preview mesh's `unsigned short` index limit). Both rebuild
+  the preview (Radius refreshes the mesh at the new scale and rescales the camera to keep the same
+  relative zoom; Grid Resolution reallocates the mesh buffers and re-bakes the whole pipeline, same as
+  Regenerate).
 - **Algorithm** - the Continent Layer's own sliders (same as before), switching to Plate Tectonics
   adds Num Plates/Mountain Height/Trench Depth/Steps Per Run/Myr Per Step plus a **Run Simulation**
   button that advances the persistent plate state and rebakes.
@@ -166,6 +174,15 @@ The left panel follows the pipeline order:
 
 The bottom of the panel shows live Land coverage % (computed directly from the current baked height
 field, so it reflects Noise/HeightAdjust/erosion too, not just the raw Continent output).
+
+**A note on slider responsiveness:** every slider in this panel now actually triggers a live rebuild
+when dragged. It didn't before - `GuiSlider`'s own `int` return value is dead code in this build of
+raygui (`GuiSliderPro` declares `int result = 0;` and never reassigns it), so the
+`if (GuiSlider(...)) { *bDirtyFlag = true; }` pattern every slider in this file used was silently
+never true. The slider's underlying value still updated correctly (raygui mutates it directly via the
+pointer), so this bug was easy to miss in a screenshot of a slider's current position, but no amount
+of dragging ever actually re-baked the terrain. Fixed by comparing the value before/after the
+`GuiSlider` call ourselves instead of trusting its return.
 
 ## Repository layout
 

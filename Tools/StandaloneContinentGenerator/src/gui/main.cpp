@@ -41,16 +41,17 @@ namespace
         // times the largest Height Exaggeration the slider allows, or the displaced radius collapses
         // toward zero (SphereMesh.h's MinRadius clamp then catches it, but the result is a degenerate
         // spiky shape, not a dented sphere).
-        float PreviewRadiusMeters = 400000.0f;
+        float PreviewRadiusMeters = 400000.0f; // live-editable via the "Radius (km)" slider, see main()
         float HeightExaggeration = 5.0f;
-        // Matches TerrainPipeline's own GridWidth/GridHeight (see main()) - this used to be a 2x
-        // downsample (128x64) of the baked field, which was fine back when the only terrain was a
-        // smooth Continent base shape, but it blurs/aliases away the Secondary Noise layer's
-        // hill/mountain-scale detail (its highest fBm octave's wavelength is already only a few baked
-        // cells wide; resampling that onto a coarser mesh loses it) - confirmed visually (identical
-        // config looked flat in the 3D preview but showed clear mottled relief in the CLI's heightmap
-        // PNG, which samples the baked field directly). 256x128 = 32768 vertices, well under
-        // CreatePreviewModel's unsigned short index limit (65535) and cheap for any GPU this runs on.
+        // Kept in lockstep with TerrainPipeline's own GridWidth/GridHeight by the "Grid Resolution"
+        // slider in main() - this used to be a fixed 2x downsample (128x64) of the baked field, which
+        // was fine back when the only terrain was a smooth Continent base shape, but it blurs/aliases
+        // away the Secondary Noise layer's hill/mountain-scale detail (its highest fBm octave's
+        // wavelength is already only a few baked cells wide; resampling that onto a coarser mesh loses
+        // it) - confirmed visually (identical config looked flat in the 3D preview but showed clear
+        // mottled relief in the CLI's heightmap PNG, which samples the baked field directly). The
+        // slider caps both at 352 so vertex count (max 352x176=61952) stays under CreatePreviewModel's
+        // unsigned short index limit (65535).
         int32_t MeshGridWidth = 256;
         int32_t MeshGridHeight = 128;
         EViewMode ViewMode = EViewMode::Height;
@@ -189,8 +190,11 @@ int main()
 
     // raylib's default far clip plane (1000 units) assumes small-scene scale - our world coordinates
     // are in meters at planet-preview scale (tens of thousands+), so without widening this the whole
-    // model (and the camera's own orbit distance) sits beyond the far plane and nothing renders.
-    rlSetClipPlanes(0.1, 10000000.0);
+    // model (and the camera's own orbit distance) sits beyond the far plane and nothing renders. Set
+    // generously past the "Radius (km)" slider's own max (100,000 km) times the camera's initial 3.5x
+    // orbit distance, plus headroom for scrolling further out - a too-tight far plane here would clip
+    // the whole planet invisible the moment Radius is pushed up near that max.
+    rlSetClipPlanes(0.1, 2000000000.0);
     rlEnableBackfaceCulling();
 
     TerrainPipeline Pipeline;
@@ -294,6 +298,99 @@ int main()
         int Y = 8;
         GuiLabel(Rectangle{ 10, (float)Y, PanelWidth - 20.0f, 20 }, "SolarOrbz Standalone"); Y += 22;
 
+        // Moved above the Algorithm section (which used to define these itself) so the new Planet
+        // section below - Radius/Grid Resolution, logically global settings above any Continent
+        // config - can use them too.
+        char Buf[128];
+        // GuiSlider's own int return value ("result") is dead code in this build of raygui -
+        // GuiSliderPro declares `int result = 0;` and never reassigns it before returning, so
+        // `if (GuiSlider(...))` is ALWAYS false (confirmed by reading build/_deps/raygui-src/src/
+        // raygui.h directly). *value itself still gets mutated correctly by pointer while dragging -
+        // that part of raygui works fine - but every one of this file's `if (GuiSlider(...)) {
+        // *bDirtyFlag = true; }` call sites was silently dead: no slider drag has ever set a dirty
+        // flag, so no slider drag has ever triggered a live rebake, in this entire GUI. Confirmed via
+        // Xvfb: dragging "Grid Resolution" moved nothing, and "Radius (km)" visibly reset itself back
+        // every frame (its SliderFloat binds the real field directly, so GuiSliderPro's pointer write
+        // did take effect for that one frame, but main()'s own `if (bRadiusDirty)` write-back into
+        // Viz.PreviewRadiusMeters never ran, so next frame's fresh read of Viz.PreviewRadiusMeters
+        // stomped it right back). Fixed by detecting the change ourselves (before/after comparison)
+        // instead of trusting GuiSlider's return value.
+        auto SliderInt = [&](const char* Label, int32_t& Value, float Min, float Max, bool* bDirtyFlag)
+        {
+            float F = (float)Value;
+            std::snprintf(Buf, sizeof(Buf), "%s: %d", Label, Value);
+            GuiSlider(Rectangle{ 10, (float)Y, PanelWidth - 20.0f, 18 }, nullptr, Buf, &F, Min, Max);
+            const int32_t NewValue = (int32_t)std::lround(F);
+            if (NewValue != Value)
+            {
+                Value = NewValue;
+                if (bDirtyFlag) *bDirtyFlag = true;
+            }
+            Y += 23;
+        };
+        auto SliderFloat = [&](const char* Label, float& Value, float Min, float Max, bool* bDirtyFlag)
+        {
+            std::snprintf(Buf, sizeof(Buf), "%s: %.2f", Label, Value);
+            const float OldValue = Value;
+            GuiSlider(Rectangle{ 10, (float)Y, PanelWidth - 20.0f, 18 }, nullptr, Buf, &Value, Min, Max);
+            if (bDirtyFlag && Value != OldValue) *bDirtyFlag = true;
+            Y += 23;
+        };
+        auto SectionLabel = [&](const char* Label)
+        {
+            Y += 4;
+            GuiLine(Rectangle{ 10, (float)Y, PanelWidth - 20.0f, 1 }, nullptr); Y += 4;
+            GuiLabel(Rectangle{ 10, (float)Y, PanelWidth - 20.0f, 16 }, Label); Y += 18;
+        };
+
+        SectionLabel("Planet");
+        {
+            // Radius is visualization-only in the sense that it's not a node Config field (no
+            // generation math reads it), but it IS the actual planet radius the preview sphere is
+            // built at - BuildSphereMesh displaces real vertices by HeightMeters against this exact
+            // RadiusMeters. Edited in km for a less awkward slider range than raw meters would give
+            // (Earth is ~6371 km; range covers small moons through gas-giant-scale bodies).
+            float RadiusKm = Viz.PreviewRadiusMeters / 1000.0f;
+            bool bRadiusDirty = false;
+            SliderFloat("Radius (km)", RadiusKm, 1.0f, 100000.0f, &bRadiusDirty);
+            if (bRadiusDirty)
+            {
+                const float OldRadius = Viz.PreviewRadiusMeters;
+                Viz.PreviewRadiusMeters = RadiusKm * 1000.0f;
+                // Keep the camera's relative zoom level instead of leaving Distance fixed - a 10x
+                // radius change with Distance untouched would otherwise either strand the camera deep
+                // inside the new sphere or leave the old one looking like a speck.
+                Distance *= Viz.PreviewRadiusMeters / OldRadius;
+                // BuildSphereMesh bakes RadiusMeters directly into vertex positions - without also
+                // refreshing the mesh buffer, the sphere stays sized at whatever radius it was last
+                // baked at (confirmed via Xvfb: the preview shrank to a barely-visible speck after a
+                // large Radius change, because only the CAMERA had moved to match the new scale while
+                // the actual mesh verts were untouched). bNeedsClimateRefresh is this file's existing
+                // "cheap visual-only refresh" flag (see Height Exaggeration below) - reused here since
+                // Radius, like exaggeration, needs only UpdatePreviewModel, not a full Pipeline rebake.
+                bNeedsClimateRefresh = true;
+            }
+
+            // Grid Resolution drives BOTH the pipeline's bake resolution (Pipeline.GridWidth/Height)
+            // and the preview mesh resolution (Viz.MeshGridWidth/Height) together - they're kept in
+            // lockstep (see MeshGridWidth's own doc comment on why a mismatch blurs/aliases detail
+            // away). Always 2:1 (width:height) to match the equirectangular FHeightField/FLatLongGrid
+            // convention used everywhere else. Capped at 352 so Width*Height (max 352*176=61952) stays
+            // under CreatePreviewModel's unsigned short index limit (65535).
+            bool bResolutionDirty = false;
+            SliderInt("Grid Resolution", Pipeline.GridWidth, 64, 352, &bResolutionDirty);
+            if (bResolutionDirty)
+            {
+                Pipeline.GridWidth -= Pipeline.GridWidth % 2; // keep it even so Height divides cleanly
+                Pipeline.GridHeight = Pipeline.GridWidth / 2;
+                Viz.MeshGridWidth = Pipeline.GridWidth;
+                Viz.MeshGridHeight = Pipeline.GridHeight;
+                UnloadModel(PreviewModel);
+                PreviewModel = CreatePreviewModel(Viz.MeshGridWidth, Viz.MeshGridHeight);
+                bNeedsRebuild = true; // changing resolution re-bakes everything, same as Regenerate
+            }
+        }
+
         GuiLabel(Rectangle{ 10, (float)Y, 120, 18 }, "Algorithm"); Y += 18;
         // GuiDropdownBox draws its expanded list right where it's called - every control drawn AFTER
         // it in the same frame paints over that list. So its actual draw+interaction call is deferred
@@ -307,34 +404,6 @@ int main()
         {
             GuiLock();
         }
-
-        char Buf[128];
-        auto SliderInt = [&](const char* Label, int32_t& Value, float Min, float Max, bool* bDirtyFlag)
-        {
-            float F = (float)Value;
-            std::snprintf(Buf, sizeof(Buf), "%s: %d", Label, Value);
-            if (GuiSlider(Rectangle{ 10, (float)Y, PanelWidth - 20.0f, 18 }, nullptr, Buf, &F, Min, Max))
-            {
-                Value = (int32_t)std::lround(F);
-                if (bDirtyFlag) *bDirtyFlag = true;
-            }
-            Y += 23;
-        };
-        auto SliderFloat = [&](const char* Label, float& Value, float Min, float Max, bool* bDirtyFlag)
-        {
-            std::snprintf(Buf, sizeof(Buf), "%s: %.2f", Label, Value);
-            if (GuiSlider(Rectangle{ 10, (float)Y, PanelWidth - 20.0f, 18 }, nullptr, Buf, &Value, Min, Max))
-            {
-                if (bDirtyFlag) *bDirtyFlag = true;
-            }
-            Y += 23;
-        };
-        auto SectionLabel = [&](const char* Label)
-        {
-            Y += 4;
-            GuiLine(Rectangle{ 10, (float)Y, PanelWidth - 20.0f, 1 }, nullptr); Y += 4;
-            GuiLabel(Rectangle{ 10, (float)Y, PanelWidth - 20.0f, 16 }, Label); Y += 18;
-        };
 
         // Binds Pipeline.Context.Seed, not ContinentNodeRaw->Config.Seed - every node's Apply() takes
         // its seed from the shared pipeline context (ContinentNode::Apply() overwrites its own Config

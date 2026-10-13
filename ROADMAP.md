@@ -913,6 +913,29 @@ commitment or a schedule - just a place these don't get lost between sessions.
     fragment shader needed) - makes slopes/ridges/valleys actually read as relief, and incidentally
     smooths over the crosshatch too. All three verified via Xvfb screenshot comparison (same seed/
     config, before vs. after).
+  - **Follow-up: user-requested "let me set the planet's radius in meters and subdiv level too."**
+    **Done.** New "Planet" panel section in `solarorbz_gui`: **Radius (km)** (1-100,000 km - not a
+    visualization fake-out, the exact value `BuildSphereMesh` displaces real vertices against; the
+    camera's orbit Distance is rescaled proportionally on change so a 10x radius jump doesn't strand
+    the view inside the new sphere or shrink the old one to a speck) and **Grid Resolution**
+    (64-352, always 2:1 - drives `TerrainPipeline::GridWidth/GridHeight` and the preview mesh
+    resolution together, capped so vertex count stays under the preview mesh's `unsigned short`
+    index limit). Both trigger a full visual refresh - Grid Resolution reallocates the GPU mesh
+    buffers and re-bakes the whole pipeline (same cost as Regenerate); Radius only needs
+    `UpdatePreviewModel` re-called at the new scale, no re-bake.
+    Surfaced a real, previously-undiscovered, and much bigger bug while wiring this up: **no slider
+    in this entire GUI has ever triggered a live rebuild from a drag.** `GuiSliderPro` (this build's
+    raygui) declares `int result = 0;` and never reassigns it before returning, so every one of this
+    file's `if (GuiSlider(...)) { *bDirtyFlag = true; }` call sites was silently dead code - confirmed
+    by reading `raygui.h` directly, then reproducing it live via Xvfb (dragging Grid Resolution moved
+    nothing at all; dragging Radius visibly snapped back to its old value every frame, because
+    raygui's direct pointer-write to the bound float DOES work, but the dirty flag gating this file's
+    own write-back into `Viz.PreviewRadiusMeters` never fired, so the next frame's fresh read
+    stomped the change right back). This affected every slider in the file (Num Continents, Mountain
+    Height, Base Layer Adjust, Secondary Noise, Climate, Height Exaggeration, all of it), not just the
+    two new ones - re-verified by dragging Seed afterward and confirming the terrain actually
+    regenerated. Fixed by comparing each slider's value before/after the `GuiSlider` call directly
+    instead of trusting its return.
   - Three deliberate, documented fidelity trade-offs (unchanged from the original Continent Layer
     port): RNG is `std::mt19937`, not UE's actual `FRandomStream` (same algorithm shape, not
     bit-identical layouts for a given Seed); Perlin noise uses the public Ken Perlin 2002 reference
