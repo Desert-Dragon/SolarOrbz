@@ -67,7 +67,15 @@ inline FSphereMesh BuildSphereMesh(const ContinentLayer& Layer, int32_t GridWidt
             const Vec3& P = Mesh.Vertices[Idx].Position;
             const Vec3& PX = Mesh.Vertices[Y * Mesh.Width + XNext].Position;
             const Vec3& PY = Mesh.Vertices[YNext * Mesh.Width + X].Position;
-            const Vec3 Normal = Vec3::Cross(PX - P, PY - P).GetSafeNormal();
+            // Cross(PY-P, PX-P), not Cross(PX-P, PY-P): this struct's own Vec3 axes don't match
+            // raylib's (see main.cpp's X/Z/Y repacking when writing to Mesh.normals) - that repacking
+            // is itself orientation-reversing (swapping two axes has a -1 determinant), so a normal
+            // that's outward-facing in THIS struct's axes still ends up outward after repacking, but
+            // only because this operand order already compensates for it; cross(PX-P,PY-P) here would
+            // point outward in this struct's own axes yet land inward once repacked into raylib's -
+            // verified numerically (every non-degenerate vertex normal checked against its own outward
+            // position direction, before vs. after repacking).
+            const Vec3 Normal = Vec3::Cross(PY - P, PX - P).GetSafeNormal();
             if (!Normal.IsNearlyZero())
             {
                 Mesh.Vertices[Idx].Normal = Normal;
@@ -86,8 +94,12 @@ inline FSphereMesh BuildSphereMesh(const ContinentLayer& Layer, int32_t GridWidt
             const uint32_t I01 = (uint32_t)((Y + 1) * Mesh.Width + X);
             const uint32_t I11 = (uint32_t)((Y + 1) * Mesh.Width + XNext);
 
-            Mesh.Indices.push_back(I00); Mesh.Indices.push_back(I10); Mesh.Indices.push_back(I11);
-            Mesh.Indices.push_back(I00); Mesh.Indices.push_back(I11); Mesh.Indices.push_back(I01);
+            // Reversed from the "obvious" (I00,I10,I11)/(I00,I11,I01) order - verified empirically
+            // against raylib's front-face convention (see src/gui/main.cpp's CreatePreviewModel,
+            // which duplicates this same topology into its own static GPU index buffer): this order
+            // is what actually renders as the visible outer surface once backface culling is enabled.
+            Mesh.Indices.push_back(I00); Mesh.Indices.push_back(I11); Mesh.Indices.push_back(I10);
+            Mesh.Indices.push_back(I00); Mesh.Indices.push_back(I01); Mesh.Indices.push_back(I11);
         }
     }
 

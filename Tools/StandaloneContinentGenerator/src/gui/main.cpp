@@ -70,8 +70,12 @@ namespace
                 const unsigned short I10 = (unsigned short)(Y * Width + XNext);
                 const unsigned short I01 = (unsigned short)((Y + 1) * Width + X);
                 const unsigned short I11 = (unsigned short)((Y + 1) * Width + XNext);
-                RMesh.indices[IndexCursor++] = I00; RMesh.indices[IndexCursor++] = I10; RMesh.indices[IndexCursor++] = I11;
-                RMesh.indices[IndexCursor++] = I00; RMesh.indices[IndexCursor++] = I11; RMesh.indices[IndexCursor++] = I01;
+                // Reversed from the "obvious" (I00,I10,I11)/(I00,I11,I01) order - verified empirically:
+                // with that order and backface culling enabled, the OUTER (camera-facing) surface was
+                // the one getting culled, leaving only a mostly-featureless sphere. This order is what
+                // actually survives culling as the visible outer surface.
+                RMesh.indices[IndexCursor++] = I00; RMesh.indices[IndexCursor++] = I11; RMesh.indices[IndexCursor++] = I10;
+                RMesh.indices[IndexCursor++] = I00; RMesh.indices[IndexCursor++] = I01; RMesh.indices[IndexCursor++] = I11;
             }
         }
 
@@ -140,6 +144,15 @@ int main()
     // model (and the camera's own orbit distance) sits beyond the far plane and nothing renders.
     rlSetClipPlanes(0.1, 10000000.0);
 
+    // Drawing both sides used to be a deliberate hedge ("mesh winding wasn't rigorously verified")
+    // until a reported rendering glitch prompted actually verifying it: the grid's winding (both here
+    // and in SphereMesh.h's own Indices, now both fixed together) was backwards relative to raylib's
+    // front-face convention - confirmed empirically (flipping it is what made the outer, camera-facing
+    // surface survive culling instead of getting culled). With that fixed, only the true front faces
+    // need to render, which also eliminates the overlapping-double-sided-surface z-fighting/flicker
+    // double-sided drawing was causing.
+    rlEnableBackfaceCulling();
+
     FContinentConfig Config;
     FVisualizationSettings Viz;
     ContinentLayer Layer;
@@ -184,9 +197,7 @@ int main()
         ClearBackground(Color{ 18, 18, 24, 255 });
 
         BeginMode3D(Camera);
-        rlDisableBackfaceCulling(); // mesh winding wasn't rigorously verified against raylib's convention - draw both sides rather than risk missing triangles
         DrawModel(PreviewModel, { 0, 0, 0 }, 1.0f, WHITE);
-        rlEnableBackfaceCulling();
         EndMode3D();
 
         DrawRectangle(0, 0, PanelWidth, ScreenHeight, Color{ 30, 30, 36, 235 });
