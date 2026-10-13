@@ -161,13 +161,19 @@ int main()
         GuiLabel(Rectangle{ 10, (float)Y, PanelWidth - 20.0f, 20 }, "SolarOrbz Standalone"); Y += 24;
 
         GuiLabel(Rectangle{ 10, (float)Y, 120, 20 }, "Algorithm"); Y += 20;
-        if (GuiDropdownBox(Rectangle{ 10, (float)Y, PanelWidth - 20.0f, 24 }, "Radial Seeds;Voronoi Growth;Plate Tectonics", &AlgorithmIndex, bAlgorithmDropdownOpen))
-        {
-            bAlgorithmDropdownOpen = !bAlgorithmDropdownOpen;
-            Config.Algorithm = (EContinentAlgorithm)AlgorithmIndex;
-            bNeedsRebuild = true;
-        }
+        // GuiDropdownBox draws its expanded list right where it's called - every control drawn AFTER
+        // it in the same frame paints over that list. So its actual draw+interaction call is deferred
+        // to the very end of the frame (see below), on top of everything else; only its layout space
+        // is reserved here. Everything else is GuiLock()ed while it's open so a click can't "fall
+        // through" the open list onto a slider underneath on the same frame - raygui's own idiom for
+        // this (see its controls_test_suite demo).
+        const Rectangle AlgorithmBoxRect{ 10, (float)Y, PanelWidth - 20.0f, 24 };
         Y += 32;
+
+        if (bAlgorithmDropdownOpen)
+        {
+            GuiLock();
+        }
 
         char Buf[128];
         auto SliderInt = [&](const char* Label, int32_t& Value, float Min, float Max)
@@ -238,6 +244,18 @@ int main()
             GuiLabel(Rectangle{ 10, (float)Y, PanelWidth - 20.0f, 20 }, Buf); Y += 20;
             std::snprintf(Buf, sizeof(Buf), "Plates: %d", Status.CurrentPlateCount);
             GuiLabel(Rectangle{ 10, (float)Y, PanelWidth - 20.0f, 20 }, Buf); Y += 20;
+        }
+
+        GuiUnlock();
+
+        // Drawn last, on top of every other panel control - see the comment at AlgorithmBoxRect above.
+        // Switching algorithms here only takes effect for next frame's layout (which sliders show,
+        // Bake()'s rebuild) - an imperceptible one-frame lag, not a correctness issue.
+        if (GuiDropdownBox(AlgorithmBoxRect, "Radial Seeds;Voronoi Growth;Plate Tectonics", &AlgorithmIndex, bAlgorithmDropdownOpen))
+        {
+            bAlgorithmDropdownOpen = !bAlgorithmDropdownOpen;
+            Config.Algorithm = (EContinentAlgorithm)AlgorithmIndex;
+            bNeedsRebuild = true;
         }
 
         DrawFPS(ScreenWidth - 90, 10);
