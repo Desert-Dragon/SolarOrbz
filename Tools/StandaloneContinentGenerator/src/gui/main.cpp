@@ -268,6 +268,16 @@ int main()
     bool bAlgorithmDropdownOpen = false;
     int32_t AlgorithmIndex = 0; // RadialSeeds=0, VoronoiGrowth=1, PlateTectonics=2
 
+    // The panel's own content (Planet/Algorithm/Base Layer Adjust/.../stats) is taller than
+    // ScreenHeight once every section is visible at once (confirmed - the "Simulated age"/"Plates"
+    // stats lines render below the bottom of a 980px-tall window with Plate Tectonics selected), so
+    // it needs to scroll. PanelScrollY is in the same pixel units as Y below; MeasuredPanelContentHeight
+    // is remeasured every frame from this frame's own layout (see the end of the panel block) so the
+    // clamp always reflects the CURRENT section visibility (e.g. Plate Tectonics' extra sliders), one
+    // frame stale at most - fine since layout height is otherwise static.
+    float PanelScrollY = 0.0f;
+    float MeasuredPanelContentHeight = 1600.0f;
+
     while (!WindowShouldClose())
     {
         const bool bMouseOverPanel = GetMouseX() < PanelWidth;
@@ -281,6 +291,17 @@ int main()
             }
             Distance = std::max(Distance - GetMouseWheelMove() * Viz.PreviewRadiusMeters * 0.1f, Viz.PreviewRadiusMeters * 1.05f);
         }
+        else
+        {
+            // Scrolling over the panel used to do nothing at all (the branch above only runs when the
+            // mouse is OVER THE 3D VIEW) - repurposed for panel scroll instead of adding a new modifier
+            // key or control. Scrolling down (negative wheel delta) increases PanelScrollY, which
+            // DECREASES the starting Y below, moving content up the screen to reveal what's beneath.
+            PanelScrollY -= GetMouseWheelMove() * 40.0f;
+        }
+        const float MaxPanelScroll = std::max(0.0f, MeasuredPanelContentHeight - (float)ScreenHeight + 16.0f);
+        PanelScrollY = MathUtil::Clamp(PanelScrollY, 0.0f, MaxPanelScroll);
+
         Camera.position = {
             Distance * std::cos(Pitch) * std::sin(Yaw),
             Distance * std::sin(Pitch),
@@ -295,7 +316,13 @@ int main()
         EndMode3D();
 
         DrawRectangle(0, 0, PanelWidth, ScreenHeight, Color{ 30, 30, 36, 235 });
-        int Y = 8;
+        // No scissor/clip region needed around the scrolled content below: the window's own
+        // framebuffer is exactly ScreenHeight tall, so anything scrolled above Y=0 or below Y=
+        // ScreenHeight is already not rasterized - there's nothing left for a scissor rect to cut off.
+        // (A BeginScissorMode(0, 0, PanelWidth, ScreenHeight) was tried here first and reverted: every
+        // slider's value label is deliberately drawn past PanelWidth, out into the otherwise-empty
+        // margin before the 3D view starts, and clipping at PanelWidth truncated every one of them.)
+        int Y = 8 - (int)PanelScrollY;
         GuiLabel(Rectangle{ 10, (float)Y, PanelWidth - 20.0f, 20 }, "SolarOrbz Standalone"); Y += 22;
 
         // Moved above the Algorithm section (which used to define these itself) so the new Planet
@@ -528,6 +555,22 @@ int main()
             bAlgorithmDropdownOpen = !bAlgorithmDropdownOpen;
             ContinentNodeRaw->Config.Algorithm = (EContinentAlgorithm)AlgorithmIndex;
             bNeedsRebuild = true;
+        }
+
+        // Y - (8 - (int)PanelScrollY) is this frame's actual layout span (bottom minus the scrolled
+        // starting point); adding 8 back re-references it to the unscrolled Y=8 baseline that
+        // MaxPanelScroll (computed at the top of the loop, from LAST frame's measurement) expects.
+        MeasuredPanelContentHeight = (float)Y - 8.0f + PanelScrollY;
+
+        // A plain scrollbar track + thumb along the panel's right edge - the only indication a mouse-
+        // wheel scroll even does anything here, since nothing else about the panel looks scrollable.
+        if (MaxPanelScroll > 0.0f)
+        {
+            const float TrackX = PanelWidth - 6.0f;
+            DrawRectangle((int)TrackX, 0, 4, ScreenHeight, Color{ 20, 20, 26, 255 });
+            const float ThumbHeight = std::max(30.0f, (float)ScreenHeight * (float)ScreenHeight / MeasuredPanelContentHeight);
+            const float ThumbY = (PanelScrollY / MaxPanelScroll) * ((float)ScreenHeight - ThumbHeight);
+            DrawRectangle((int)TrackX, (int)ThumbY, 4, (int)ThumbHeight, Color{ 120, 170, 200, 255 });
         }
 
         DrawFPS(ScreenWidth - 90, 10);

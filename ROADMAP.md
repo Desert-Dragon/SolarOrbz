@@ -936,6 +936,26 @@ commitment or a schedule - just a place these don't get lost between sessions.
     two new ones - re-verified by dragging Seed afterward and confirming the terrain actually
     regenerated. Fixed by comparing each slider's value before/after the `GuiSlider` call directly
     instead of trusting its return.
+  - **Follow-up: "make the menu collapsable/scrollable, I'm unable to see the bottom of the
+    screen."** **Done.** With Plate Tectonics selected (the longest panel - adds Num Plates/Mountain
+    Height/Trench Depth/Steps Per Run/Myr Per Step/Run Simulation on top of every other section),
+    the panel's content is taller than the 980px window, pushing the Regenerate button and the
+    Land coverage/Simulated age/Plates stats off the bottom entirely - confirmed via Xvfb screenshot.
+    Added mouse-wheel scrolling: the panel's starting Y is offset by a `PanelScrollY` float (clamped
+    each frame to `[0, ContentHeight - WindowHeight]`, content height remeasured from the previous
+    frame's own layout), which shifts every widget's position with no per-call-site changes needed
+    (every Rectangle in the file already reads the shared, mutable `Y`). Scrolling only engages when
+    the mouse is over the panel - previously a no-op there, since the only existing use of the wheel
+    was 3D camera zoom, which is gated to "mouse over the 3D view" already. A thin scrollbar
+    (track + thumb) along the panel's right edge appears only when there's anything to scroll.
+    A `BeginScissorMode(0, 0, PanelWidth, ...)` was tried first to clip scrolled content and reverted
+    immediately - it clipped every slider's own value label, which is deliberately drawn past
+    `PanelWidth` into the empty margin before the 3D view starts (confirmed via screenshot: labels
+    came back as single truncated letters). Turned out to be unnecessary anyway: the window's own
+    framebuffer already bounds drawing to `[0, ScreenHeight)`, so there was nothing left for a scissor
+    rect to additionally cut off. Verified via Xvfb: scrolled to the bottom of the Plate Tectonics
+    panel (Regenerate/stats now reachable), scrolled back to the top (clamped correctly, labels intact
+    the whole way), and confirmed Radial Seeds' shorter panel shows no scrollbar and needs none.
   - Three deliberate, documented fidelity trade-offs (unchanged from the original Continent Layer
     port): RNG is `std::mt19937`, not UE's actual `FRandomStream` (same algorithm shape, not
     bit-identical layouts for a given Seed); Perlin noise uses the public Ken Perlin 2002 reference

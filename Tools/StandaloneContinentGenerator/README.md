@@ -131,7 +131,11 @@ and (Plate Tectonics only) simulated age and live plate count, printed to stdout
 Run `./solarorbz_gui`. The preview uses a visualization-only radius (400 km, deliberately not
 Earth-scale) chosen so the default Continent Layer height values are comfortably visible without
 distorting the sphere - raylib's default far clip plane is also widened at startup to fit this scale
-(see `rlSetClipPlanes` in `src/gui/main.cpp`). Left-drag to orbit the camera, scroll to zoom.
+(see `rlSetClipPlanes` in `src/gui/main.cpp`). Left-drag to orbit the camera, scroll to zoom - both
+only over the 3D view; the same mouse wheel scrolls the left panel instead while hovered over it
+(needed once Plate Tectonics is selected or Height Exaggeration/stats push the panel's content taller
+than the window - a thin scrollbar tracks position along the panel's right edge when there's anything
+to scroll).
 
 The preview mesh resolution matches the pipeline's own bake resolution (256x128), and vertex colors
 get a simple fixed-direction Lambertian shading term baked in on top of the elevation/biome color
