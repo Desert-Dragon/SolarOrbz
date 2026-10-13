@@ -37,23 +37,59 @@ namespace
         int32_t MeshGridHeight = 64;
     };
 
-    Model BuildRaylibModel(const ContinentLayer& Layer, const FVisualizationSettings& Viz)
+    // Grid topology (vertex count, triangle winding) depends only on MeshGridWidth/Height, which never
+    // change at runtime - only vertex positions/normals/colors do, every time the config changes. The
+    // model is therefore allocated and uploaded ONCE (dynamic=true), and later refreshed in place via
+    // UpdateMeshBuffer rather than UnloadModel+rebuild every frame a slider is dragged - recreating the
+    // GPU buffers (new VAO/VBOs) dozens of times a second is what was producing the "glitchy" torn/
+    // spiked-looking frames: the exact math (probed separately, heights stay bounded, nothing anomalous)
+    // was never the problem, repeatedly churning GPU mesh objects was.
+    Model CreatePreviewModel(int32_t Width, int32_t Height)
     {
-        const FSphereMesh Src = BuildSphereMesh(Layer, Viz.MeshGridWidth, Viz.MeshGridHeight, Viz.PreviewRadiusMeters, Viz.HeightExaggeration);
-
         Mesh RMesh = { 0 };
-        RMesh.vertexCount = (int)Src.Vertices.size();
-        RMesh.triangleCount = (int)Src.Indices.size() / 3;
+        RMesh.vertexCount = Width * Height;
+        RMesh.triangleCount = Width * (Height - 1) * 2;
         RMesh.vertices = (float*)MemAlloc(sizeof(float) * 3 * RMesh.vertexCount);
         RMesh.normals = (float*)MemAlloc(sizeof(float) * 3 * RMesh.vertexCount);
         RMesh.colors = (unsigned char*)MemAlloc(sizeof(unsigned char) * 4 * RMesh.vertexCount);
-        RMesh.indices = (unsigned short*)MemAlloc(sizeof(unsigned short) * Src.Indices.size());
+        RMesh.indices = (unsigned short*)MemAlloc(sizeof(unsigned short) * RMesh.triangleCount * 3);
+
+        std::fill(RMesh.vertices, RMesh.vertices + 3 * RMesh.vertexCount, 0.0f);
+        std::fill(RMesh.normals, RMesh.normals + 3 * RMesh.vertexCount, 0.0f);
+        std::fill(RMesh.colors, RMesh.colors + 4 * RMesh.vertexCount, (unsigned char)255);
+
+        // Static topology, filled once - identical winding to BuildSphereMesh's own index generation
+        // (longitude wraps, latitude doesn't).
+        size_t IndexCursor = 0;
+        for (int32_t Y = 0; Y < Height - 1; ++Y)
+        {
+            for (int32_t X = 0; X < Width; ++X)
+            {
+                const int32_t XNext = (X + 1) % Width;
+                const unsigned short I00 = (unsigned short)(Y * Width + X);
+                const unsigned short I10 = (unsigned short)(Y * Width + XNext);
+                const unsigned short I01 = (unsigned short)((Y + 1) * Width + X);
+                const unsigned short I11 = (unsigned short)((Y + 1) * Width + XNext);
+                RMesh.indices[IndexCursor++] = I00; RMesh.indices[IndexCursor++] = I10; RMesh.indices[IndexCursor++] = I11;
+                RMesh.indices[IndexCursor++] = I00; RMesh.indices[IndexCursor++] = I11; RMesh.indices[IndexCursor++] = I01;
+            }
+        }
+
+        UploadMesh(&RMesh, true); // dynamic=true - these buffers are rewritten in place every update
+        return LoadModelFromMesh(RMesh);
+    }
+
+    // Overwrites the model's existing vertex/normal/color buffers in place (same vertex count every
+    // time - MeshGridWidth/Height are fixed) via UpdateMeshBuffer, instead of reallocating GPU objects.
+    void UpdatePreviewModel(Model& PreviewModel, const ContinentLayer& Layer, const FVisualizationSettings& Viz)
+    {
+        const FSphereMesh Src = BuildSphereMesh(Layer, Viz.MeshGridWidth, Viz.MeshGridHeight, Viz.PreviewRadiusMeters, Viz.HeightExaggeration);
+        Mesh& RMesh = PreviewModel.meshes[0];
 
         // Color-codes elevation relative to sea level (0m) - blue below, green/brown/white above -
         // since this tool's job is visually verifying generation math, not final-game shading.
         float MinH = 1e9f, MaxH = -1e9f;
         for (const FSphereMeshVertex& V : Src.Vertices) { MinH = std::min(MinH, V.HeightMeters); MaxH = std::max(MaxH, V.HeightMeters); }
-        const float Range = std::max(MaxH - MinH, 1.0f);
 
         for (size_t i = 0; i < Src.Vertices.size(); ++i)
         {
@@ -87,14 +123,10 @@ namespace
             }
             RMesh.colors[i * 4 + 0] = C.r; RMesh.colors[i * 4 + 1] = C.g; RMesh.colors[i * 4 + 2] = C.b; RMesh.colors[i * 4 + 3] = C.a;
         }
-        for (size_t i = 0; i < Src.Indices.size(); ++i)
-        {
-            RMesh.indices[i] = (unsigned short)Src.Indices[i];
-        }
 
-        UploadMesh(&RMesh, false);
-        Model M = LoadModelFromMesh(RMesh);
-        return M;
+        UpdateMeshBuffer(RMesh, 0, RMesh.vertices, (int)(sizeof(float) * 3 * RMesh.vertexCount), 0);
+        UpdateMeshBuffer(RMesh, 2, RMesh.normals, (int)(sizeof(float) * 3 * RMesh.vertexCount), 0);
+        UpdateMeshBuffer(RMesh, 3, RMesh.colors, (int)(sizeof(unsigned char) * 4 * RMesh.vertexCount), 0);
     }
 }
 
@@ -113,7 +145,8 @@ int main()
     ContinentLayer Layer;
     Layer.Config = Config;
     Layer.Bake();
-    Model PreviewModel = BuildRaylibModel(Layer, Viz);
+    Model PreviewModel = CreatePreviewModel(Viz.MeshGridWidth, Viz.MeshGridHeight);
+    UpdatePreviewModel(PreviewModel, Layer, Viz);
 
     // Manual orbit camera - left-drag to orbit, wheel to zoom. Deliberately not raylib's built-in
     // CAMERA_ORBITAL mode, which auto-spins on its own rather than responding to the mouse.
@@ -229,8 +262,7 @@ int main()
         {
             Layer.Config = Config;
             Layer.Bake();
-            UnloadModel(PreviewModel);
-            PreviewModel = BuildRaylibModel(Layer, Viz);
+            UpdatePreviewModel(PreviewModel, Layer, Viz);
             bNeedsRebuild = false;
         }
         Y += 36;
