@@ -72,3 +72,15 @@ See `README.md` for the full flag list, JSON config format, and GUI controls.
 - **GUI window doesn't appear / `DISPLAY` errors** - `solarorbz_gui` needs a real X11 (or Wayland via
   XWayland) display; it won't run in a headless SSH session without one (e.g. `Xvfb` + a VNC viewer,
   or just run it on your desktop).
+- **Windows: `build.bat` makes a `build/` folder but no `.exe`, and the console window closes
+  instantly** - that's the configure step failing and the window closing before you can read why
+  (a classic symptom of double-clicking a `.bat` from Explorer, since the window closes the moment
+  the script exits). `build.bat` now pauses at the end either way, so re-run it and read the error.
+  The most common cause on Windows is no C++ compiler found by CMake: install Visual Studio 2019 or
+  2022 (the free Community edition works) with the **"Desktop development with C++"** workload, then
+  re-run `build.bat`. If `cmake` itself isn't recognized, install it from
+  [cmake.org/download](https://cmake.org/download/) and check **"Add CMake to the system PATH"**
+  during setup.
+- **Binaries aren't where I expect on Windows** - Visual Studio is a multi-config CMake generator,
+  so binaries land in `build\Release\solarorbz_cli.exe` (not `build\solarorbz_cli.exe` directly);
+  `build.bat` prints both possible paths for this reason.
