@@ -354,7 +354,9 @@ void ContinentLayer::BakePlateTectonics()
     }
 
     auto IsOceanic = [this](int32_t Plate) { return Plate >= 0 && Plates[Plate].bOceanic; };
-    auto IsContinental = [this](int32_t Plate) { return Plate == PolarContinentalSentinel || (Plate >= 0 && !Plates[Plate].bOceanic); };
+    // MSVC requires PolarContinentalSentinel in the capture list even though it's a local constexpr -
+    // GCC/Clang allow using it implicitly since it's never odr-used, MSVC doesn't.
+    auto IsContinental = [this, PolarContinentalSentinel](int32_t Plate) { return Plate == PolarContinentalSentinel || (Plate >= 0 && !Plates[Plate].bOceanic); };
 
     std::vector<int32_t> DistanceHops(NumCells, -1);
     std::vector<float> BoundaryModifierMeters(NumCells, 0.0f);
