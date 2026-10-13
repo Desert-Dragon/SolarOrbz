@@ -58,7 +58,7 @@ multi-config generator (Visual Studio); `build.bat` already does this for you.
 ## Run
 
 ```sh
-./solarorbz_cli --out heightmap.png                 # CLI: writes a heightmap PNG + prints stats
+./solarorbz_cli --out-prefix /tmp/myplanet          # CLI: writes heightmap/biome/climate PNGs + prints stats
 ./solarorbz_gui                                     # GUI: interactive 3D preview
 ```
 

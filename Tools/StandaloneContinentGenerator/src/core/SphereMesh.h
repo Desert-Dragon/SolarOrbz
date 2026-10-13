@@ -1,13 +1,13 @@
-// Builds a displayable triangle mesh directly from a FLatLongGrid sample of a ContinentLayer -
-// a deliberate v1 scope cut: this is NOT a port of the UE plugin's icosphere subdivision/UV-seam/
-// pentagon-pole-handling (FSolarOrbzIcoSphereGenerator). A plain lat/long UV-sphere is far simpler
-// to build and is good enough for a fast-iteration preview tool; it pinches at the poles (every
-// vertex at Y=0 or Y=Height-1 collapses to the same point) same as any naive UV-sphere. Used only by
-// the GUI frontend - the CLI only needs ContinentLayer::GetRawHeightMeters for its heightmap PNG.
+// Builds a displayable triangle mesh from any direction->height-in-meters sampler (a ContinentLayer,
+// a baked TerrainPipeline's FHeightField, whatever) walked over a FLatLongGrid - a deliberate v1
+// scope cut: this is NOT a port of the UE plugin's icosphere subdivision/UV-seam/pentagon-pole-
+// handling (FSolarOrbzIcoSphereGenerator). A plain lat/long UV-sphere is far simpler to build and
+// is good enough for a fast-iteration preview tool; it pinches at the poles (every vertex at Y=0 or
+// Y=Height-1 collapses to the same point) same as any naive UV-sphere. Used only by the GUI
+// frontend - the CLI samples its sources directly for its PNG output, no mesh involved.
 #pragma once
 
 #include "Vec3.h"
-#include "ContinentLayer.h"
 #include "LatLongGrid.h"
 #include <vector>
 #include <cstdint>
@@ -27,7 +27,8 @@ struct FSphereMesh
     int32_t Height = 0;
 };
 
-inline FSphereMesh BuildSphereMesh(const ContinentLayer& Layer, int32_t GridWidth, int32_t GridHeight, double RadiusMeters, double HeightExaggeration = 1.0)
+template <typename FHeightSampler>
+inline FSphereMesh BuildSphereMesh(const FHeightSampler& SampleHeightMeters, int32_t GridWidth, int32_t GridHeight, double RadiusMeters, double HeightExaggeration = 1.0)
 {
     FSphereMesh Mesh;
     Mesh.Width = std::max(GridWidth, 2);
@@ -45,7 +46,7 @@ inline FSphereMesh BuildSphereMesh(const ContinentLayer& Layer, int32_t GridWidt
     Mesh.Vertices.resize(NumCells);
     Grid.ForEachCell([&](int32_t Idx, const Vec3& Dir, double, double)
     {
-        const float HeightMeters = Layer.GetRawHeightMeters(Dir);
+        const float HeightMeters = SampleHeightMeters(Dir);
         FSphereMeshVertex& V = Mesh.Vertices[Idx];
         V.HeightMeters = HeightMeters;
         const double DisplacedRadius = std::max(RadiusMeters + HeightMeters * HeightExaggeration, MinRadius);

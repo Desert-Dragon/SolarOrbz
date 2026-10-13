@@ -37,6 +37,8 @@ target_include_directories(stb_image_write INTERFACE ${stb_SOURCE_DIR})
 add_library(solarorbz_core STATIC
   src/core/NoiseBasis.cpp
   src/core/ContinentLayer.cpp
+  src/core/Nodes/HydraulicErosionNode.cpp
+  src/core/Nodes/ThermalErosionNode.cpp
 )
 target_include_directories(solarorbz_core PUBLIC src/core)
 target_link_libraries(solarorbz_core PUBLIC nlohmann_json::nlohmann_json)

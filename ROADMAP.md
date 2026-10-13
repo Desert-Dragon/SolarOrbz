@@ -856,23 +856,52 @@ commitment or a schedule - just a place these don't get lost between sessions.
   but nothing yet drives a star-appropriate material or surface behavior (turbulence, emissive
   look) from it.
 
-- **Standalone Continent Generator tool.** **Done.** `Tools/StandaloneContinentGenerator/` - a
-  non-UE, non-UObject C++17 port of just the Continent Layer and its Plate Tectonics simulation
-  (all 3 algorithms; persistent plates, mountain-building stress, plate splitting), built because
-  iterating on this layer's generation math from inside the editor is slow (reimport/rebuild cycle
-  per tweak). Config properties are named identically to the real `UPROPERTY`s so a config file
-  reads like the Details panel; verified 1:1 against every Continent/Tectonics property in
-  `SolarOrbzTerrainLayers.h`. Two frontends share one core library (`solarorbz_core`): `solarorbz_cli`
-  (JSON config in, heightmap PNG + land-coverage/plate stats out) and `solarorbz_gui` (raylib +
-  raygui interactive 3D orbit-camera preview with live sliders and a Run Simulation button). Three
-  deliberate, documented fidelity trade-offs: RNG is `std::mt19937`, not UE's actual `FRandomStream`
-  (same algorithm shape, not bit-identical layouts for a given Seed); Perlin noise uses the public
-  Ken Perlin 2002 reference implementation instead of Epic-internal `FMath::PerlinNoise3D`; the
-  preview mesh is a plain lat/long UV-sphere (pole-pinched), not a port of the plugin's icosphere.
-  Noise/Heightmap/Stamp/Erosion/Terrace/Canyon layers, Climate Simulation, and Biomes are explicitly
-  out of scope for this tool. See `Tools/StandaloneContinentGenerator/README.md` (what it does,
-  scope, usage) and `BUILDING.md` (compile steps) - a standalone CMake project, not part of the
-  plugin's own UE build.
+- **Standalone Continent Generator tool.** **Done**, and since grown well past its original scope.
+  `Tools/StandaloneContinentGenerator/` - a non-UE, non-UObject C++17 tool, built because iterating
+  on terrain generation math from inside the editor is slow (reimport/rebuild cycle per tweak).
+  Started as a port of just the Continent Layer and its Plate Tectonics simulation (all 3 algorithms;
+  persistent plates, mountain-building stress, plate splitting) - config properties named identically
+  to the real `UPROPERTY`s so a config file reads like the Details panel, verified 1:1 against every
+  Continent/Tectonics property in `SolarOrbzTerrainLayers.h`.
+  - **Full terrain-generation pipeline (independent reimplementation of a World Creator-class
+    feature set, from public/academic techniques - never decompiled or reverse-engineered from any
+    commercial tool).** A linear, ordered node stack (`TerrainPipeline`, `src/core/TerrainNode.h`)
+    baked onto one shared `FHeightField`: Continent (base shape) -> additive fractal Noise ->
+    base-layer Scale/Offset/Power-Curve adjust -> (explicit, button-triggered, not part of the
+    live-rebuild stack) particle-based "droplet" Hydraulic Erosion (Beyer 2015 TU Munich thesis
+    lineage) and talus-angle Thermal Erosion (Musgrave/Kolb/Mace, SIGGRAPH 1989) -> a
+    temperature/moisture Climate simulation (latitude+lapse-rate temperature, prevailing-wind
+    orographic rain-shadow moisture) -> Whittaker-style (1975) height/temp/moisture Biome
+    classification, for building biome materials from later. Both frontends updated: `solarorbz_cli`'s
+    JSON schema gained nested `Noise[]`/`HeightAdjust`/`HydraulicErosion`/`ThermalErosion`/`Climate`/
+    `Biome` keys (breaking change from the old flat schema - this is an actively-evolving internal
+    tool) and now writes height/biome/temperature/moisture PNGs (height PNG normalizes ocean and land
+    separately around sea level, instead of one linear min/max that crushed land into an
+    indistinguishable sliver next to ocean-trench depths); `solarorbz_gui` gained Base Layer
+    Adjust/Secondary Noise/Erosion/Climate panel sections and a Height/Biome view toggle. Erosion
+    defaults (`FHydraulicErosionConfig`) were empirically tuned via CLI - this field's heights are
+    already real meters (unlike the textbook normalized-0-1 version of the droplet algorithm), so the
+    erosion math is naturally meters-scale before any extra strength multiplier; the original
+    defaults washed away effectively all land on both a thin Radial-Seeds-default bake and a thick
+    Plate-Tectonics bake, confirmed via before/after Ocean/Beach/biome-mix % comparison, fixed by
+    lowering `NumDroplets` (50000 -> 2000) and `ErosionStrengthMeters` (2.0 -> 1.0) together (dropping
+    only one of the two still left a near-total wipeout). A `CombineNode` (secondary-noise blend:
+    Add/Subtract/Multiply/Max/Min/Average) is built but not yet wired into either frontend.
+    GPU-accelerated real-time preview (compute shaders / GL 4.3+, or a fragment-shader ping-pong
+    GPGPU approach) is a deliberately deferred, harder follow-up phase - not attempted this pass,
+    everything above is CPU-only.
+  - Three deliberate, documented fidelity trade-offs (unchanged from the original Continent Layer
+    port): RNG is `std::mt19937`, not UE's actual `FRandomStream` (same algorithm shape, not
+    bit-identical layouts for a given Seed); Perlin noise uses the public Ken Perlin 2002 reference
+    implementation instead of Epic-internal `FMath::PerlinNoise3D`; the preview mesh is a plain
+    lat/long UV-sphere (pole-pinched), not a port of the plugin's icosphere - also now genericized
+    (`SphereMesh.h`'s `BuildSphereMesh` takes any direction->height-in-meters sampler, not just a
+    `ContinentLayer`, so the GUI can preview the full baked pipeline output, not just the raw
+    Continent layer). The UE plugin's own Heightmap/Stamp/Terrace/Canyon layers and its node-graph
+    *editor UI* remain explicitly out of scope (this tool's pipeline is a fixed C++ stack, not an
+    editable visual graph). See `Tools/StandaloneContinentGenerator/README.md` (what it does, scope,
+    usage) and `BUILDING.md` (compile steps) - a standalone CMake project, not part of the plugin's
+    own UE build.
 
 ## Documentation
 

@@ -1,7 +1,15 @@
-// GUI frontend: raylib + raygui interactive real-time 3D orbit-camera preview with live sliders and
-// a Run Simulation button, sharing solarorbz_core with the CLI. No UE dependency - see
-// src/core/ContinentLayer.h for the full scope-cut/fidelity notes (RNG, noise, mesh).
-#include "ContinentLayer.h"
+// GUI frontend: raylib + raygui interactive real-time 3D orbit-camera preview of the full terrain
+// pipeline (Continent -> Noise -> Base Layer Adjust, plus on-demand Hydraulic/Thermal erosion and
+// a Climate/Biome pass), sharing solarorbz_core with the CLI. No UE dependency - see
+// src/core/ContinentLayer.h and src/core/TerrainNode.h for the scope-cut/fidelity notes.
+#include "TerrainNode.h"
+#include "Nodes/ContinentNode.h"
+#include "Nodes/NoiseNode.h"
+#include "Nodes/HeightAdjustNode.h"
+#include "Nodes/HydraulicErosionNode.h"
+#include "Nodes/ThermalErosionNode.h"
+#include "Climate.h"
+#include "BiomeClassifier.h"
 #include "SphereMesh.h"
 
 #include <raylib.h>
@@ -16,11 +24,13 @@
 
 namespace
 {
-    constexpr int32_t ScreenWidth = 1280;
-    constexpr int32_t ScreenHeight = 800;
-    constexpr int32_t PanelWidth = 300;
+    constexpr int32_t ScreenWidth = 1360;
+    constexpr int32_t ScreenHeight = 980;
+    constexpr int32_t PanelWidth = 320;
 
-    // Visualization-only - NOT part of FContinentConfig. Default height values are a very small
+    enum class EViewMode : int32_t { Height = 0, Biome = 1 };
+
+    // Visualization-only - NOT part of any node's own config. Default height values are a very small
     // percentage of Earth-scale radii (this is exactly the "no mountains visible" issue this tool
     // exists to let you iterate on without rebuilding the UE plugin each time) - the preview needs its
     // own exaggeration knob, independent of the config, to actually show relief at a glance.
@@ -30,20 +40,18 @@ namespace
         // comfortably larger than the worst case (most negative Ocean Floor Depth/Trench slider value)
         // times the largest Height Exaggeration the slider allows, or the displaced radius collapses
         // toward zero (SphereMesh.h's MinRadius clamp then catches it, but the result is a degenerate
-        // spiky shape, not a dented sphere - the actual symptom seen before this value was raised).
+        // spiky shape, not a dented sphere).
         float PreviewRadiusMeters = 400000.0f;
         float HeightExaggeration = 5.0f;
         int32_t MeshGridWidth = 128;
         int32_t MeshGridHeight = 64;
+        EViewMode ViewMode = EViewMode::Height;
     };
 
     // Grid topology (vertex count, triangle winding) depends only on MeshGridWidth/Height, which never
-    // change at runtime - only vertex positions/normals/colors do, every time the config changes. The
+    // change at runtime - only vertex positions/normals/colors do, every time the terrain changes. The
     // model is therefore allocated and uploaded ONCE (dynamic=true), and later refreshed in place via
-    // UpdateMeshBuffer rather than UnloadModel+rebuild every frame a slider is dragged - recreating the
-    // GPU buffers (new VAO/VBOs) dozens of times a second is what was producing the "glitchy" torn/
-    // spiked-looking frames: the exact math (probed separately, heights stay bounded, nothing anomalous)
-    // was never the problem, repeatedly churning GPU mesh objects was.
+    // UpdateMeshBuffer rather than UnloadModel+rebuild every frame a slider is dragged.
     Model CreatePreviewModel(int32_t Width, int32_t Height)
     {
         Mesh RMesh = { 0 };
@@ -70,10 +78,9 @@ namespace
                 const unsigned short I10 = (unsigned short)(Y * Width + XNext);
                 const unsigned short I01 = (unsigned short)((Y + 1) * Width + X);
                 const unsigned short I11 = (unsigned short)((Y + 1) * Width + XNext);
-                // Reversed from the "obvious" (I00,I10,I11)/(I00,I11,I01) order - verified empirically:
-                // with that order and backface culling enabled, the OUTER (camera-facing) surface was
-                // the one getting culled, leaving only a mostly-featureless sphere. This order is what
-                // actually survives culling as the visible outer surface.
+                // Reversed from the "obvious" (I00,I10,I11)/(I00,I11,I01) order - verified empirically
+                // against raylib's front-face convention: with backface culling enabled, this order is
+                // what survives as the visible outer surface.
                 RMesh.indices[IndexCursor++] = I00; RMesh.indices[IndexCursor++] = I11; RMesh.indices[IndexCursor++] = I10;
                 RMesh.indices[IndexCursor++] = I00; RMesh.indices[IndexCursor++] = I01; RMesh.indices[IndexCursor++] = I11;
             }
@@ -83,15 +90,35 @@ namespace
         return LoadModelFromMesh(RMesh);
     }
 
-    // Overwrites the model's existing vertex/normal/color buffers in place (same vertex count every
-    // time - MeshGridWidth/Height are fixed) via UpdateMeshBuffer, instead of reallocating GPU objects.
-    void UpdatePreviewModel(Model& PreviewModel, const ContinentLayer& Layer, const FVisualizationSettings& Viz)
+    Color HeightRampColor(float HeightMeters, float MinH, float MaxH)
     {
-        const FSphereMesh Src = BuildSphereMesh(Layer, Viz.MeshGridWidth, Viz.MeshGridHeight, Viz.PreviewRadiusMeters, Viz.HeightExaggeration);
+        if (HeightMeters <= 0.0f)
+        {
+            const float T = MathUtil::Clamp((HeightMeters - MinH) / std::max(-MinH, 1.0f), 0.0f, 1.0f);
+            return { (unsigned char)(10 + 20 * T), (unsigned char)(40 + 60 * T), (unsigned char)(90 + 120 * T), 255 };
+        }
+        const float T = MathUtil::Clamp(HeightMeters / std::max(MaxH, 1.0f), 0.0f, 1.0f);
+        if (T < 0.5f)
+        {
+            const float Tt = T / 0.5f;
+            return { (unsigned char)(60 + Tt * 80), (unsigned char)(110 + Tt * 40), (unsigned char)(50), 255 };
+        }
+        const float Tt = (T - 0.5f) / 0.5f;
+        return { (unsigned char)(140 + Tt * 115), (unsigned char)(150 + Tt * 105), (unsigned char)(90 + Tt * 165), 255 };
+    }
+
+    // Overwrites the model's existing vertex/normal/color buffers in place (same vertex count every
+    // time - MeshGridWidth/Height are fixed) via UpdateMeshBuffer, instead of reallocating GPU objects
+    // (churning GPU mesh buffers every frame a slider is dragged was the cause of an earlier reported
+    // rendering glitch - see git history). Colors come from either the elevation ramp or the biome
+    // classification, per Viz.ViewMode.
+    void UpdatePreviewModel(Model& PreviewModel, const FHeightField& Terrain, const FBiomeField& Biomes, const FVisualizationSettings& Viz)
+    {
+        const FLatLongGrid TerrainGrid(Terrain.Width, Terrain.Height);
+        auto SampleHeight = [&](const Vec3& Dir) { return Terrain.SampleDirection(TerrainGrid, Dir); };
+        const FSphereMesh Src = BuildSphereMesh(SampleHeight, Viz.MeshGridWidth, Viz.MeshGridHeight, Viz.PreviewRadiusMeters, Viz.HeightExaggeration);
         Mesh& RMesh = PreviewModel.meshes[0];
 
-        // Color-codes elevation relative to sea level (0m) - blue below, green/brown/white above -
-        // since this tool's job is visually verifying generation math, not final-game shading.
         float MinH = 1e9f, MaxH = -1e9f;
         for (const FSphereMeshVertex& V : Src.Vertices) { MinH = std::min(MinH, V.HeightMeters); MaxH = std::max(MaxH, V.HeightMeters); }
 
@@ -106,24 +133,19 @@ namespace
             RMesh.normals[i * 3 + 2] = (float)V.Normal.Y;
 
             Color C;
-            if (V.HeightMeters <= 0.0f)
+            if (Viz.ViewMode == EViewMode::Biome)
             {
-                const float T = MathUtil::Clamp((V.HeightMeters - MinH) / std::max(-MinH, 1.0f), 0.0f, 1.0f);
-                C = { (unsigned char)(10 + 20 * T), (unsigned char)(40 + 60 * T), (unsigned char)(90 + 120 * T), 255 };
+                const Vec3 Dir = V.Position.GetSafeNormal();
+                const FLatLongGrid::FBilinearCell Cell = TerrainGrid.ComputeBilinearCell(Dir);
+                const int32_t NearestX = Cell.Tx < 0.5 ? Cell.X0 : Cell.X1;
+                const int32_t NearestY = Cell.Ty < 0.5 ? Cell.Y0 : Cell.Y1;
+                const EBiome Biome = (EBiome)Biomes.BiomeId[(size_t)NearestY * Terrain.Width + NearestX];
+                const FBiomeColor BC = GetBiomeColor(Biome);
+                C = { BC.R, BC.G, BC.B, 255 };
             }
             else
             {
-                const float T = MathUtil::Clamp(V.HeightMeters / std::max(MaxH, 1.0f), 0.0f, 1.0f);
-                if (T < 0.5f)
-                {
-                    const float Tt = T / 0.5f;
-                    C = { (unsigned char)(60 + Tt * 80), (unsigned char)(110 + Tt * 40), (unsigned char)(50), 255 };
-                }
-                else
-                {
-                    const float Tt = (T - 0.5f) / 0.5f;
-                    C = { (unsigned char)(140 + Tt * 115), (unsigned char)(150 + Tt * 105), (unsigned char)(90 + Tt * 165), 255 };
-                }
+                C = HeightRampColor(V.HeightMeters, MinH, MaxH);
             }
             RMesh.colors[i * 4 + 0] = C.r; RMesh.colors[i * 4 + 1] = C.g; RMesh.colors[i * 4 + 2] = C.b; RMesh.colors[i * 4 + 3] = C.a;
         }
@@ -136,30 +158,63 @@ namespace
 
 int main()
 {
-    InitWindow(ScreenWidth, ScreenHeight, "SolarOrbz Standalone - Continent Generator Preview");
+    InitWindow(ScreenWidth, ScreenHeight, "SolarOrbz Standalone - Terrain Pipeline Preview");
     SetTargetFPS(60);
 
     // raylib's default far clip plane (1000 units) assumes small-scene scale - our world coordinates
     // are in meters at planet-preview scale (tens of thousands+), so without widening this the whole
     // model (and the camera's own orbit distance) sits beyond the far plane and nothing renders.
     rlSetClipPlanes(0.1, 10000000.0);
-
-    // Drawing both sides used to be a deliberate hedge ("mesh winding wasn't rigorously verified")
-    // until a reported rendering glitch prompted actually verifying it: the grid's winding (both here
-    // and in SphereMesh.h's own Indices, now both fixed together) was backwards relative to raylib's
-    // front-face convention - confirmed empirically (flipping it is what made the outer, camera-facing
-    // surface survive culling instead of getting culled). With that fixed, only the true front faces
-    // need to render, which also eliminates the overlapping-double-sided-surface z-fighting/flicker
-    // double-sided drawing was causing.
     rlEnableBackfaceCulling();
 
-    FContinentConfig Config;
+    TerrainPipeline Pipeline;
+    Pipeline.GridWidth = 256;
+    Pipeline.GridHeight = 128;
+
+    auto ContinentNodePtr = std::make_unique<ContinentNode>();
+    ContinentNode* ContinentNodeRaw = ContinentNodePtr.get();
+    Pipeline.Nodes.push_back(std::move(ContinentNodePtr));
+
+    auto NoiseNodePtr = std::make_unique<NoiseNode>();
+    NoiseNodePtr->Config.AmplitudeMeters = 0.0f; // off by default - purely additive detail on top of Continent
+    NoiseNode* NoiseNodeRaw = NoiseNodePtr.get();
+    Pipeline.Nodes.push_back(std::move(NoiseNodePtr));
+
+    auto HeightAdjustNodePtr = std::make_unique<HeightAdjustNode>();
+    HeightAdjustNode* HeightAdjustNodeRaw = HeightAdjustNodePtr.get();
+    Pipeline.Nodes.push_back(std::move(HeightAdjustNodePtr));
+
+    // Erosion is deliberately NOT part of Pipeline.Nodes - it's expensive enough (tens of thousands
+    // of droplets) that re-running it every frame a slider is dragged would stall the UI. It's an
+    // explicit "Run Erosion" step applied directly onto the current baked terrain, the same pattern
+    // already established by Plate Tectonics' own "Run Simulation" button.
+    HydraulicErosionNode HydraulicErosion;
+    ThermalErosionNode ThermalErosion;
+
+    FClimateConfig ClimateConfig;
+    FBiomeConfig BiomeConfig;
+
+    FHeightField BakedTerrain = Pipeline.Bake();
+    FClimateField Climate = SimulateClimate(BakedTerrain, ClimateConfig);
+    FBiomeField Biomes = ClassifyBiomes(BakedTerrain, Climate, BiomeConfig);
+
     FVisualizationSettings Viz;
-    ContinentLayer Layer;
-    Layer.Config = Config;
-    Layer.Bake();
     Model PreviewModel = CreatePreviewModel(Viz.MeshGridWidth, Viz.MeshGridHeight);
-    UpdatePreviewModel(PreviewModel, Layer, Viz);
+    UpdatePreviewModel(PreviewModel, BakedTerrain, Biomes, Viz);
+
+    auto RebakeBase = [&]()
+    {
+        BakedTerrain = Pipeline.Bake();
+        Climate = SimulateClimate(BakedTerrain, ClimateConfig);
+        Biomes = ClassifyBiomes(BakedTerrain, Climate, BiomeConfig);
+        UpdatePreviewModel(PreviewModel, BakedTerrain, Biomes, Viz);
+    };
+    auto RecomputeClimateAndRefresh = [&]()
+    {
+        Climate = SimulateClimate(BakedTerrain, ClimateConfig);
+        Biomes = ClassifyBiomes(BakedTerrain, Climate, BiomeConfig);
+        UpdatePreviewModel(PreviewModel, BakedTerrain, Biomes, Viz);
+    };
 
     // Manual orbit camera - left-drag to orbit, wheel to zoom. Deliberately not raylib's built-in
     // CAMERA_ORBITAL mode, which auto-spins on its own rather than responding to the mouse.
@@ -171,6 +226,7 @@ int main()
     Camera.projection = CAMERA_PERSPECTIVE;
 
     bool bNeedsRebuild = false;
+    bool bNeedsClimateRefresh = false;
     bool bAlgorithmDropdownOpen = false;
     int32_t AlgorithmIndex = 0; // RadialSeeds=0, VoronoiGrowth=1, PlateTectonics=2
 
@@ -201,18 +257,17 @@ int main()
         EndMode3D();
 
         DrawRectangle(0, 0, PanelWidth, ScreenHeight, Color{ 30, 30, 36, 235 });
-        int Y = 10;
-        GuiLabel(Rectangle{ 10, (float)Y, PanelWidth - 20.0f, 20 }, "SolarOrbz Standalone"); Y += 24;
+        int Y = 8;
+        GuiLabel(Rectangle{ 10, (float)Y, PanelWidth - 20.0f, 20 }, "SolarOrbz Standalone"); Y += 22;
 
-        GuiLabel(Rectangle{ 10, (float)Y, 120, 20 }, "Algorithm"); Y += 20;
+        GuiLabel(Rectangle{ 10, (float)Y, 120, 18 }, "Algorithm"); Y += 18;
         // GuiDropdownBox draws its expanded list right where it's called - every control drawn AFTER
         // it in the same frame paints over that list. So its actual draw+interaction call is deferred
         // to the very end of the frame (see below), on top of everything else; only its layout space
         // is reserved here. Everything else is GuiLock()ed while it's open so a click can't "fall
-        // through" the open list onto a slider underneath on the same frame - raygui's own idiom for
-        // this (see its controls_test_suite demo).
-        const Rectangle AlgorithmBoxRect{ 10, (float)Y, PanelWidth - 20.0f, 24 };
-        Y += 32;
+        // through" the open list onto a slider underneath on the same frame.
+        const Rectangle AlgorithmBoxRect{ 10, (float)Y, PanelWidth - 20.0f, 22 };
+        Y += 28;
 
         if (bAlgorithmDropdownOpen)
         {
@@ -220,84 +275,155 @@ int main()
         }
 
         char Buf[128];
-        auto SliderInt = [&](const char* Label, int32_t& Value, float Min, float Max)
+        auto SliderInt = [&](const char* Label, int32_t& Value, float Min, float Max, bool* bDirtyFlag)
         {
             float F = (float)Value;
             std::snprintf(Buf, sizeof(Buf), "%s: %d", Label, Value);
-            if (GuiSlider(Rectangle{ 10, (float)Y, PanelWidth - 20.0f, 20 }, nullptr, Buf, &F, Min, Max))
+            if (GuiSlider(Rectangle{ 10, (float)Y, PanelWidth - 20.0f, 18 }, nullptr, Buf, &F, Min, Max))
             {
                 Value = (int32_t)std::lround(F);
-                bNeedsRebuild = true;
+                if (bDirtyFlag) *bDirtyFlag = true;
             }
-            Y += 26;
+            Y += 23;
         };
-        auto SliderFloat = [&](const char* Label, float& Value, float Min, float Max)
+        auto SliderFloat = [&](const char* Label, float& Value, float Min, float Max, bool* bDirtyFlag)
         {
             std::snprintf(Buf, sizeof(Buf), "%s: %.2f", Label, Value);
-            if (GuiSlider(Rectangle{ 10, (float)Y, PanelWidth - 20.0f, 20 }, nullptr, Buf, &Value, Min, Max))
+            if (GuiSlider(Rectangle{ 10, (float)Y, PanelWidth - 20.0f, 18 }, nullptr, Buf, &Value, Min, Max))
             {
-                bNeedsRebuild = true;
+                if (bDirtyFlag) *bDirtyFlag = true;
             }
-            Y += 26;
+            Y += 23;
+        };
+        auto SectionLabel = [&](const char* Label)
+        {
+            Y += 4;
+            GuiLine(Rectangle{ 10, (float)Y, PanelWidth - 20.0f, 1 }, nullptr); Y += 4;
+            GuiLabel(Rectangle{ 10, (float)Y, PanelWidth - 20.0f, 16 }, Label); Y += 18;
         };
 
-        SliderInt("Seed", Config.Seed, 0, 9999);
-        SliderInt("Num Continents", Config.NumContinents, 0, 20);
-        SliderInt("Num Islands", Config.NumIslands, 0, 40);
-        SliderFloat("Min Continent Deg", Config.MinContinentRadiusDegrees, 1.0f, 60.0f);
-        SliderFloat("Max Continent Deg", Config.MaxContinentRadiusDegrees, 1.0f, 60.0f);
-        SliderFloat("Coastline Noise Amp", Config.CoastlineNoiseAmplitude, 0.0f, 1.0f);
-        SliderFloat("Ocean Floor Depth (m)", Config.OceanFloorDepthMeters, -8000.0f, 0.0f);
-        SliderFloat("Land Plateau Height (m)", Config.LandPlateauHeightMeters, 0.0f, 2000.0f);
+        // Binds Pipeline.Context.Seed, not ContinentNodeRaw->Config.Seed - every node's Apply() takes
+        // its seed from the shared pipeline context (ContinentNode::Apply() overwrites its own Config
+        // copy's Seed with Ctx.Seed before baking), so this is the one slider that actually reseeds
+        // Continent AND Noise together.
+        SliderInt("Seed", Pipeline.Context.Seed, 0, 9999, &bNeedsRebuild);
+        SliderInt("Num Continents", ContinentNodeRaw->Config.NumContinents, 0, 20, &bNeedsRebuild);
+        SliderInt("Num Islands", ContinentNodeRaw->Config.NumIslands, 0, 40, &bNeedsRebuild);
+        SliderFloat("Min Continent Deg", ContinentNodeRaw->Config.MinContinentRadiusDegrees, 1.0f, 60.0f, &bNeedsRebuild);
+        SliderFloat("Max Continent Deg", ContinentNodeRaw->Config.MaxContinentRadiusDegrees, 1.0f, 60.0f, &bNeedsRebuild);
+        SliderFloat("Coastline Noise Amp", ContinentNodeRaw->Config.CoastlineNoiseAmplitude, 0.0f, 1.0f, &bNeedsRebuild);
+        SliderFloat("Ocean Floor Depth (m)", ContinentNodeRaw->Config.OceanFloorDepthMeters, -8000.0f, 0.0f, &bNeedsRebuild);
+        SliderFloat("Land Plateau Height (m)", ContinentNodeRaw->Config.LandPlateauHeightMeters, 0.0f, 2000.0f, &bNeedsRebuild);
 
-        if (Config.Algorithm == EContinentAlgorithm::PlateTectonics)
+        if (ContinentNodeRaw->Config.Algorithm == EContinentAlgorithm::PlateTectonics)
         {
-            SliderInt("Num Plates", Config.NumPlates, 2, 64);
-            SliderFloat("Mountain Height (m)", Config.MountainHeightMeters, 0.0f, 10000.0f);
-            SliderFloat("Trench Depth (m)", Config.TrenchDepthMeters, -10000.0f, 0.0f);
-            SliderInt("Steps Per Run", Config.StepsPerRun, 1, 50);
-            SliderFloat("Myr Per Step", Config.MillionYearsPerStep, 0.1f, 50.0f);
+            SliderInt("Num Plates", ContinentNodeRaw->Config.NumPlates, 2, 64, &bNeedsRebuild);
+            SliderFloat("Mountain Height (m)", ContinentNodeRaw->Config.MountainHeightMeters, 0.0f, 10000.0f, &bNeedsRebuild);
+            SliderFloat("Trench Depth (m)", ContinentNodeRaw->Config.TrenchDepthMeters, -10000.0f, 0.0f, &bNeedsRebuild);
+            SliderInt("Steps Per Run", ContinentNodeRaw->Config.StepsPerRun, 1, 50, nullptr);
+            SliderFloat("Myr Per Step", ContinentNodeRaw->Config.MillionYearsPerStep, 0.1f, 50.0f, nullptr);
 
-            if (GuiButton(Rectangle{ 10, (float)Y, PanelWidth - 20.0f, 28 }, "Run Simulation"))
+            if (GuiButton(Rectangle{ 10, (float)Y, PanelWidth - 20.0f, 26 }, "Run Simulation"))
             {
-                Layer.Config = Config;
-                Layer.AdvanceTectonicSimulation(Config.StepsPerRun, Config.MillionYearsPerStep);
+                ContinentNodeRaw->Layer.Config = ContinentNodeRaw->Config;
+                ContinentNodeRaw->Layer.Config.Seed = Pipeline.Context.Seed;
+                ContinentNodeRaw->Layer.AdvanceTectonicSimulation(ContinentNodeRaw->Config.StepsPerRun, ContinentNodeRaw->Config.MillionYearsPerStep);
                 bNeedsRebuild = true;
             }
-            Y += 34;
+            Y += 30;
         }
 
-        Y += 6;
-        SliderFloat("Height Exaggeration", Viz.HeightExaggeration, 1.0f, 15.0f);
-        if (GuiButton(Rectangle{ 10, (float)Y, PanelWidth - 20.0f, 28 }, "Regenerate") || bNeedsRebuild)
+        SectionLabel("Base Layer Adjust");
+        SliderFloat("Scale", HeightAdjustNodeRaw->Config.ScaleMultiplier, 0.1f, 3.0f, &bNeedsRebuild);
+        SliderFloat("Offset (m)", HeightAdjustNodeRaw->Config.OffsetMeters, -2000.0f, 2000.0f, &bNeedsRebuild);
+        SliderFloat("Power Curve", HeightAdjustNodeRaw->Config.PowerCurve, 0.3f, 3.0f, &bNeedsRebuild);
+
+        SectionLabel("Secondary Noise");
+        SliderFloat("Amplitude (m)", NoiseNodeRaw->Config.AmplitudeMeters, 0.0f, 1000.0f, &bNeedsRebuild);
+        SliderFloat("Frequency", NoiseNodeRaw->Config.Frequency, 0.5f, 20.0f, &bNeedsRebuild);
+
+        SectionLabel("Erosion (explicit - click to apply)");
+        SliderInt("Droplets", HydraulicErosion.Config.NumDroplets, 1000, 100000, nullptr);
+        SliderFloat("Hydraulic Rate", HydraulicErosion.Config.ErosionRate, 0.05f, 1.0f, nullptr);
+        if (GuiButton(Rectangle{ 10, (float)Y, PanelWidth - 20.0f, 24 }, "Run Hydraulic Erosion"))
         {
-            Layer.Config = Config;
-            Layer.Bake();
-            UpdatePreviewModel(PreviewModel, Layer, Viz);
-            bNeedsRebuild = false;
+            HydraulicErosion.Apply(BakedTerrain, Pipeline.Context);
+            bNeedsClimateRefresh = true;
         }
-        Y += 36;
+        Y += 28;
+        SliderInt("Thermal Iterations", ThermalErosion.Config.Iterations, 1, 60, nullptr);
+        SliderFloat("Talus Angle (deg)", ThermalErosion.Config.TalusAngleDegrees, 10.0f, 60.0f, nullptr);
+        if (GuiButton(Rectangle{ 10, (float)Y, PanelWidth - 20.0f, 24 }, "Run Thermal Erosion"))
+        {
+            ThermalErosion.Apply(BakedTerrain, Pipeline.Context);
+            bNeedsClimateRefresh = true;
+        }
+        Y += 28;
 
-        const FContinentStatus Status = Layer.GetStatus();
-        std::snprintf(Buf, sizeof(Buf), "Land coverage: %.1f%%", Layer.EstimateLandCoveragePercent());
-        GuiLabel(Rectangle{ 10, (float)Y, PanelWidth - 20.0f, 20 }, Buf); Y += 20;
-        if (Config.Algorithm == EContinentAlgorithm::PlateTectonics)
+        SectionLabel("Climate");
+        SliderFloat("Equator Temp (C)", ClimateConfig.EquatorTempC, 0.0f, 45.0f, &bNeedsClimateRefresh);
+        SliderFloat("Pole Temp (C)", ClimateConfig.PoleTempC, -60.0f, 10.0f, &bNeedsClimateRefresh);
+        SliderFloat("Ocean Evaporation", ClimateConfig.OceanEvaporationRate, 0.05f, 1.0f, &bNeedsClimateRefresh);
+        SliderFloat("Rain Shadow Sensitivity", ClimateConfig.RainShadowSensitivity, 200.0f, 4000.0f, &bNeedsClimateRefresh);
+
+        SectionLabel("View");
+        {
+            const int32_t PrevMode = (int32_t)Viz.ViewMode;
+            if (GuiButton(Rectangle{ 10, (float)Y, (PanelWidth - 26.0f) / 2.0f, 24 }, "Height"))
+            {
+                Viz.ViewMode = EViewMode::Height;
+            }
+            if (GuiButton(Rectangle{ 10 + (PanelWidth - 26.0f) / 2.0f + 6, (float)Y, (PanelWidth - 26.0f) / 2.0f, 24 }, "Biome"))
+            {
+                Viz.ViewMode = EViewMode::Biome;
+            }
+            if ((int32_t)Viz.ViewMode != PrevMode)
+            {
+                bNeedsClimateRefresh = true;
+            }
+        }
+        Y += 28;
+        SliderFloat("Height Exaggeration", Viz.HeightExaggeration, 1.0f, 15.0f, &bNeedsClimateRefresh);
+
+        if (GuiButton(Rectangle{ 10, (float)Y, PanelWidth - 20.0f, 26 }, "Regenerate (discards erosion)") || bNeedsRebuild)
+        {
+            RebakeBase();
+            bNeedsRebuild = false;
+            bNeedsClimateRefresh = false;
+        }
+        Y += 30;
+
+        if (bNeedsClimateRefresh)
+        {
+            RecomputeClimateAndRefresh();
+            bNeedsClimateRefresh = false;
+        }
+
+        const FContinentStatus Status = ContinentNodeRaw->Layer.GetStatus();
+        // Computed from the actual current BakedTerrain, not ContinentNodeRaw->Layer's own
+        // EstimateLandCoveragePercent() - that only reflects the raw Continent layer in isolation,
+        // which goes stale (and visibly wrong) the moment Noise/Base Layer Adjust/erosion change
+        // what's actually baked.
+        int32_t LandCells = 0;
+        for (float H : BakedTerrain.HeightMeters) { if (H > 0.0f) ++LandCells; }
+        const float LandCoveragePercent = 100.0f * LandCells / (float)BakedTerrain.HeightMeters.size();
+        std::snprintf(Buf, sizeof(Buf), "Land coverage: %.1f%%", LandCoveragePercent);
+        GuiLabel(Rectangle{ 10, (float)Y, PanelWidth - 20.0f, 18 }, Buf); Y += 18;
+        if (ContinentNodeRaw->Config.Algorithm == EContinentAlgorithm::PlateTectonics)
         {
             std::snprintf(Buf, sizeof(Buf), "Simulated age: %.1f Myr", Status.SimulatedAgeMyr);
-            GuiLabel(Rectangle{ 10, (float)Y, PanelWidth - 20.0f, 20 }, Buf); Y += 20;
+            GuiLabel(Rectangle{ 10, (float)Y, PanelWidth - 20.0f, 18 }, Buf); Y += 18;
             std::snprintf(Buf, sizeof(Buf), "Plates: %d", Status.CurrentPlateCount);
-            GuiLabel(Rectangle{ 10, (float)Y, PanelWidth - 20.0f, 20 }, Buf); Y += 20;
+            GuiLabel(Rectangle{ 10, (float)Y, PanelWidth - 20.0f, 18 }, Buf); Y += 18;
         }
 
         GuiUnlock();
 
         // Drawn last, on top of every other panel control - see the comment at AlgorithmBoxRect above.
-        // Switching algorithms here only takes effect for next frame's layout (which sliders show,
-        // Bake()'s rebuild) - an imperceptible one-frame lag, not a correctness issue.
         if (GuiDropdownBox(AlgorithmBoxRect, "Radial Seeds;Voronoi Growth;Plate Tectonics", &AlgorithmIndex, bAlgorithmDropdownOpen))
         {
             bAlgorithmDropdownOpen = !bAlgorithmDropdownOpen;
-            Config.Algorithm = (EContinentAlgorithm)AlgorithmIndex;
+            ContinentNodeRaw->Config.Algorithm = (EContinentAlgorithm)AlgorithmIndex;
             bNeedsRebuild = true;
         }
 
