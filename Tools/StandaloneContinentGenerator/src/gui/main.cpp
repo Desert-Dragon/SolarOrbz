@@ -43,8 +43,16 @@ namespace
         // spiky shape, not a dented sphere).
         float PreviewRadiusMeters = 400000.0f;
         float HeightExaggeration = 5.0f;
-        int32_t MeshGridWidth = 128;
-        int32_t MeshGridHeight = 64;
+        // Matches TerrainPipeline's own GridWidth/GridHeight (see main()) - this used to be a 2x
+        // downsample (128x64) of the baked field, which was fine back when the only terrain was a
+        // smooth Continent base shape, but it blurs/aliases away the Secondary Noise layer's
+        // hill/mountain-scale detail (its highest fBm octave's wavelength is already only a few baked
+        // cells wide; resampling that onto a coarser mesh loses it) - confirmed visually (identical
+        // config looked flat in the 3D preview but showed clear mottled relief in the CLI's heightmap
+        // PNG, which samples the baked field directly). 256x128 = 32768 vertices, well under
+        // CreatePreviewModel's unsigned short index limit (65535) and cheap for any GPU this runs on.
+        int32_t MeshGridWidth = 256;
+        int32_t MeshGridHeight = 128;
         EViewMode ViewMode = EViewMode::Height;
     };
 
@@ -147,6 +155,24 @@ namespace
             {
                 C = HeightRampColor(V.HeightMeters, MinH, MaxH);
             }
+
+            // raylib's default material/shader is unlit - DrawModel with no custom Shader bound just
+            // interpolates these vertex colors directly, so without this the Normals computed above
+            // (and uploaded to the mesh buffer) have no visual effect at all. A flat, un-shaded
+            // elevation-ramp color is exactly why hills/mountains didn't read as relief even once the
+            // Secondary Noise layer started actually producing them - slope was in the data but never
+            // reached the screen. Simple fixed-direction Lambertian term, baked straight into the
+            // vertex color (cheap, no shader needed): makes slopes/ridges/valleys actually look
+            // three-dimensional, and as a side benefit smooths over the lat/long mesh's regular
+            // diagonal-split triangulation becoming visible as a crosshatch against sharp flat-color
+            // boundaries (confirmed - that pattern was a real, if secondary, artifact of the old
+            // unlit/flat-ramp rendering, not of the noise data itself).
+            static const Vec3 LightDir = Vec3(0.5, -0.4, 0.75).GetSafeNormal();
+            const float NdotL = (float)std::max(Vec3::Dot(V.Normal, LightDir), 0.0);
+            const float Shade = 0.45f + 0.65f * NdotL;
+            auto Tone = [Shade](unsigned char Channel) { return (unsigned char)MathUtil::Clamp((float)Channel * Shade, 0.0f, 255.0f); };
+            C.r = Tone(C.r); C.g = Tone(C.g); C.b = Tone(C.b);
+
             RMesh.colors[i * 4 + 0] = C.r; RMesh.colors[i * 4 + 1] = C.g; RMesh.colors[i * 4 + 2] = C.b; RMesh.colors[i * 4 + 3] = C.a;
         }
 
@@ -176,7 +202,15 @@ int main()
     Pipeline.Nodes.push_back(std::move(ContinentNodePtr));
 
     auto NoiseNodePtr = std::make_unique<NoiseNode>();
-    NoiseNodePtr->Config.AmplitudeMeters = 0.0f; // off by default - purely additive detail on top of Continent
+    // On by default at a hill/mountain-scale frequency - the Continent layer alone only shapes
+    // coastlines/plate-boundary-scale relief (confirmed by eye: a no-noise bake is smooth/featureless
+    // across the interior of any landmass); this is the layer that actually puts hills and mountains
+    // on that land. Values picked empirically via CLI (comparing a no-noise vs. with-noise heightmap
+    // PNG on both Radial Seeds' small islands and a Plate Tectonics continent) - mottled multi-scale
+    // relief without washing out the base Continent shape. Still a live slider, so it can be turned
+    // back down to 0 for a smooth/stylized look.
+    NoiseNodePtr->Config.AmplitudeMeters = 350.0f;
+    NoiseNodePtr->Config.Frequency = 8.0f;
     NoiseNode* NoiseNodeRaw = NoiseNodePtr.get();
     Pipeline.Nodes.push_back(std::move(NoiseNodePtr));
 

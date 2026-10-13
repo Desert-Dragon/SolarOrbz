@@ -133,13 +133,27 @@ Earth-scale) chosen so the default Continent Layer height values are comfortably
 distorting the sphere - raylib's default far clip plane is also widened at startup to fit this scale
 (see `rlSetClipPlanes` in `src/gui/main.cpp`). Left-drag to orbit the camera, scroll to zoom.
 
+The preview mesh resolution matches the pipeline's own bake resolution (256x128), and vertex colors
+get a simple fixed-direction Lambertian shading term baked in on top of the elevation/biome color
+ramp. Both fixed real, confirmed-via-screenshot issues, not just polish: a coarser preview mesh was
+blurring/aliasing away the Secondary Noise layer's hill/mountain-scale detail (identical config looked
+flat in 3D but showed clear mottled relief in the CLI's heightmap PNG, which samples the baked field
+directly, at the same resolution); and raylib's default material is unlit, so terrain slopes carried
+real data but never actually looked three-dimensional - the flat elevation-ramp color over the lat/
+long mesh's regular diagonal-split triangulation also produced a visible crosshatch moire wherever the
+color had any local contrast, which the shading incidentally smooths over too.
+
 The left panel follows the pipeline order:
 
 - **Algorithm** - the Continent Layer's own sliders (same as before), switching to Plate Tectonics
   adds Num Plates/Mountain Height/Trench Depth/Steps Per Run/Myr Per Step plus a **Run Simulation**
   button that advances the persistent plate state and rebakes.
 - **Base Layer Adjust** - Scale/Offset/Power Curve, applied to the whole baked field.
-- **Secondary Noise** - an additive fractal noise layer (Amplitude/Frequency).
+- **Secondary Noise** - an additive fractal noise layer (Amplitude/Frequency). **On by default**
+  (350m/8.0) - the Continent layer alone only shapes coastlines/plate-boundary-scale relief, so
+  without this the interior of any landmass is smooth and featureless; this is the layer that
+  actually puts hills and mountains on the land (still a live slider, so it can be turned back to 0
+  for a smooth/stylized look).
 - **Erosion (explicit - click to apply)** - Droplets/Hydraulic Rate sliders plus a **Run Hydraulic
   Erosion** button, and Thermal Iterations/Talus Angle sliders plus a **Run Thermal Erosion** button.
   Both apply directly onto the current baked terrain rather than re-running on every slider drag (see

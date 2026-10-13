@@ -890,6 +890,29 @@ commitment or a schedule - just a place these don't get lost between sessions.
     GPU-accelerated real-time preview (compute shaders / GL 4.3+, or a fragment-shader ping-pong
     GPGPU approach) is a deliberately deferred, harder follow-up phase - not attempted this pass,
     everything above is CPU-only.
+  - **Follow-up, hands-on report: "not really seeing any detailed terrain... I want mountains and
+    hills to be formed."** **Done (fixed) - three real, compounding bugs, not one.** (1)
+    `solarorbz_gui`'s own `NoiseNodePtr->Config.AmplitudeMeters` was explicitly zeroed at startup
+    ("off by default") - the Continent layer alone only shapes coastlines/plate-boundary-scale
+    relief, so with the one layer that actually adds hill/mountain-scale detail disabled, every
+    landmass's interior was smooth and featureless by default. Fixed by defaulting it on (350m/8.0
+    Hz, picked empirically via CLI before/after heightmap comparisons on both Radial Seeds and Plate
+    Tectonics). (2) The preview mesh (`FVisualizationSettings::MeshGridWidth/Height`) was a 2x
+    downsample (128x64) of the pipeline's own bake resolution (256x128) - fine when terrain was
+    smooth, but it blurred/aliased away the Secondary Noise layer's finer octaves once they were
+    actually enabled (confirmed: an identical config looked flat in the 3D preview but showed clear
+    mottled relief in the CLI's heightmap PNG, which samples the same baked field directly at full
+    resolution). Fixed by matching it to the bake resolution. (3) `solarorbz_gui`'s `DrawModel` call
+    never bound a lit shader - raylib's default material is unlit, so the per-vertex Normals computed
+    by `BuildSphereMesh` were uploaded but had zero visual effect; terrain slopes carried real data
+    that never reached the screen, and the flat elevation-ramp vertex coloring over the lat/long
+    mesh's regular diagonal-split triangulation produced a visible crosshatch moire wherever the
+    color had local contrast (easy to mistake for a noise-aliasing bug, but confirmed via CLI that
+    the underlying baked height data had no such pattern - rendering-only artifact). Fixed with a
+    simple fixed-direction Lambertian term baked directly into each vertex's color (cheap, no
+    fragment shader needed) - makes slopes/ridges/valleys actually read as relief, and incidentally
+    smooths over the crosshatch too. All three verified via Xvfb screenshot comparison (same seed/
+    config, before vs. after).
   - Three deliberate, documented fidelity trade-offs (unchanged from the original Continent Layer
     port): RNG is `std::mt19937`, not UE's actual `FRandomStream` (same algorithm shape, not
     bit-identical layouts for a given Seed); Perlin noise uses the public Ken Perlin 2002 reference
