@@ -11,6 +11,7 @@
 #include "LatLongGrid.h"
 #include <vector>
 #include <cstdint>
+#include <cmath>
 
 struct FSphereMeshVertex
 {
@@ -53,6 +54,47 @@ inline FSphereMesh BuildSphereMesh(const FHeightSampler& SampleHeightMeters, int
         V.Position = Dir * DisplacedRadius;
         V.Normal = Dir; // radial approximation - cheap, accepted for a fast-iteration preview tool
     });
+
+    // FHeightField/FLatLongGrid's own documented trade-off is "distorted cell size near poles,
+    // correct topology" - index-space neighbors stay index-space neighbors, but their REAL physical
+    // separation shrinks toward zero as a row approaches either pole (circumference ~ sin(Polar), not
+    // constant). A per-cell height source with no awareness of that distortion - HydraulicErosionNode
+    // most of all, which operates directly in index space - produces perfectly ordinary-sized height
+    // differences between adjacent cells there, but "ordinary" relative to an INDEX-space neighbor
+    // distance that no longer matches the real one. Once radially displaced, that ordinary difference
+    // becomes an enormous LOCAL SLOPE exactly where cells are nearly coincident, rendering as a
+    // "sunburst" of needle spikes converging on the pole (confirmed via screenshot - present after
+    // running Hydraulic Erosion, clean before it). Originally fixed by flattening only the exact pole
+    // row (Y=0/Height-1) to a single average height - insufficient: the row(s) just next to the pole
+    // are still compressed enough, while not literally coincident, to show the same needling (also
+    // confirmed via screenshot, same repro, after that first fix). Generalized here into a smoothing
+    // pass across every row within PoleSmoothingSinThreshold of either pole, blending each cell's
+    // height toward its own row's average by a weight that scales with how compressed that row
+    // actually is (sin(Polar) - the same quantity driving the real distortion) rather than a hard
+    // cutoff at a single row, so there's no sharp boundary where the effect just stops. Purely a
+    // mesh/visualization smoothing - the underlying FHeightField data (CLI/biome/climate) is untouched.
+    constexpr double PoleSmoothingSinThreshold = 0.25; // ~14.5 degrees of polar angle from either pole
+    for (int32_t Y = 0; Y < Mesh.Height; ++Y)
+    {
+        const double Polar = ((double)Y / (double)(Mesh.Height - 1)) * MathUtil::PI_D;
+        const double SinPolar = std::sin(Polar);
+        if (SinPolar >= PoleSmoothingSinThreshold) continue; // far enough from both poles - untouched
+
+        const double BlendWeight = MathUtil::Clamp(1.0 - SinPolar / PoleSmoothingSinThreshold, 0.0, 1.0);
+        double HeightSum = 0.0;
+        for (int32_t X = 0; X < Mesh.Width; ++X) HeightSum += Mesh.Vertices[Y * Mesh.Width + X].HeightMeters;
+        const float RowAverageHeight = (float)(HeightSum / Mesh.Width);
+
+        for (int32_t X = 0; X < Mesh.Width; ++X)
+        {
+            FSphereMeshVertex& V = Mesh.Vertices[Y * Mesh.Width + X];
+            const float BlendedHeight = (float)(V.HeightMeters * (1.0 - BlendWeight) + RowAverageHeight * BlendWeight);
+            const double DisplacedRadius = std::max(RadiusMeters + BlendedHeight * HeightExaggeration, MinRadius);
+            const Vec3 Dir = V.Position.GetSafeNormal();
+            V.HeightMeters = BlendedHeight;
+            V.Position = Dir * DisplacedRadius;
+        }
+    }
 
     // Smooth-ish per-vertex normals from the two neighboring edges actually in the mesh (longitude
     // wraps, latitude does not - matching FLatLongGrid/GetGridNeighbors4's own convention).

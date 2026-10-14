@@ -74,7 +74,15 @@ Three deliberate fidelity trade-offs, each documented at its source:
 3. **The preview mesh is a plain lat/long UV-sphere, not the UE plugin's icosphere.** `src/core/SphereMesh.h`
    builds directly off `FLatLongGrid` rather than porting `FSolarOrbzIcoSphereGenerator`'s
    subdivision/UV-seam/pentagon-pole handling - it pinches at the poles, same as any naive UV-sphere.
-   Fine for a fast-iteration preview tool; not usable as a final-mesh exporter.
+   Fine for a fast-iteration preview tool; not usable as a final-mesh exporter. One consequence of the
+   pinch that isn't just cosmetic: real physical cell separation near either pole shrinks toward zero
+   well before the exact pole row, so a height source with no awareness of that distortion in index
+   space (`HydraulicErosionNode` especially) can produce per-cell differences that read as an
+   enormous local slope once radially displaced - confirmed as a "sunburst" of needle spikes
+   converging on a pole after running erosion. `BuildSphereMesh` smooths this out itself: every row
+   within ~14.5 degrees of polar angle from either pole blends each cell's height toward its own row
+   average, weighted by how compressed that row actually is. Purely a mesh-building smoothing step -
+   the underlying `FHeightField` data (what the CLI writes, what Climate/Biome read) is untouched.
 
 ## Building
 

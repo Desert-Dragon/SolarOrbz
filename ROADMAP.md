@@ -1002,6 +1002,30 @@ commitment or a schedule - just a place these don't get lost between sessions.
     across the visible disk and disappears behind the terrain, matching the sphere mesh's own
     silhouette exactly. README.md corrected to describe this fix instead of the overlay's original
     (wrong) behavior claim.
+  - **Third follow-up, same reproduction: a genuine "sunburst" of needle-spikes converging on a
+    pole**, pointed out directly in a screenshot ("you can see it down there at the bottom") after
+    rebuilding with the reference-line fix above - a real, separate bug, not the same one recurring.
+    Root cause: every vertex along a pole row sits at nearly the SAME 3D direction (the "pole pinch"
+    `SphereMesh.h`'s own header comment already names as a deliberate trade-off), but each still gets
+    its own `HeightMeters` sample with no awareness that these cells are physically the same point -
+    `HydraulicErosionNode` especially, since it operates directly in index space. Displacement being
+    radial (`Position = Dir * Radius`) means two nearly-coincident pole-row vertices with meters-apart
+    heights don't move sideways from that difference - they stay at nearly the same tiny tangential
+    offset but wildly different distances out along that same ray, which triangulates into a long
+    thin needle. Reproduced directly: clean before running Hydraulic Erosion on the reported seed,
+    spiky immediately after. First fix attempt (flatten only the exact pole row, Y=0/Height-1, to its
+    own row average) was insufficient - confirmed via the same screenshot repro that the spikes
+    persisted - because `FHeightField`/`FLatLongGrid`'s own documented "distorted cell size near
+    poles" trade-off extends to several rows *around* each pole, not just the exact pole row itself:
+    real physical cell separation shrinks toward zero as `sin(Polar)` does, well before Y hits exactly
+    0 or Height-1, so even "ordinary" per-cell erosion variance a few rows out still reads as an
+    enormous local slope once radially displaced. Generalized into a proper smoothing pass: every row
+    within `sin(Polar) < 0.25` (~14.5 degrees of polar angle from either pole) blends each cell's
+    height toward its own row average, weighted by how compressed that row actually is (the same
+    `sin(Polar)` driving the real distortion), rather than a hard cutoff at a single row - verified via
+    the same screenshot repro that the sharp needle spikes are gone, replaced by an ordinary-looking
+    soft pole cap. Purely a mesh/visualization smoothing in `SphereMesh.h`; the underlying
+    `FHeightField` data (CLI output, biome/climate calculations) is untouched either way.
   - Three deliberate, documented fidelity trade-offs (unchanged from the original Continent Layer
     port): RNG is `std::mt19937`, not UE's actual `FRandomStream` (same algorithm shape, not
     bit-identical layouts for a given Seed); Perlin noise uses the public Ken Perlin 2002 reference
