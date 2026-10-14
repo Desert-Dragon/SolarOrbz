@@ -34,6 +34,12 @@ namespace NoiseBasis
     /** Multi-octave fBm, Perlin basis, normalized to roughly -1..1 regardless of octave count - matches the UE plugin's FractalNoise3D (coastline wobble). */
     float FractalNoise3D(const Vec3& Pos, int32_t Octaves, float Persistence, float Lacunarity, int32_t Seed);
 
+    /** Multi-octave fBm using the SPECIFIED basis per octave (Ridged/Billow/Value/Voronoi included, not just Perlin) -
+      * matches the UE plugin's USolarOrbzFractalNoiseTerrainLayerBase::ComputeNormalizedNoiseUncompensated, which is
+      * what every noise-type layer in the real plugin actually uses. FractalNoise3D above stays Perlin-only since it
+      * backs the coastline-wobble callers that intentionally always want Perlin regardless of a layer's own NoiseType. */
+    float FractalNoiseGeneric(ENoiseType Type, const Vec3& Pos, int32_t Octaves, float Persistence, float Lacunarity, int32_t Seed);
+
     /** Cheap deterministic hash from an integer seed to a 3D offset, so different seeds don't look like the same field shifted by an obvious amount. */
     Vec3 ComputeSeedOffset(int32_t Seed);
 }

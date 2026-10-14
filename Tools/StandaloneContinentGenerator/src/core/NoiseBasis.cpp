@@ -173,12 +173,43 @@ namespace NoiseBasis
         return MaxPossible > 1e-6f ? std::clamp(Sum / MaxPossible, -1.0f, 1.0f) : 0.0f;
     }
 
+    float FractalNoiseGeneric(ENoiseType Type, const Vec3& Pos, int32_t Octaves, float Persistence, float Lacunarity, int32_t Seed)
+    {
+        float Sum = 0.0f;
+        float MaxPossible = 0.0f;
+        float OctaveAmplitude = 1.0f;
+        Vec3 OctavePos = Pos;
+        for (int32_t Octave = 0; Octave < std::max(Octaves, 1); ++Octave)
+        {
+            Sum += SampleBasis(Type, OctavePos, Seed) * OctaveAmplitude;
+            MaxPossible += OctaveAmplitude;
+            OctaveAmplitude *= Persistence;
+            OctavePos *= Lacunarity;
+        }
+        return MaxPossible > 1e-6f ? std::clamp(Sum / MaxPossible, -1.0f, 1.0f) : 0.0f;
+    }
+
     Vec3 ComputeSeedOffset(int32_t Seed)
     {
+        // Seed=0 (the default Seed everywhere - TerrainPipeline's context, every NoiseNode's own
+        // SeedOffset) used to degenerate to the zero vector here: sin(0 * k) is exactly 0 for every k,
+        // so Frac(0) is exactly 0 on all three axes, leaving every noise layer's domain unshifted -
+        // sampling starts precisely AT the Perlin lattice origin, walking out along perfectly
+        // axis-aligned rays. Classic improved Perlin noise (integer cubic lattice, a small fixed
+        // gradient set) is most structured exactly there and along those axes; Ridged's abs()-fold
+        // turns that structure into sharp, high-contrast creases instead of hiding it in a smooth
+        // gradient, rendering as an unmistakable grid-aligned/concentric-ring lattice baked right into
+        // the height field (confirmed in a flat equirectangular CLI render with NO mesh/lighting
+        // involved at all, and confirmed to never appear with Noise's own SeedOffset or the pipeline's
+        // Seed at any NON-zero value - Seed=5 alone, same everything else, already reads as ordinary
+        // organic terrain). The +0.5 below keeps every (Seed * k) argument off an exact multiple of
+        // pi for every integer Seed, 0 included, so Frac(sin(...)) is never trivially 0 regardless of
+        // which seed the tool starts on.
         auto Frac = [](double V) { return V - std::floor(V); };
+        const double S = (double)Seed + 0.5;
         return Vec3(
-            Frac(std::sin((double)Seed * 12.9898) * 43758.5453) * 1000.0,
-            Frac(std::sin((double)Seed * 78.233) * 43758.5453) * 1000.0,
-            Frac(std::sin((double)Seed * 37.719) * 43758.5453) * 1000.0);
+            Frac(std::sin(S * 12.9898) * 43758.5453) * 1000.0,
+            Frac(std::sin(S * 78.233) * 43758.5453) * 1000.0,
+            Frac(std::sin(S * 37.719) * 43758.5453) * 1000.0);
     }
 }

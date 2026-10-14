@@ -34,15 +34,14 @@ public:
         Grid.ForEachCell([&](int32_t Idx, const Vec3& Dir, double, double)
         {
             const Vec3 SamplePos = Dir * Config.Frequency + SeedOffsetVec;
-            float N;
-            if (Config.Octaves > 1 && Config.Type == ENoiseType::Perlin)
-            {
-                N = NoiseBasis::FractalNoise3D(SamplePos, Config.Octaves, Config.Persistence, Config.Lacunarity, EffectiveSeed);
-            }
-            else
-            {
-                N = NoiseBasis::SampleBasis(Config.Type, SamplePos, EffectiveSeed);
-            }
+            // Generalized fBm (same basis every octave, matching the UE plugin's
+            // ComputeNormalizedNoiseUncompensated) - NOT the Perlin-only FractalNoise3D, which exists
+            // for the coastline-wobble callers that intentionally always want Perlin regardless of a
+            // layer's own NoiseType. Using that one here left Ridged/Billow/Value/Voronoi layers stuck
+            // at a single raw octave no matter what Octaves was set to - a single octave of Ridged
+            // noise (sharp creases, no multi-scale detail to break them up) is exactly what rendered as
+            // a blocky, grid-aliased lattice instead of layered mountain ridges.
+            const float N = NoiseBasis::FractalNoiseGeneric(Config.Type, SamplePos, Config.Octaves, Config.Persistence, Config.Lacunarity, EffectiveSeed);
             Field.HeightMeters[Idx] += N * Config.AmplitudeMeters;
         });
     }

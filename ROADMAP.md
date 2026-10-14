@@ -1038,6 +1038,52 @@ commitment or a schedule - just a place these don't get lost between sessions.
     editable visual graph). See `Tools/StandaloneContinentGenerator/README.md` (what it does, scope,
     usage) and `BUILDING.md` (compile steps) - a standalone CMake project, not part of the plugin's
     own UE build.
+  - **Fourth follow-up: "now lets get mountains."** Added a Perlin/Ridged/Billow/Value/Voronoi toggle
+    group to the Secondary Noise panel section (`GuiToggleGroup` - confirmed to share the same dead
+    `int` return value as `GuiSlider` in this raygui build, same established before/after-comparison
+    fix), and changed the GUI's default Secondary Noise type from Perlin to Ridged - confirmed via CLI
+    heightmap comparison at identical Amplitude/Frequency that Ridged's connected, sharp-crested
+    ridgelines read as "mountains" where Perlin's rounded, mottled bumps read as rolling hills.
+    Switching to Plate Tectonics with the new Ridged default then reproduced a real, separate bug: a
+    regular, grid-aligned "plaid" light/dark lattice baked into the mountain terrain, screenshotted and
+    confirmed present directly in the CLI's flat equirectangular heightmap PNG (no 3D mesh/lighting
+    involved at all, so never a rendering bug). Two real bugs were found and fixed along the way
+    without actually resolving the plaid pattern (both still worth having): `NoiseNode`/`CombineNode`
+    were calling `NoiseBasis::FractalNoise3D` - which hardcodes the Perlin basis for every octave,
+    because its callers are coastline-wobble code that intentionally always wants Perlin regardless of
+    a layer's own `NoiseType` - only when a layer's own type was `Perlin`, silently falling back to a
+    single raw `SampleBasis` octave for Ridged/Billow/Value/Voronoi regardless of what `Octaves` was
+    set to; fixed by adding `NoiseBasis::FractalNoiseGeneric(Type, ...)`, which accumulates octaves
+    using the SPECIFIED basis - matching what the UE plugin's own
+    `USolarOrbzFractalNoiseTerrainLayerBase::ComputeNormalizedNoiseUncompensated` has always done - and
+    switching both node `Apply()`s to it. And `SphereMesh.h`'s per-vertex normals were computed from
+    one-sided forward differences only (`X+1`/`Y+1` neighbors) - fine on gently-varying terrain, but a
+    forward-only normal is blind to a vertex's own trailing-side slope, so on anything with sharp local
+    slope changes (Ridged's abs()-folded creases stacked on Plate Tectonics' own mountain-range steps)
+    adjacent vertices get systematically different one-sided normals depending on which side of a
+    crease they look across, rendering as a grid-aligned lighting bias; switched to centered
+    differences (both neighbors on each axis) to cancel it. Neither fix changed the plaid pattern at
+    all (confirmed via the same screenshot reproduction after each) - the actual root cause was
+    `NoiseBasis::ComputeSeedOffset(Seed)`, meant to shift each noise layer's sampling domain so it
+    doesn't start exactly at the Perlin lattice origin, which degenerated to the exact zero vector for
+    `Seed=0` specifically: `sin(0 * k)` is exactly `0` on all three axes, so `Frac(0) == 0` regardless
+    of which of the three per-axis constants `k` is - and `Seed=0` is the pipeline's own default,
+    meaning this hit on first launch, every time. With zero offset, Ridged noise sampled starting
+    precisely at classic improved-Perlin's integer lattice origin along perfectly axis-aligned rays -
+    exactly where and how its fixed small gradient set is most structured - and Ridged's `abs()`-fold
+    turns that latent structure into sharp, high-contrast creases instead of hiding it in a smooth
+    gradient, baking a grid/concentric-ring lattice directly into the height data. Confirmed by a
+    sequence of isolated CLI reproductions: the plaid pattern was present with Octaves=1 (ruling out an
+    octave-accumulation explanation), present identically at both Frequency=8.0 and a deliberately
+    non-round Frequency=7.37 (ruling out integer-frequency/grid-resolution aliasing), absent entirely
+    with Noise removed from the pipeline (ruling out the Continent/Plate-Tectonics layer itself), and
+    markedly different - ordinary organic terrain, not a lattice - at Seed=5 with every other value
+    unchanged. Fixed by biasing the hash's input by a constant `+0.5` before each `sin()` call, so the
+    argument is never an exact multiple of pi for any integer seed, `0` included - verified via the
+    same screenshot reproduction (Plate Tectonics, Seed 0, Ridged, Plate Tectonics defaults) that the
+    plaid artifact is gone, replaced by organic mottled ridged terrain, and via the CLI's flat heightmap
+    PNG at the same config. Re-ran the GUI smoke test (Hydraulic Erosion button, Height/Biome toggle)
+    and the CLI regression (`full_pipeline.json`) after the fix - both clean, no new artifacts.
 
 ## Documentation
 

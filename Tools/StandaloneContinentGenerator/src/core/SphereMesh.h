@@ -96,29 +96,46 @@ inline FSphereMesh BuildSphereMesh(const FHeightSampler& SampleHeightMeters, int
         }
     }
 
-    // Smooth-ish per-vertex normals from the two neighboring edges actually in the mesh (longitude
-    // wraps, latitude does not - matching FLatLongGrid/GetGridNeighbors4's own convention).
+    // Smooth-ish per-vertex normals from the edges actually in the mesh (longitude wraps, latitude
+    // does not - matching FLatLongGrid/GetGridNeighbors4's own convention).
+    //
+    // CENTERED differences (both neighbors on each axis), not one-sided forward differences (only
+    // X+1/Y+1, the original approach here) - a forward-only normal at vertex P is blind to the slope
+    // on P's OWN trailing side (toward X-1/Y-1), so it only ever sees half of the local curvature.
+    // That's invisible on gently-varying terrain, but on anything with sharp, high-frequency local
+    // slope changes - Ridged noise's abs()-folded creases stacked on Plate Tectonics' own mountain-
+    // range steps, specifically - adjacent vertices end up with systematically DIFFERENT one-sided
+    // normals depending on which side of a crease they're forward-looking across, and that bias
+    // repeats every row/column because it's tied to the grid axes themselves: it renders as a
+    // regular, grid-aligned light/dark plaid pattern over the terrain (confirmed via screenshot on a
+    // Plate Tectonics landmass with Ridged noise - persisted unchanged even after fixing a real but
+    // unrelated bug, NoiseNode/CombineNode silently dropping multi-octave accumulation for every
+    // non-Perlin basis; a small Radial Seeds island at the same noise settings showed clean ridgelines,
+    // no plaid, since its gentler base terrain doesn't expose the one-sided bias). Averaging in the
+    // trailing neighbor too cancels that per-axis bias: the normal now reflects the FULL local slope
+    // instead of half of it, matching how every other normal-from-heightfield implementation does it.
     for (int32_t Y = 0; Y < Mesh.Height; ++Y)
     {
         for (int32_t X = 0; X < Mesh.Width; ++X)
         {
             const int32_t Idx = Y * Mesh.Width + X;
+            const int32_t XPrev = (X - 1 + Mesh.Width) % Mesh.Width;
             const int32_t XNext = (X + 1) % Mesh.Width;
+            const int32_t YPrev = std::max(Y - 1, 0);
             const int32_t YNext = std::min(Y + 1, Mesh.Height - 1);
-            if (Y == YNext) continue; // bottom row - keep the radial-approximation normal
+            if (YPrev == YNext) continue; // degenerate single-row mesh - keep the radial-approximation normal
 
-            const Vec3& P = Mesh.Vertices[Idx].Position;
-            const Vec3& PX = Mesh.Vertices[Y * Mesh.Width + XNext].Position;
-            const Vec3& PY = Mesh.Vertices[YNext * Mesh.Width + X].Position;
-            // Cross(PY-P, PX-P), not Cross(PX-P, PY-P): this struct's own Vec3 axes don't match
-            // raylib's (see main.cpp's X/Z/Y repacking when writing to Mesh.normals) - that repacking
-            // is itself orientation-reversing (swapping two axes has a -1 determinant), so a normal
-            // that's outward-facing in THIS struct's axes still ends up outward after repacking, but
-            // only because this operand order already compensates for it; cross(PX-P,PY-P) here would
-            // point outward in this struct's own axes yet land inward once repacked into raylib's -
-            // verified numerically (every non-degenerate vertex normal checked against its own outward
-            // position direction, before vs. after repacking).
-            const Vec3 Normal = Vec3::Cross(PY - P, PX - P).GetSafeNormal();
+            const Vec3& PXPrev = Mesh.Vertices[Y * Mesh.Width + XPrev].Position;
+            const Vec3& PXNext = Mesh.Vertices[Y * Mesh.Width + XNext].Position;
+            const Vec3& PYPrev = Mesh.Vertices[YPrev * Mesh.Width + X].Position;
+            const Vec3& PYNext = Mesh.Vertices[YNext * Mesh.Width + X].Position;
+            // Same TangentY-then-TangentX operand order as the original forward-diff version (see its
+            // own long-since-verified comment on why that order, not the reverse, lands outward-facing
+            // once main.cpp's X/Z/Y repacking is applied) - only the tangents themselves are now
+            // centered spans instead of single forward edges.
+            const Vec3 TangentY = PYNext - PYPrev;
+            const Vec3 TangentX = PXNext - PXPrev;
+            const Vec3 Normal = Vec3::Cross(TangentY, TangentX).GetSafeNormal();
             if (!Normal.IsNearlyZero())
             {
                 Mesh.Vertices[Idx].Normal = Normal;

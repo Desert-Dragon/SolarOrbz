@@ -221,6 +221,11 @@ int main()
     // back down to 0 for a smooth/stylized look.
     NoiseNodePtr->Config.AmplitudeMeters = 350.0f;
     NoiseNodePtr->Config.Frequency = 8.0f;
+    // Ridged, not FNoiseNodeConfig's own Perlin default - confirmed via CLI heightmap comparison at
+    // identical Amplitude/Frequency that Ridged's connected, sharp-crested ridgelines are what reads
+    // as "mountains," where Perlin's rounded, mottled bumps read as rolling hills. Still a live toggle
+    // in the GUI (Secondary Noise section), so any of the five basis types remain one click away.
+    NoiseNodePtr->Config.Type = ENoiseType::Ridged;
     NoiseNode* NoiseNodeRaw = NoiseNodePtr.get();
     Pipeline.Nodes.push_back(std::move(NoiseNodePtr));
 
@@ -513,6 +518,22 @@ int main()
         SliderFloat("Power Curve", HeightAdjustNodeRaw->Config.PowerCurve, 0.3f, 3.0f, &bNeedsRebuild);
 
         SectionLabel("Secondary Noise");
+        {
+            // Perlin's rounded, mottled "hills" (the previous default) vs. Ridged's connected,
+            // sharp-crested ridgelines - confirmed via CLI heightmap comparison at identical Amplitude/
+            // Frequency: Ridged is unmistakably what reads as "mountains" rather than rolling terrain,
+            // since it takes abs(Perlin) and inverts it, turning the noise field's ZERO-CROSSINGS
+            // (naturally line-like, not point-like) into sharp ridge crests instead of smooth hilltops.
+            int32_t NoiseTypeIndex = (int32_t)NoiseNodeRaw->Config.Type;
+            const int32_t OldNoiseTypeIndex = NoiseTypeIndex;
+            GuiToggleGroup(Rectangle{ 10, (float)Y, (PanelWidth - 20.0f) / 5.0f, 20 }, "Perlin;Ridged;Billow;Value;Voronoi", &NoiseTypeIndex);
+            if (NoiseTypeIndex != OldNoiseTypeIndex)
+            {
+                NoiseNodeRaw->Config.Type = (ENoiseType)NoiseTypeIndex;
+                bNeedsRebuild = true;
+            }
+            Y += 26;
+        }
         SliderFloat("Amplitude (m)", NoiseNodeRaw->Config.AmplitudeMeters, 0.0f, 1000.0f, &bNeedsRebuild);
         SliderFloat("Frequency", NoiseNodeRaw->Config.Frequency, 0.5f, 20.0f, &bNeedsRebuild);
 

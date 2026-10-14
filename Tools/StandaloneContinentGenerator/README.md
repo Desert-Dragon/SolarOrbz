@@ -196,11 +196,15 @@ The left panel follows the pipeline order:
   adds Num Plates/Mountain Height/Trench Depth/Steps Per Run/Myr Per Step plus a **Run Simulation**
   button that advances the persistent plate state and rebakes.
 - **Base Layer Adjust** - Scale/Offset/Power Curve, applied to the whole baked field.
-- **Secondary Noise** - an additive fractal noise layer (Amplitude/Frequency). **On by default**
-  (350m/8.0) - the Continent layer alone only shapes coastlines/plate-boundary-scale relief, so
-  without this the interior of any landmass is smooth and featureless; this is the layer that
-  actually puts hills and mountains on the land (still a live slider, so it can be turned back to 0
-  for a smooth/stylized look).
+- **Secondary Noise** - an additive fractal noise layer: a Perlin/Ridged/Billow/Value/Voronoi toggle
+  group plus Amplitude/Frequency. **On by default** (Ridged, 350m/8.0) - the Continent layer alone
+  only shapes coastlines/plate-boundary-scale relief, so without this the interior of any landmass is
+  smooth and featureless; this is the layer that actually puts hills and mountains on the land (still
+  live, so it can be turned back to Amplitude 0 for a smooth/stylized look). **Ridged, not Perlin, is
+  the default** - confirmed via CLI heightmap comparison at identical Amplitude/Frequency that Ridged's
+  connected, sharp-crested ridgelines are what reads as "mountains," where Perlin's rounded, mottled
+  bumps read as rolling hills (Ridged takes `abs(Perlin)` and inverts it, turning the noise field's
+  naturally line-like zero-crossings into ridge crests instead of smooth hilltops).
 - **Erosion (explicit - click to apply)** - Droplets/Hydraulic Rate sliders plus a **Run Hydraulic
   Erosion** button, and Thermal Iterations/Talus Angle sliders plus a **Run Thermal Erosion** button.
   Both apply directly onto the current baked terrain rather than re-running on every slider drag (see
@@ -221,7 +225,29 @@ raygui (`GuiSliderPro` declares `int result = 0;` and never reassigns it), so th
 never true. The slider's underlying value still updated correctly (raygui mutates it directly via the
 pointer), so this bug was easy to miss in a screenshot of a slider's current position, but no amount
 of dragging ever actually re-baked the terrain. Fixed by comparing the value before/after the
-`GuiSlider` call ourselves instead of trusting its return.
+`GuiSlider` call ourselves instead of trusting its return. The same dead-return-value issue applies to
+`GuiToggleGroup` (used by the Secondary Noise type selector above) - same fix, comparing the bound
+`int` before/after the call instead of trusting the control's own return.
+
+**A grid-aligned "plaid" artifact on Ridged-noise mountains, now fixed:** switching Secondary Noise to
+Ridged on a Plate Tectonics landmass used to bake in a regular, grid-aligned light/dark lattice pattern
+over the terrain - confirmed present directly in the baked `FHeightField` data itself (reproduced in
+the CLI's flat equirectangular heightmap PNG, no 3D mesh or lighting involved at all), so it was never
+a rendering bug. Two real but unrelated bugs were found and fixed along the way without resolving it:
+`NoiseNode`/`CombineNode` were silently dropping multi-octave fBm accumulation for every basis except
+Perlin (an `Octaves` slider setting was simply ignored for Ridged/Billow/Value/Voronoi - see
+`NoiseBasis::FractalNoiseGeneric`, which now backs every basis the way the UE plugin's own
+`ComputeNormalizedNoiseUncompensated` always has), and `SphereMesh`'s per-vertex normals were computed
+from one-sided forward differences only (`X+1`/`Y+1`), now centered (`X-1..X+1`/`Y-1..Y+1`) to remove a
+directional lighting bias on sharply-varying terrain. The actual root cause: `NoiseBasis::
+ComputeSeedOffset(Seed)` - meant to shift every noise layer's sampling domain so it doesn't start
+exactly at the Perlin lattice origin - degenerated to the exact zero vector for `Seed=0` specifically
+(`sin(0 * k)` is exactly `0` on all three axes, so `Frac(0) == 0`), and `Seed=0` is the pipeline's own
+default. With zero offset, Ridged noise sampled starting precisely at classic Perlin's integer lattice
+origin along perfectly axis-aligned rays - exactly where/how its fixed small gradient set is most
+structured - and Ridged's `abs()`-fold turns that structure into sharp, high-contrast creases instead
+of hiding it in a smooth gradient. Fixed by biasing the hash's input by `+0.5` before the `sin()` call,
+so it's never an exact multiple of pi for any integer seed, `0` included.
 
 ## Repository layout
 

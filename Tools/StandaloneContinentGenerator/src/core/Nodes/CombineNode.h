@@ -44,15 +44,10 @@ public:
         Grid.ForEachCell([&](int32_t Idx, const Vec3& Dir, double, double)
         {
             const Vec3 SamplePos = Dir * Config.Secondary.Frequency + SeedOffsetVec;
-            float Secondary;
-            if (Config.Secondary.Octaves > 1 && Config.Secondary.Type == ENoiseType::Perlin)
-            {
-                Secondary = NoiseBasis::FractalNoise3D(SamplePos, Config.Secondary.Octaves, Config.Secondary.Persistence, Config.Secondary.Lacunarity, EffectiveSeed);
-            }
-            else
-            {
-                Secondary = NoiseBasis::SampleBasis(Config.Secondary.Type, SamplePos, EffectiveSeed);
-            }
+            // See NoiseNode.h's Apply() for why this is FractalNoiseGeneric, not the Perlin-only
+            // FractalNoise3D - a single raw octave of a non-Perlin basis (Ridged most of all) rendered
+            // as a grid-aliased lattice rather than layered terrain.
+            const float Secondary = NoiseBasis::FractalNoiseGeneric(Config.Secondary.Type, SamplePos, Config.Secondary.Octaves, Config.Secondary.Persistence, Config.Secondary.Lacunarity, EffectiveSeed);
             const float SecondaryMeters = Secondary * Config.Secondary.AmplitudeMeters * Config.Weight;
 
             float& H = Field.HeightMeters[Idx];
