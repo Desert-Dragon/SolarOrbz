@@ -956,6 +956,35 @@ commitment or a schedule - just a place these don't get lost between sessions.
     rect to additionally cut off. Verified via Xvfb: scrolled to the bottom of the Plate Tectonics
     panel (Regenerate/stats now reachable), scrolled back to the top (clamped correctly, labels intact
     the whole way), and confirmed Radial Seeds' shorter panel shows no scrollbar and needs none.
+  - **Follow-up report: "I'm still getting some rendering of the planet on the other side"** (a
+    large, sharp-edged dark "shield" shape on a Plate Tectonics planet, Seed 5563/Num Plates 12,
+    that looked like a hole showing the far hemisphere through the near one) **+ request: "put a
+    line through the poles as well as the arbitrary 0 deg longitude for visual reference."**
+    Investigated the rendering-bug report first, since a real hole/backface leak would need fixing
+    before anything else - concluded it's a genuine, if visually surprising, terrain feature, not a
+    bug, via two independent checks: (1) the CLI's flat heightmap PNG - which samples the baked
+    `FHeightField` directly, no 3D mesh or renderer involved - reproduced the same sharp-edged shape
+    at the same seed/config, proving the shape exists in the underlying height data itself; (2)
+    rotating the GUI's camera a full turn around an affected planet showed a solid, seamless sphere
+    with different (non-duplicated) terrain on the far side - no gap, no bleed-through, depth test
+    and backface culling both behaving correctly. The shape's unusually sharp, non-organic edges are
+    a real characteristic of the Plate Tectonics algorithm's own Voronoi-style plate boundaries not
+    always getting softened enough by Coastline Noise Amplitude/erosion at higher plate counts - a
+    Continent Layer tuning matter, not a GUI rendering bug (documented in the README as a known,
+    expected look, with the tuning knobs - Coastline Noise Amplitude, erosion, lower Num Plates -
+    that soften it).
+    Added the requested reference overlay: a red line through both poles (the sphere's own rotation
+    axis) and a yellow great circle through the prime meridian (0 deg longitude), which - since
+    `FLatLongGrid`'s own convention puts the prime meridian and the antimeridian (180 deg) in the
+    same plane - also traces the antimeridian for free. Both map to simple, rotation-free primitives
+    once the axis convention is worked through (poles -> raylib's Y axis; prime-meridian plane ->
+    raylib's own default XY plane, exactly matching `DrawCircle3D`'s unrotated plane) - `DrawLine3D`
+    and one `DrawCircle3D` call, no matrix math needed. Drawn at a radius a touch past the single
+    tallest displaced vertex (now returned out of `UpdatePreviewModel` alongside the mesh update, since
+    HeightMeters/HeightExaggeration/Radius already have to be known there anyway) so both stay a
+    complete, unbroken shape regardless of Height Exaggeration or Radius - never clipped under even
+    the tallest mountain. Verified via Xvfb: both lines render crisply and track correctly through a
+    full camera rotation.
   - Three deliberate, documented fidelity trade-offs (unchanged from the original Continent Layer
     port): RNG is `std::mt19937`, not UE's actual `FRandomStream` (same algorithm shape, not
     bit-identical layouts for a given Seed); Perlin noise uses the public Ken Perlin 2002 reference

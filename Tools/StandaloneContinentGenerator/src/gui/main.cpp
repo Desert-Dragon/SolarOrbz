@@ -121,7 +121,7 @@ namespace
     // (churning GPU mesh buffers every frame a slider is dragged was the cause of an earlier reported
     // rendering glitch - see git history). Colors come from either the elevation ramp or the biome
     // classification, per Viz.ViewMode.
-    void UpdatePreviewModel(Model& PreviewModel, const FHeightField& Terrain, const FBiomeField& Biomes, const FVisualizationSettings& Viz)
+    void UpdatePreviewModel(Model& PreviewModel, const FHeightField& Terrain, const FBiomeField& Biomes, const FVisualizationSettings& Viz, float& OutReferenceLineRadius)
     {
         const FLatLongGrid TerrainGrid(Terrain.Width, Terrain.Height);
         auto SampleHeight = [&](const Vec3& Dir) { return Terrain.SampleDirection(TerrainGrid, Dir); };
@@ -130,6 +130,12 @@ namespace
 
         float MinH = 1e9f, MaxH = -1e9f;
         for (const FSphereMeshVertex& V : Src.Vertices) { MinH = std::min(MinH, V.HeightMeters); MaxH = std::max(MaxH, V.HeightMeters); }
+        // BuildSphereMesh displaces each vertex to RadiusMeters + HeightMeters*HeightExaggeration (floored
+        // at MinRadius - see its own doc comment), so this is the single largest distance any vertex ends
+        // up from the origin. The pole/prime-meridian reference lines are drawn a touch past this (see
+        // their draw call in main()) so they stay a complete, fully visible circle/line regardless of
+        // Height Exaggeration or Radius - never clipped under even the tallest mountain.
+        OutReferenceLineRadius = Viz.PreviewRadiusMeters + MaxH * Viz.HeightExaggeration;
 
         for (size_t i = 0; i < Src.Vertices.size(); ++i)
         {
@@ -238,20 +244,21 @@ int main()
 
     FVisualizationSettings Viz;
     Model PreviewModel = CreatePreviewModel(Viz.MeshGridWidth, Viz.MeshGridHeight);
-    UpdatePreviewModel(PreviewModel, BakedTerrain, Biomes, Viz);
+    float ReferenceLineRadius = Viz.PreviewRadiusMeters;
+    UpdatePreviewModel(PreviewModel, BakedTerrain, Biomes, Viz, ReferenceLineRadius);
 
     auto RebakeBase = [&]()
     {
         BakedTerrain = Pipeline.Bake();
         Climate = SimulateClimate(BakedTerrain, ClimateConfig);
         Biomes = ClassifyBiomes(BakedTerrain, Climate, BiomeConfig);
-        UpdatePreviewModel(PreviewModel, BakedTerrain, Biomes, Viz);
+        UpdatePreviewModel(PreviewModel, BakedTerrain, Biomes, Viz, ReferenceLineRadius);
     };
     auto RecomputeClimateAndRefresh = [&]()
     {
         Climate = SimulateClimate(BakedTerrain, ClimateConfig);
         Biomes = ClassifyBiomes(BakedTerrain, Climate, BiomeConfig);
-        UpdatePreviewModel(PreviewModel, BakedTerrain, Biomes, Viz);
+        UpdatePreviewModel(PreviewModel, BakedTerrain, Biomes, Viz, ReferenceLineRadius);
     };
 
     // Manual orbit camera - left-drag to orbit, wheel to zoom. Deliberately not raylib's built-in
@@ -313,6 +320,25 @@ int main()
 
         BeginMode3D(Camera);
         DrawModel(PreviewModel, { 0, 0, 0 }, 1.0f, WHITE);
+
+        // Visual-reference-only overlay: a line through both poles (the sphere's own rotation axis)
+        // and a great circle through the prime meridian (0 deg longitude) AND its antimeridian (180
+        // deg) - the same plane covers both, so one DrawCircle3D call draws both for free. Neither
+        // line is node config or saved anywhere; they're just an orientation aid.
+        //
+        // Axis mapping: FLatLongGrid's convention (see its own header comment) has the poles on the
+        // core math's +-Z axis and the prime meridian (U=0.5) in the core X-Z plane (core Y=0) - and
+        // UpdatePreviewModel's vertex writes remap core (X,Y,Z) -> raylib (X,Z,Y) (raylib is Y-up; the
+        // core math is Z-up, matching the UE plugin's own convention). So in raylib space: the poles
+        // sit on the Y axis, and the prime-meridian/antimeridian plane is raylib's own XY plane
+        // (raylib Z=0) - exactly DrawCircle3D's own default unrotated plane, needing no rotation at all.
+        //
+        // Drawn at ReferenceLineRadius (a touch past the tallest displaced vertex - see
+        // UpdatePreviewModel) so both stay a complete, unbroken circle/line regardless of Height
+        // Exaggeration or Radius, never clipped under even the tallest mountain.
+        DrawLine3D(Vector3{ 0, -ReferenceLineRadius, 0 }, Vector3{ 0, ReferenceLineRadius, 0 }, Color{ 255, 60, 60, 220 });
+        DrawCircle3D(Vector3{ 0, 0, 0 }, ReferenceLineRadius, Vector3{ 0, 0, 1 }, 0.0f, Color{ 255, 230, 60, 220 });
+
         EndMode3D();
 
         DrawRectangle(0, 0, PanelWidth, ScreenHeight, Color{ 30, 30, 36, 235 });

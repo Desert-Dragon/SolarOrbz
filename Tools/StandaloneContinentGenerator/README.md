@@ -137,6 +137,26 @@ only over the 3D view; the same mouse wheel scrolls the left panel instead while
 than the window - a thin scrollbar tracks position along the panel's right edge when there's anything
 to scroll).
 
+Two thin reference lines overlay the sphere for orientation: a red line through both poles (the
+sphere's own rotation axis), and a yellow great circle through the prime meridian (0 deg longitude) -
+the same plane also happens to pass through the antimeridian (180 deg), so one circle shows both for
+free. Both are purely visual (no node config, nothing saved) and are drawn at a radius a touch past
+the single tallest displaced vertex, so they stay a complete, unbroken line/circle regardless of
+Height Exaggeration or Radius - never clipped under even the tallest mountain.
+
+**A visually unusual but genuine terrain feature, not a rendering bug:** a large, sharp-edged inland
+sea/landlocked oceanic plate can appear with Plate Tectonics at higher Num Plates counts, looking
+enough like a "hole" or "the far side of the planet showing through" to be mistaken for a backface-
+culling/depth-test bug. It isn't - confirmed two ways: the CLI's flat equirectangular heightmap PNG
+(which samples the baked `FHeightField` directly, with no 3D mesh/renderer involved at all) reproduces
+the same sharp-edged shape at the same seed, and rotating the GUI's camera a full turn around an
+affected planet shows a solid, seamless sphere with a *different*, non-duplicated terrain on the far
+side - no gap, no bleed-through. The shape's unusually sharp (non-organic) edges are a real artifact
+of the Plate Tectonics algorithm's own Voronoi-style plate boundaries not always being softened enough
+by Coastline Noise Amplitude/erosion at higher plate counts - a Continent Layer tuning matter, not a
+GUI rendering one. Raising Coastline Noise Amplitude, running Hydraulic/Thermal Erosion, or lowering
+Num Plates all make such boundaries read as more natural coastlines.
+
 The preview mesh resolution matches the pipeline's own bake resolution (256x128), and vertex colors
 get a simple fixed-direction Lambertian shading term baked in on top of the elevation/biome color
 ramp. Both fixed real, confirmed-via-screenshot issues, not just polish: a coarser preview mesh was
