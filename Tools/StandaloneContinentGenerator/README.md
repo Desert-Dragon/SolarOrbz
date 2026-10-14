@@ -142,7 +142,14 @@ sphere's own rotation axis), and a yellow great circle through the prime meridia
 the same plane also happens to pass through the antimeridian (180 deg), so one circle shows both for
 free. Both are purely visual (no node config, nothing saved) and are drawn at a radius a touch past
 the single tallest displaced vertex, so they stay a complete, unbroken line/circle regardless of
-Height Exaggeration or Radius - never clipped under even the tallest mountain.
+Height Exaggeration or Radius - never clipped under even the tallest mountain. Both are built out of
+short `DrawCylinderEx` segments, not raylib's `DrawLine3D`/`DrawCircle3D` - an earlier version used
+those and, confirmed via screenshot (both on this project's own test setup and the user's own
+machine), the far-side half of each shape rendered straight through the opaque terrain instead of
+being hidden behind it as expected. Those two functions draw through rlgl's immediate-mode line batch,
+a separate path from `DrawModel`'s own mesh draw, and don't reliably depth-test against it. Built as
+real mesh triangles instead (the same draw path the sphere itself uses), both now correctly disappear
+behind the terrain wherever they're actually behind it.
 
 **A visually unusual but genuine terrain feature, not a rendering bug:** a large, sharp-edged inland
 sea/landlocked oceanic plate can appear with Plate Tectonics at higher Num Plates counts, looking

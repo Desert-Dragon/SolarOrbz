@@ -336,8 +336,26 @@ int main()
         // Drawn at ReferenceLineRadius (a touch past the tallest displaced vertex - see
         // UpdatePreviewModel) so both stay a complete, unbroken circle/line regardless of Height
         // Exaggeration or Radius, never clipped under even the tallest mountain.
-        DrawLine3D(Vector3{ 0, -ReferenceLineRadius, 0 }, Vector3{ 0, ReferenceLineRadius, 0 }, Color{ 255, 60, 60, 220 });
-        DrawCircle3D(Vector3{ 0, 0, 0 }, ReferenceLineRadius, Vector3{ 0, 0, 1 }, 0.0f, Color{ 255, 230, 60, 220 });
+        //
+        // Built out of DrawCylinderEx segments, NOT DrawLine3D/DrawCircle3D - those draw through
+        // rlgl's immediate-mode RL_LINES batch, a separate path from DrawModel's own mesh draw, and
+        // confirmed (via screenshot, on both this Xvfb host and the user's own machine) to not
+        // reliably depth-test against the sphere: the far-side half of each shape, which should be
+        // hidden behind the opaque terrain, was rendering straight through it instead. DrawCylinderEx
+        // instead builds real triangles through the exact same mesh-draw path as the sphere itself,
+        // so it depth-tests against it correctly, at the cost of being several dozen short draw calls
+        // instead of one - cheap at this vertex count.
+        const float TubeRadius = std::max(ReferenceLineRadius * 0.0025f, 1.0f);
+        DrawCylinderEx(Vector3{ 0, -ReferenceLineRadius, 0 }, Vector3{ 0, ReferenceLineRadius, 0 }, TubeRadius, TubeRadius, 8, Color{ 255, 60, 60, 255 });
+        constexpr int32_t MeridianSegments = 72;
+        Vector3 PrevPoint{ 0.0f, ReferenceLineRadius, 0.0f };
+        for (int32_t i = 1; i <= MeridianSegments; ++i)
+        {
+            const float Angle = (float)i * (2.0f * (float)MathUtil::PI_D / (float)MeridianSegments);
+            const Vector3 NextPoint{ std::sin(Angle) * ReferenceLineRadius, std::cos(Angle) * ReferenceLineRadius, 0.0f };
+            DrawCylinderEx(PrevPoint, NextPoint, TubeRadius, TubeRadius, 6, Color{ 255, 230, 60, 255 });
+            PrevPoint = NextPoint;
+        }
 
         EndMode3D();
 

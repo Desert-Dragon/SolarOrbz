@@ -985,6 +985,23 @@ commitment or a schedule - just a place these don't get lost between sessions.
     complete, unbroken shape regardless of Height Exaggeration or Radius - never clipped under even
     the tallest mountain. Verified via Xvfb: both lines render crisply and track correctly through a
     full camera rotation.
+  - **Immediate correction, same day: "I can confirm some of the what should be invisible parts of
+    the planet are being shown through the planet... it looks to be the 'vertical' parts,"** with a
+    screenshot showing the yellow meridian circle rendered as a complete, unbroken ellipse straight
+    through the solid terrain - exactly the far-side-bleed-through failure mode the *previous* report
+    had been ruled out for, except this time it was real: the circle's far-side arc, which should
+    have been hidden behind the opaque sphere, was fully visible. Root cause: `DrawLine3D`/
+    `DrawCircle3D` draw through rlgl's immediate-mode `RL_LINES` batch, a different path from
+    `DrawModel`'s own mesh draw, and - confirmed by re-adding the overlay, screenshotting the exact
+    same view, and watching the far arc disappear - don't reliably depth-test against it. Fixed by
+    rebuilding both shapes out of short `DrawCylinderEx` segments (36 for the pole axis as one
+    cylinder, 72 for the meridian circle approximated as a ring of short cylinders) - real mesh
+    triangles through the identical draw path the sphere itself uses, so they depth-test against it
+    correctly by construction rather than by hoping two different rlgl code paths agree. Verified via
+    Xvfb on the same reproduction: the meridian circle now correctly shows only its near-side arc
+    across the visible disk and disappears behind the terrain, matching the sphere mesh's own
+    silhouette exactly. README.md corrected to describe this fix instead of the overlay's original
+    (wrong) behavior claim.
   - Three deliberate, documented fidelity trade-offs (unchanged from the original Continent Layer
     port): RNG is `std::mt19937`, not UE's actual `FRandomStream` (same algorithm shape, not
     bit-identical layouts for a given Seed); Perlin noise uses the public Ken Perlin 2002 reference
