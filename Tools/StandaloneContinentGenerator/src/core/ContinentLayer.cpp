@@ -389,7 +389,7 @@ void ContinentLayer::BakePlateTectonics()
             const Vec3 DriftB = (PlateB >= 0) ? Plates[PlateB].GetInstantaneousDrift() : Vec3::Zero();
             const double Closure = Vec3::Dot(DriftA, BoundaryAxis) - Vec3::Dot(DriftB, BoundaryAxis);
 
-            constexpr double TransformThreshold = 0.25;
+            const double TransformThreshold = ComputeTransformThreshold();
             float Modifier = 0.0f;
             if (Closure > TransformThreshold)
             {
@@ -572,7 +572,7 @@ void ContinentLayer::UpdateBoundaryStress(float DeltaMyr)
             return LivePlateIds.find(State.PlateIdA) == LivePlateIds.end() || LivePlateIds.find(State.PlateIdB) == LivePlateIds.end();
         }), BoundaryStates.end());
 
-    constexpr double TransformThreshold = 0.25;
+    const double TransformThreshold = ComputeTransformThreshold();
     std::set<int64_t> SeenThisStep;
     std::map<int32_t, int32_t> PendingSplitsByPlateId;
 

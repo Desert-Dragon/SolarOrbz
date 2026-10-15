@@ -141,6 +141,23 @@ private:
     void EnsurePlatesInitialized();
     void UpdateBoundaryStress(float DeltaMyr);
     void SplitPlate(int32_t PlateIdToSplit, int32_t OtherPlateId);
+
+    // "Closure" (two plates' instantaneous drift, each projected onto the boundary axis and
+    // subtracted) classifies a boundary convergent/divergent/transform, but its magnitude is bounded
+    // by the plates' own drift speed - GetInstantaneousDrift() is Cross(axis, dir) * AngularRate, so
+    // |Closure| can never exceed roughly 2x the fastest single plate's drift magnitude, which itself
+    // scales directly with Config.InitialDriftSpeedDegreesPerMyr (radians). A threshold with no
+    // relationship to that speed is either permanently unreachable (every boundary reads as
+    // "transform," contributing zero height, no matter how long the simulation runs - confirmed via
+    // direct instrumentation: at the 2.0 deg/Myr default, |Closure| samples cluster around 0.005-0.03,
+    // nowhere near a hardcoded 0.25) or, at the opposite extreme, so small that EVERY boundary reads
+    // as convergent/divergent regardless of the plates' actual relative motion. Scaling it to the
+    // configured drift speed keeps it meaningful at any InitialDriftSpeedDegreesPerMyr value.
+    double ComputeTransformThreshold() const
+    {
+        const double MaxDriftRad = MathUtil::DegreesToRadians((double)Config.InitialDriftSpeedDegreesPerMyr);
+        return MaxDriftRad * 0.3;
+    }
     FTectonicBoundaryState& FindOrAddBoundaryState(int32_t PlateIdA, int32_t PlateIdB);
     const FTectonicBoundaryState* FindBoundaryState(int32_t PlateIdA, int32_t PlateIdB) const;
 

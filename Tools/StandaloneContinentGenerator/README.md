@@ -249,6 +249,41 @@ structured - and Ridged's `abs()`-fold turns that structure into sharp, high-con
 of hiding it in a smooth gradient. Fixed by biasing the hash's input by `+0.5` before the `sin()` call,
 so it's never an exact multiple of pi for any integer seed, `0` included.
 
+**Plate Tectonics mountains didn't actually form, at any seed or simulated duration, until this fix:**
+asked directly to confirm mountains "actually generate, are visible and useful," a seed sweep across
+Plate Tectonics (several seeds, 0/50/100/300 Myr simulated) showed the baked height range capped
+around 550-580m regardless - essentially unchanged by `MountainHeightMeters` (3000-4000m configured)
+or by how long the simulation ran. Root cause, confirmed via direct instrumentation of the live
+`Closure` values: `BakePlateTectonics`/`UpdateBoundaryStress` classify a plate boundary convergent/
+divergent/transform by comparing `Closure` (the two plates' instantaneous drift, each projected onto
+the boundary axis and subtracted) against a hardcoded `constexpr double TransformThreshold = 0.25`
+(same value, same hardcoding, in the real UE plugin's `SolarOrbzTerrainLayers.cpp` - this is a latent
+bug in the ported logic, not something the port introduced). `GetInstantaneousDrift()` is
+`Cross(RotationAxis, SeedDirection) * AngularRateRadPerMyr`, and at the default
+`InitialDriftSpeedDegreesPerMyr = 2.0`, `AngularRateRadPerMyr` tops out around 0.035 rad/Myr - so
+`Closure` itself is bounded to roughly +-0.07 at the extreme, and in practice samples clustered around
+0.005-0.03 in the instrumented runs. A threshold of `0.25` is simply unreachable at that scale: every
+boundary read as "transform" (zero height contribution) no matter what `MountainHeightMeters` was set
+to or how many simulation steps ran - and since classification, not simulated time, gates the
+`AccumulatedConvergenceMyr`/`AccumulatedDivergenceMyr` counters too, this silently disabled the stress
+multiplier (`MaxStressMultiplier`) AND plate splitting-at-rifts (`PlateSplitThresholdMyr`) as well -
+three "done" features with no actual effect. Fixed by replacing the hardcoded constant with
+`ContinentLayer::ComputeTransformThreshold()`, scaled to the plates' own configured drift speed
+(`0.3 * DegreesToRadians(InitialDriftSpeedDegreesPerMyr)`) instead of a disconnected absolute value, so
+it stays meaningful regardless of that speed. Verified via the same seed sweep: height range now
+reaches roughly -8000m to +2500..5300m depending on seed (previously capped near +/-550m), a visible
+"Snow/Ice" biome now appears in `full_pipeline.json`'s output where it never could before, and -
+importantly - mountains are visible on the very first bake (`Simulated age: 0 Myr`), since
+classification only needs the plates' current instantaneous drift, not accumulated simulated time;
+"Run Simulation" still matters for the stress-multiplier bonus and plate splitting, just no longer for
+whether mountains exist at all. Confirmed in the GUI too (Xvfb screenshot, Plate Tectonics, default
+Seed 0): a real, continuous, snow-capped mountain range along the plate boundary, immediately on
+selecting the algorithm. The real UE plugin (`Source/SolarOrbz/Private/SolarOrbzTerrainLayers.cpp`,
+`Source/SolarOrbz/Public/SolarOrbzTerrainLayers.h`) has the identical hardcoded `0.25` at both of its
+own call sites and is presumably affected the same way - left unchanged here since this pass was
+scoped to the standalone tool, but worth the same fix if anyone verifies the live plugin's Plate
+Tectonics mountain-building against this.
+
 ## Repository layout
 
 ```

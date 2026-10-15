@@ -1084,6 +1084,41 @@ commitment or a schedule - just a place these don't get lost between sessions.
     plaid artifact is gone, replaced by organic mottled ridged terrain, and via the CLI's flat heightmap
     PNG at the same config. Re-ran the GUI smoke test (Hydraulic Erosion button, Height/Biome toggle)
     and the CLI regression (`full_pipeline.json`) after the fix - both clean, no new artifacts.
+  - **Fifth follow-up, asked directly: "ensure mountains actually generate, are visible and useful."**
+    Found a far more serious bug than anything cosmetic: Plate Tectonics mountains never actually
+    formed, at any seed or any simulated duration. A seed sweep (6 seeds x {0, 50, 100, 300} simulated
+    Myr) showed baked height range capped around 550-580m regardless of `MountainHeightMeters` being
+    set to 3000-4000m, and essentially byte-identical between 100 Myr and 300 Myr simulated. Root cause,
+    confirmed by directly instrumenting the live `Closure` values: boundary classification (convergent/
+    divergent/transform) in both `BakePlateTectonics` and `UpdateBoundaryStress` compares `Closure`
+    (the two plates' instantaneous drift, each projected onto the boundary axis and subtracted) against
+    a hardcoded `constexpr double TransformThreshold = 0.25` - but `GetInstantaneousDrift()` is bounded
+    by `AngularRateRadPerMyr`, which at the default `InitialDriftSpeedDegreesPerMyr = 2.0` tops out
+    around 0.035 rad/Myr, so `Closure` itself is bounded to roughly +-0.07 at the extreme (instrumented
+    samples clustered around 0.005-0.03). `0.25` is simply unreachable at that scale: every boundary
+    read as "transform" (zero height contribution), and since classification - not simulated time -
+    also gates `AccumulatedConvergenceMyr`/`AccumulatedDivergenceMyr`, this silently disabled the
+    stress multiplier (Task #94) and plate splitting-at-rifts (Task #95) too, not just the base mountain
+    height from Task #70/#71's own `BakePlateTectonics` - three "done" tasks with no actual runtime
+    effect, the whole time. The identical hardcoded `0.25` exists at both of its own call sites in the
+    real UE plugin (`Source/SolarOrbz/Private/SolarOrbzTerrainLayers.cpp` and
+    `Source/SolarOrbz/Public/SolarOrbzTerrainLayers.h`'s `GetInstantaneousDrift`/`InitialDriftSpeedDegreesPerMyr`
+    defaults match too) - a latent bug in the logic this was ported from, not something the port
+    introduced, and left unfixed there since this pass was scoped to the standalone tool. Fixed in the
+    standalone tool by replacing the hardcoded constant with a new
+    `ContinentLayer::ComputeTransformThreshold()`, scaled to the plates' own configured drift speed
+    (`0.3 * DegreesToRadians(InitialDriftSpeedDegreesPerMyr)`) at both call sites, so it stays meaningful
+    at any configured speed instead of silently failing at the one currently shipped. Verified via the
+    same seed sweep: height range now reaches roughly -8000m to +2500..5300m depending on seed, a
+    "Snow/Ice" biome now appears in `full_pipeline.json`'s output where it never could before (height
+    never reached the threshold), and mountains are visible on the very first bake (`Simulated age: 0
+    Myr`) since classification only needs the plates' current instantaneous drift, not accumulated
+    time - "Run Simulation" now only matters for the stress-multiplier bonus and plate splitting, not
+    for whether mountains exist at all. Confirmed in the GUI via Xvfb screenshot (Plate Tectonics,
+    default Seed 0): a real, continuous, snow-capped mountain range along the plate boundary, visible
+    immediately on selecting the algorithm, holding up correctly through Hydraulic Erosion and the
+    Height/Biome toggle (no needle-spike recurrence near the poles). Re-ran the CLI regression
+    (`full_pipeline.json`) after the fix.
 
 ## Documentation
 
