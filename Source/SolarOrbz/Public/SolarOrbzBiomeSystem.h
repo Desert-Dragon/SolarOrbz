@@ -18,6 +18,7 @@
 #include "CoreMinimal.h"
 #include "UObject/Object.h"
 #include "Engine/DataAsset.h"
+#include "Engine/DataTable.h"
 #include "SolarOrbzBiomeSystem.generated.h"
 
 class USolarOrbzTerrainLayerStack;
@@ -247,6 +248,53 @@ struct SOLARORBZ_API FSolarOrbzBiomeScatterEntry
 
 	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Scatter", meta = (ClampMin = "0.0", ClampMax = "1.0"))
 	float MaxSlope = 1.0f;
+};
+
+/**
+ * DataTable row struct matching the standalone Continent Generator tool's
+ * "<out-prefix>_pcg_points.csv" export column-for-column (see
+ * Tools/StandaloneContinentGenerator/README.md's "PCG scatter-point dataset" section) - import that
+ * CSV as a DataTable of this row type to get one DataTable row per coarse attribute-sample point on
+ * the baked planet, ready for a PCG graph's Data Table point source. Fields deliberately mirror
+ * FSolarOrbzBiomeSampleContext's own shape (Elevation/Slope/Temperature/Moisture) rather than
+ * introducing a parallel convention, and BiomeName is meant to be matched against
+ * FSolarOrbzBiomeScatterEntry::Tag by name (e.g. a Biome asset named "Taiga" with a ScatterEntry
+ * tagged "Tree_Pine" scatters pine trees wherever an imported row's BiomeName reads "Taiga") - the
+ * "PCG/PCGEx graph will read these (matched by Tag)" hookup that struct's own comment already
+ * anticipated, now with real per-point data to match them against.
+ */
+USTRUCT(BlueprintType)
+struct SOLARORBZ_API FSolarOrbzPCGScatterPointRow : public FTableRowBase
+{
+	GENERATED_BODY()
+
+	/** World-space position (UE units, cm) - the actual displaced surface point, already at Radius + Elevation, no further offset needed. */
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|PCG")
+	FVector Position = FVector::ZeroVector;
+
+	/** Outward surface normal (unit length) - for aligning a scattered prop to the local terrain slope rather than always straight up. */
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|PCG")
+	FVector Normal = FVector::UpVector;
+
+	/** Same convention as FSolarOrbzBiomeSampleContext::Elevation - height above/below the base radius, UE units (cm). Not yet adjusted for Sea Level; subtract your ClimateSimulation asset's own Sea Level (cm) if comparing against FSolarOrbzMaskRange::Elevation ranges authored relative to it. */
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|PCG")
+	float ElevationCm = 0.0f;
+
+	/** Same convention as FSolarOrbzBiomeSampleContext::Slope - 0 flat, 1 vertical. Averaged over this export's own (coarse) sample spacing, same documented trade-off as this project's other lat/long-grid-derived values - a sharp local cliff narrower than one sample cell reads as gentler than it really is; regenerate the standalone tool's export at a higher GridWidth/GridHeight if a biome's MinSlope/MaxSlope scatter rule needs finer resolution than this. */
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|PCG")
+	float Slope = 0.0f;
+
+	/** Same convention as FSolarOrbzBiomeSampleContext::Temperature - absolute Kelvin, not normalized. */
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|PCG")
+	float TemperatureKelvin = 288.0f;
+
+	/** Same convention as FSolarOrbzBiomeSampleContext::Moisture - 0 driest .. 1 wettest. */
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|PCG")
+	float Moisture = 0.5f;
+
+	/** The standalone tool's own classifier's biome name at this point (e.g. "Taiga", "Snow/Ice") - match against FSolarOrbzBiomeScatterEntry::Tag (or a Biome asset's own name) in your PCG graph's filter/branch logic. */
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|PCG")
+	FName BiomeName;
 };
 
 /**

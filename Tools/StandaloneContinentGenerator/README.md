@@ -132,9 +132,10 @@ are normalized separately around a fixed sea-level midpoint, since a real planet
 eroded-land relief span wildly different magnitude ranges and a single linear min/max normalization
 crushes land into an indistinguishable sliver - **view-only, not reimportable**: see below for that),
 `<out-prefix>_biome.png` (biome color map), `<out-prefix>_temperature.png`,
-`<out-prefix>_moisture.png`, `<out-prefix>_heightmap_ue5.png` (linear 16-bit, see below), plus land
-coverage %, per-biome mix %, and (Plate Tectonics only) simulated age and live plate count, printed
-to stdout.
+`<out-prefix>_moisture.png`, `<out-prefix>_heightmap_ue5.png` (linear 16-bit, see below),
+`<out-prefix>_biomeid_ue5.png` (discrete biome-ID map, see below), `<out-prefix>_pcg_points.csv`
+(scatter-point attribute dataset, see below), plus land coverage %, per-biome mix %, and (Plate
+Tectonics only) simulated age and live plate count, printed to stdout.
 
 ## Bringing a planet into UE5
 
@@ -199,11 +200,81 @@ Steps:
    without needing every individual layer type (Plate Tectonics simulation, hydraulic/thermal erosion)
    reimplemented or re-tuned by hand inside the Editor.
 
-**Not yet covered by this workflow:** biome/material data (`_biome.png`) and climate data
-(`_temperature.png`/`_moisture.png`) aren't wired into any equivalent authored-import path yet - the
-real plugin's biome system (`USolarOrbzBiomeMask`) is a different shape (a mask/condition system, not
-a simple texture sample) and would need its own export convention. Height is the first, and currently
-only, round-trip this tool supports back into UE5.
+### Bringing biome data into UE5
+
+The real plugin's biome system (`USolarOrbzClimateBiomeMask`) is a RULE classifier, not a texture
+sampler - it re-derives a biome live from Elevation/Latitude/Temperature/Moisture/Slope, the same
+Whittaker-diagram approach this tool's own `BiomeClassifier.h` already uses, so there's no "biome
+texture" bridge needed for the live classification to work at all once Climate Simulation and Biome
+Stack assets are authored in UE with equivalent parameters. What IS missing is getting THIS bake's
+specific, already-computed biome result (shaped by whatever Plate Tectonics/Noise/erosion actually
+produced, not just a fresh live reclassification) back out: `<out-prefix>_biomeid_ue5.png` - an 8-bit
+grayscale PNG where each pixel's raw numeric VALUE is the `EBiome` enum ordinal (0 = Ocean, 1 = Beach,
+... - the CLI prints the full legend every run), not a color. **Sample it with point/nearest-neighbor
+filtering only** - biomes are discrete categories, and bilinearly blending two adjacent IDs (say, 4
+and 9) produces a meaningless "6.5"-th biome that doesn't exist. Same orientation convention as the
+heightmap (no flip needed).
+
+## PCG scatter-point dataset
+
+`<out-prefix>_pcg_points.csv` - this is the second part of "bringing a planet into UE5," and the
+dataset asked for specifically to drive PCG/PCGEx-based scattering (trees, rocks, wildlife density,
+whatever a biome should populate its surface with). It isn't a new, invented convention: the real
+plugin's own `USolarOrbzBiome` asset already has an `FSolarOrbzBiomeScatterEntry` array whose header
+comment says outright "the PCG/PCGEx graph will read these (matched by Tag) once that hookup exists" -
+this CSV, plus a new matching `FSolarOrbzPCGScatterPointRow` DataTable row struct added alongside that
+comment in `SolarOrbzBiomeSystem.h`, is that hookup's data side.
+
+One row per cell of the **internal bake grid** (`GridWidth`/`GridHeight` - independent of
+`--image-width`/`--image-height`, which only size the texture outputs above), not one row per output
+pixel: this is a coarse attribute-SAMPLE grid for a PCG graph to project onto its own much denser,
+separately-generated point cloud (e.g. via a surface sampler on the imported heightmap's mesh), not a
+literal "one spawned object per CSV row" list - a 256x128 bake (the default) gives 32,768 rows, each
+describing one sample point, not 32,768 trees.
+
+Columns, deliberately mirroring `FSolarOrbzBiomeSampleContext`'s own fields rather than inventing a
+parallel convention: `Name` (DataTable row key, e.g. `Point_12345` - UE's own CSV-to-DataTable
+importer requires the first column to be this, matched by position not header text), `Position` /
+`Normal` (UE-unit `FVector`s, Unreal's own `(X=...,Y=...,Z=...)` struct-text format in a single quoted
+column each - `Position` is the real displaced surface point, already Radius + Elevation, sampled from
+a real `SphereMesh.h` build at `--radius-meters` so Slope benefits from this project's own already-
+verified pole-smoothing and centered-difference normals rather than a separately-written, possibly
+differently-buggy calculation), `ElevationCm`, `Slope` (0 flat..1 vertical, same convention as
+`FSolarOrbzBiomeSampleContext::Slope` - averaged over this grid's own cell spacing, so a cliff
+narrower than one sample cell reads gentler than it really is; raise `GridWidth`/`GridHeight` if a
+biome's `MinSlope`/`MaxSlope` scatter rule needs finer resolution than the default gives), `TemperatureKelvin`
+(converted from this tool's own internal Celsius - `FSolarOrbzBiomeSampleContext::Temperature` is
+Kelvin), `Moisture` (0..1, direct), and `BiomeName` (e.g. `Taiga`, `Snow/Ice` - match this against a
+`FSolarOrbzBiomeScatterEntry::Tag`, or a Biome asset's own name, in your PCG graph's filter/branch
+logic to route each point to that biome's intended scatter rules).
+
+**Caught and fixed before it shipped:** the first version of this export left `Position`/`Normal`
+unquoted - since the format itself contains commas (between `X=`/`Y=`/`Z=`), every standards-
+conforming CSV reader splits an unquoted field like that into three separate columns instead of one,
+silently misaligning every column after it. Confirmed by reading the file back with Python's own
+`csv` module (which follows the same RFC 4180 quoting rules any CSV-import feature, including UE's
+DataTable importer, does) and watching it happen; fixed by wrapping both fields in double quotes.
+Verified the corrected file two ways: re-parsed it with `csv.DictReader` and confirmed all 8 columns
+land correctly with sane ranges (Temperature 236.7K..300.7K against a 238.15K/301.15K pole/equator
+config - lapse-rate-adjusted, as expected; Slope topping out around 0.13 on this particular bake,
+plausible for a coarse 256x128 sample grid even with 4,000m peaks - the steepest slopes land on
+trench/cliff WALLS, not at elevation extrema, since a local max/min is where the gradient is zero by
+definition, not where it's steepest), and independently recomputed one row's position vector magnitude
+by hand (404066.75m) against that row's own Radius + Elevation (400,000m + 4,066.75m) - exact match.
+
+**On the exact PCG/PCGEx node that turns a DataTable into point data:** genuinely could not verify a
+specific current node name for this in this environment (no live UE5.8 editor, no PCGEx installed) -
+web search turned up Epic's own core PCG framework having external-data/row-to-point machinery
+(`FPCGExternalDataContext`) but not a confirmed node name, and PCGEx's own documentation describes it
+as doing "data sampling and blending... between point sets, surfaces, splines, and textures" without
+surfacing its exact external-file-import mechanics either. What IS fully verified and version-stable:
+the CSV itself, and that a code-defined `FTableRowBase`-derived USTRUCT with UPROPERTY names matching
+the CSV's header row (case-sensitive) is the long-standing, engine-version-independent way to import a
+CSV as a UE DataTable at all - `FSolarOrbzPCGScatterPointRow` does exactly that. From a DataTable of
+that type, search your installed engine/PCGEx version's node palette for a Data Table point source;
+once points exist with these attributes, any PCGEx (or vanilla PCG) filter node can branch on
+`BiomeName` the way described above. This half of the pipeline is left to verify against your actual
+installed version rather than asserted as fact here.
 
 ## GUI usage
 

@@ -13,6 +13,7 @@
 #include "Climate.h"
 #include "BiomeClassifier.h"
 #include "LatLongGrid.h"
+#include "SphereMesh.h"
 #include <nlohmann/json.hpp>
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include <stb_image_write.h>
@@ -242,6 +243,91 @@ namespace
         return true;
     }
 
+    // Raw discrete biome-ID map - pixel value IS the EBiome enum ordinal (0..EBiome::Count-1), NOT a
+    // normalized/interpolated quantity like the heightmap above. Biomes are categories, not a
+    // continuum - blending two adjacent pixel values during any resampling (including whatever
+    // texture filtering a consuming engine applies) would produce a meaningless intermediate "biome"
+    // that doesn't exist in the classifier's own enum. Whoever samples this PNG in UE (a PCGEx texture
+    // sampling node, most likely - see README.md's "PCG scatter-point dataset" section) needs to use
+    // POINT/nearest-neighbor filtering, never bilinear, for exactly that reason. 8-bit via
+    // stb_image_write is plenty - EBiome::Count is 12, nowhere near the 256 values a single byte can
+    // hold. Same orientation convention as WriteUE5HeightmapPng16 (no flip/rotation needed).
+    bool WriteUE5BiomeIdPng(const std::string& Path, const std::vector<uint8_t>& BiomeIds, int32_t Width, int32_t Height)
+    {
+        return stbi_write_png(Path.c_str(), Width, Height, 1, BiomeIds.data(), Width) != 0;
+    }
+
+    // Formats an FVector-shaped value the way Unreal's own struct text import/export does -
+    // "(X=...,Y=...,Z=...)" - so a single CSV column maps directly onto one FVector UPROPERTY on a
+    // DataTable row struct (FStructProperty::ImportText's parenthesized Key=Value convention, long-
+    // standing UE behavior, not something that varies by engine version). Lets WritePcgPointsCsv emit
+    // one "Position" and one "Normal" column instead of six separate X/Y/Z columns.
+    // Double-quoted (RFC 4180): the value itself contains commas (between X=/Y=/Z=), and an unquoted
+    // field is split on every comma by any standards-conforming CSV reader - confirmed the hard way by
+    // reading this exact output back with Python's own csv module, which misparsed it identically to
+    // how UE's DataTable CSV importer would. No embedded double-quote or newline is possible in this
+    // specific format (it's always exactly this shape, never arbitrary text), so no quote-escaping
+    // beyond the wrapping pair is needed.
+    std::string FormatUEVector(float X, float Y, float Z)
+    {
+        char Buf[96];
+        std::snprintf(Buf, sizeof(Buf), "\"(X=%.3f,Y=%.3f,Z=%.3f)\"", (double)X, (double)Y, (double)Z);
+        return Buf;
+    }
+
+    // Writes one row per cell of the baked (not resampled - this is a coarse attribute-sample grid for
+    // PCG/PCGEx to project onto its OWN, much denser point cloud, not a literal "one spawned object
+    // per row" list) Terrain/Climate/Biome fields, matching the UE plugin's own pre-designed
+    // FSolarOrbzBiomeSampleContext fields (Elevation/Slope/Temperature/Moisture) and
+    // FSolarOrbzBiomeScatterEntry's "matched by Tag" comment (here, by BiomeName) - see
+    // SolarOrbzBiomeSystem.h's own "future PCG/PCGEx hookup" section, which this is built to feed
+    // directly via the new FSolarOrbzPCGScatterPointRow DataTable row struct added alongside it.
+    // Position/Normal are read from a real displaced-sphere mesh (SphereMesh.h - the same pole-
+    // smoothed, centered-difference-normal code this project's GUI preview already uses and this
+    // session already verified), not recomputed ad hoc, so Slope benefits from both fixes rather than
+    // reintroducing either bug. Slope's own convention - 0 flat, 1 vertical, derived from how far the
+    // normal has tilted from the radial direction - mirrors FSolarOrbzBiomeSampleContext::Slope's own
+    // documented definition exactly; RadiusMeters must match the real planet's actual base radius for
+    // this to mean the same thing in UE, since the physical arc-length a grid cell spans (and so how
+    // steep a given height difference across it actually is) scales with radius.
+    bool WritePcgPointsCsv(const std::string& Path, const FHeightField& Terrain, const FClimateField& Climate,
+        const FBiomeField& Biomes, double RadiusMeters)
+    {
+        std::ofstream Out(Path);
+        if (!Out) return false;
+
+        auto SampleHeight = [&](const Vec3& Dir) -> float
+        {
+            return Terrain.SampleDirection(FLatLongGrid(Terrain.Width, Terrain.Height), Dir);
+        };
+        const FSphereMesh Mesh = BuildSphereMesh(SampleHeight, Terrain.Width, Terrain.Height, RadiusMeters, 1.0);
+
+        Out << "Name,Position,Normal,ElevationCm,Slope,TemperatureKelvin,Moisture,BiomeName\n";
+        for (int32_t Y = 0; Y < Terrain.Height; ++Y)
+        {
+            for (int32_t X = 0; X < Terrain.Width; ++X)
+            {
+                const size_t Idx = (size_t)Y * Terrain.Width + X;
+                const FSphereMeshVertex& V = Mesh.Vertices[Idx];
+                const Vec3 RadialDir = V.Position.GetSafeNormal();
+                const double CosAngle = MathUtil::Clamp(Vec3::Dot(V.Normal, RadialDir), -1.0, 1.0);
+                const double Slope = MathUtil::Clamp(std::acos(CosAngle) / (MathUtil::PI_D * 0.5), 0.0, 1.0);
+                const float TemperatureKelvin = Climate.TemperatureC[Idx] + 273.15f;
+                const EBiome Biome = (EBiome)Biomes.BiomeId[Idx];
+
+                Out << "Point_" << Idx << ","
+                    << FormatUEVector((float)(V.Position.X * 100.0), (float)(V.Position.Y * 100.0), (float)(V.Position.Z * 100.0)) << ","
+                    << FormatUEVector((float)V.Normal.X, (float)V.Normal.Y, (float)V.Normal.Z) << ","
+                    << (V.HeightMeters * 100.0f) << ","
+                    << Slope << ","
+                    << TemperatureKelvin << ","
+                    << Climate.MoistureNormalized[Idx] << ","
+                    << GetBiomeName(Biome) << "\n";
+            }
+        }
+        return true;
+    }
+
     void PrintUsage(const char* Argv0)
     {
         std::cout <<
@@ -253,6 +339,11 @@ namespace
             "  --seed <N>                Override the pipeline's Seed\n"
             "  --no-ue5-heightmap        Skip writing <prefix>_heightmap_ue5.png (written by default -\n"
             "                            see README.md's \"Bringing a planet into UE5\" for the import steps)\n"
+            "  --no-ue5-biomeid          Skip writing <prefix>_biomeid_ue5.png (written by default)\n"
+            "  --no-pcg-points           Skip writing <prefix>_pcg_points.csv (written by default)\n"
+            "  --radius-meters <R>       Planet radius in meters (default: 6378137, Earth's own) - only\n"
+            "                            affects the PCG points CSV's Slope column; match whatever your\n"
+            "                            UE planet's actual base radius is for a correct value\n"
             "  --help                    Show this message\n";
     }
 }
@@ -266,6 +357,9 @@ int main(int argc, char** argv)
     bool bHasSeedOverride = false;
     int32_t SeedOverride = 0;
     bool bWriteUE5Heightmap = true;
+    bool bWriteUE5BiomeId = true;
+    bool bWritePcgPoints = true;
+    double RadiusMeters = 6378137.0; // Earth's own mean radius - only used to compute Slope correctly (see WritePcgPointsCsv); match whatever your UE planet's actual base radius is
 
     for (int i = 1; i < argc; ++i)
     {
@@ -297,6 +391,9 @@ int main(int argc, char** argv)
         else if (Arg == "--image-height") ImageHeight = std::stoi(NextArg("--image-height"));
         else if (Arg == "--seed") { SeedOverride = std::stoi(NextArg("--seed")); bHasSeedOverride = true; }
         else if (Arg == "--no-ue5-heightmap") bWriteUE5Heightmap = false;
+        else if (Arg == "--no-ue5-biomeid") bWriteUE5BiomeId = false;
+        else if (Arg == "--no-pcg-points") bWritePcgPoints = false;
+        else if (Arg == "--radius-meters") RadiusMeters = std::stod(NextArg("--radius-meters"));
         else
         {
             std::cerr << "Unknown argument: " << Arg << "\n";
@@ -383,6 +480,7 @@ int main(int argc, char** argv)
 
     FHeightField HeightImage(ImageWidth, ImageHeight);
     std::vector<uint8_t> BiomePixels((size_t)ImageWidth * ImageHeight * 3);
+    std::vector<uint8_t> BiomeIdPixels((size_t)ImageWidth * ImageHeight);
     FHeightField TempImage(ImageWidth, ImageHeight);
     FHeightField MoistureImage(ImageWidth, ImageHeight);
 
@@ -399,11 +497,13 @@ int main(int argc, char** argv)
         // bilinear for the continuous climate fields.
         const int32_t NearestX = Cell.Tx < 0.5 ? Cell.X0 : Cell.X1;
         const int32_t NearestY = Cell.Ty < 0.5 ? Cell.Y0 : Cell.Y1;
-        const EBiome Biome = (EBiome)Biomes.BiomeId[(size_t)NearestY * Terrain.Width + NearestX];
+        const uint8_t BiomeIdByte = Biomes.BiomeId[(size_t)NearestY * Terrain.Width + NearestX];
+        const EBiome Biome = (EBiome)BiomeIdByte;
         const FBiomeColor Color = GetBiomeColor(Biome);
         BiomePixels[(size_t)Idx * 3 + 0] = Color.R;
         BiomePixels[(size_t)Idx * 3 + 1] = Color.G;
         BiomePixels[(size_t)Idx * 3 + 2] = Color.B;
+        BiomeIdPixels[(size_t)Idx] = BiomeIdByte;
 
         TempImage.HeightMeters[Idx] = FLatLongGrid::SampleAtCell(Climate.TemperatureC, Terrain.Width, Cell);
         MoistureImage.HeightMeters[Idx] = FLatLongGrid::SampleAtCell(Climate.MoistureNormalized, Terrain.Width, Cell);
@@ -414,6 +514,8 @@ int main(int argc, char** argv)
     const std::string TempPath = OutPrefix + "_temperature.png";
     const std::string MoisturePath = OutPrefix + "_moisture.png";
     const std::string UE5HeightmapPath = OutPrefix + "_heightmap_ue5.png";
+    const std::string UE5BiomeIdPath = OutPrefix + "_biomeid_ue5.png";
+    const std::string PcgPointsPath = OutPrefix + "_pcg_points.csv";
 
     WriteSeaLevelSplitPng(HeightPath, HeightImage, MinHeight, MaxHeight);
     stbi_write_png(BiomePath.c_str(), ImageWidth, ImageHeight, 3, BiomePixels.data(), ImageWidth * 3);
@@ -423,6 +525,16 @@ int main(int argc, char** argv)
     if (bWriteUE5Heightmap)
     {
         bUE5HeightmapWritten = WriteUE5HeightmapPng16(UE5HeightmapPath, HeightImage, MinHeight, MaxHeight);
+    }
+    bool bUE5BiomeIdWritten = false;
+    if (bWriteUE5BiomeId)
+    {
+        bUE5BiomeIdWritten = WriteUE5BiomeIdPng(UE5BiomeIdPath, BiomeIdPixels, ImageWidth, ImageHeight);
+    }
+    bool bPcgPointsWritten = false;
+    if (bWritePcgPoints)
+    {
+        bPcgPointsWritten = WritePcgPointsCsv(PcgPointsPath, Terrain, Climate, Biomes, RadiusMeters);
     }
 
     // Diagnostic land-coverage/biome-mix sample, independent of ImageWidth/Height.
@@ -467,6 +579,24 @@ int main(int argc, char** argv)
             << "      Max Height Meters = " << MaxHeight << "\n"
             << "    See Tools/StandaloneContinentGenerator/README.md's \"Bringing a planet into UE5\"\n"
             << "    section for the full step-by-step.\n";
+    }
+
+    if (bUE5BiomeIdWritten)
+    {
+        std::cout << "  Wrote (UE5):        " << UE5BiomeIdPath << " (8-bit, pixel value = raw biome ID,\n"
+            << "    point/nearest-neighbor sampling only - NOT a color image). ID legend:\n";
+        for (int32_t i = 0; i < (int32_t)EBiome::Count; ++i)
+        {
+            std::cout << "      " << i << " = " << GetBiomeName((EBiome)i) << "\n";
+        }
+    }
+
+    if (bPcgPointsWritten)
+    {
+        std::cout << "  Wrote (PCG):        " << PcgPointsPath << " (" << (Terrain.Width * Terrain.Height)
+            << " rows, radius " << RadiusMeters << "m)\n"
+            << "    See Tools/StandaloneContinentGenerator/README.md's \"PCG scatter-point dataset\"\n"
+            << "    section for the DataTable row struct and import steps.\n";
     }
 
     return 0;

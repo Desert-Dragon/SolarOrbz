@@ -1176,6 +1176,60 @@ commitment or a schedule - just a place these don't get lost between sessions.
     Full step-by-step (exact import settings and why each one matters, plus what this workflow does
     NOT cover yet - biome/material/climate data has no equivalent export convention) in
     `Tools/StandaloneContinentGenerator/README.md`'s new "Bringing a planet into UE5" section.
+  - **Eighth follow-up, asked directly: "let's get that ready as well as a PCGEX dataset for the
+    planet"** - "that" being the biome/material/climate gap the seventh follow-up's README note left
+    open. Investigated the real plugin's own biome system first rather than assuming a texture bridge
+    was needed: `USolarOrbzClimateBiomeMask` is a RULE classifier (Elevation/Latitude/Temperature/
+    Moisture/Slope ranges), the same Whittaker-diagram approach this tool's own `BiomeClassifier.h`
+    already uses - so there's no "biome texture" needed for live reclassification to work once Climate
+    Simulation/Biome Stack assets are authored with equivalent parameters. What's actually missing is
+    recovering THIS bake's specific result (shaped by whatever Plate Tectonics/Noise/erosion actually
+    produced), so added `<out-prefix>_biomeid_ue5.png` - an 8-bit grayscale PNG whose pixel VALUE is the
+    raw `EBiome` enum ordinal, explicitly documented (README and CLI stdout alike) as point/nearest-
+    neighbor-sample-only, never bilinear, since blending two adjacent discrete category IDs produces a
+    category that doesn't exist. Reused the exact same orientation guarantee already verified for the
+    heightmap - no new proof needed, same grids, same convention.
+
+    For the PCGEx dataset: found that `USolarOrbzBiome` already has exactly the hook this needed -
+    `FSolarOrbzBiomeScatterEntry`'s own header comment says outright "the PCG/PCGEx graph will read
+    these (matched by Tag) once that hookup exists." Built the data side of that hookup rather than
+    inventing a parallel convention: `<out-prefix>_pcg_points.csv`, one row per cell of the INTERNAL
+    bake grid (independent of `--image-width`/`--image-height` - a coarse attribute-sample grid for a
+    PCG graph to project onto its own denser point cloud, not "one spawned object per row"), columns
+    mirroring `FSolarOrbzBiomeSampleContext`'s own fields (Position/Normal as quoted Unreal struct-text
+    `FVector`s, ElevationCm, Slope, TemperatureKelvin, Moisture, BiomeName) instead of a new shape.
+    Position/Normal/Slope are read from a real `SphereMesh.h` build (new `--radius-meters` flag,
+    default Earth's own 6,378,137m) rather than recomputed ad hoc, so this reuses the pole-smoothing and
+    centered-difference-normal fixes already verified earlier this session instead of risking a third,
+    separately-buggy slope calculation. Added a matching `FSolarOrbzPCGScatterPointRow : public
+    FTableRowBase` DataTable row struct in `SolarOrbzBiomeSystem.h`, right alongside
+    `FSolarOrbzBiomeScatterEntry`'s own "future hookup" comment, with UPROPERTY names matching the
+    CSV's header row exactly (case-sensitive, per UE's long-standing CSV-to-DataTable convention) -
+    header-only, not compiled (same environment caveat as the Plate Tectonics threshold fix).
+
+    Caught and fixed a real bug before it shipped, the same way the heightmap pass caught its
+    Compression Settings claim: the first version left the `Position`/`Normal` columns unquoted, and
+    since their own `(X=...,Y=...,Z=...)` format contains commas, any standards-conforming CSV reader
+    (UE's DataTable importer included) splits an unquoted field like that into three separate columns
+    instead of one, silently misaligning everything after it - caught by reading the file back with
+    Python's own `csv` module and watching it happen, not just by eyeballing the output. Fixed by
+    double-quoting both fields (RFC 4180). Re-verified the corrected file three ways: reparsed with
+    `csv.DictReader` and confirmed all 8 columns land correctly with physically sane ranges
+    (Temperature 236.7K..300.7K against a 238.15K/301.15K pole/equator config, lapse-rate-adjusted as
+    expected); checked that the steepest slopes land on trench/cliff walls rather than at the actual
+    elevation extrema (correct, not a bug - a local max/min is exactly where the gradient is zero by
+    definition); and independently recomputed one row's position-vector magnitude by hand (404,066.75m)
+    against that same row's own Radius + Elevation (400,000m + 4,066.75m) - exact match.
+
+    One thing left honestly unresolved rather than asserted: which specific PCG/PCGEx node turns an
+    imported DataTable into point data couldn't be confirmed in this environment (no live UE5.8 editor,
+    no PCGEx installed) - web search surfaced Epic's own core PCG framework having external-data/row-
+    to-point machinery, and PCGEx's own docs describing texture/surface data sampling generally,
+    without surfacing a specific confirmed node name either. Documented what's fully verified (the CSV,
+    the DataTable row struct, and that CSV-to-DataTable-by-matching-UPROPERTY-names is itself long-
+    standing, version-independent UE behavior) and left the exact downstream node as something to check
+    against the user's own installed version, rather than guessing a name the way the first Compression
+    Settings draft did.
 
 ## Documentation
 
