@@ -33,6 +33,22 @@ FetchContent_MakeAvailable(stb)
 add_library(stb_image_write INTERFACE)
 target_include_directories(stb_image_write INTERFACE ${stb_SOURCE_DIR})
 
+# --- lodepng (16-bit grayscale PNG output for the UE5 heightmap export - stb_image_write's PNG
+# writer is 8-bit-per-channel only, nowhere near enough vertical precision for a real heightmap:
+# SolarOrbzHeightmapTerrainLayer's own header comment recommends "16-bit or float source" for
+# exactly this reason. lodepng is a small, single-purpose, public-domain two-file library that
+# writes genuine 16-bit grayscale PNG - used ONLY for this one export function, not the existing
+# 8-bit visualization PNGs stb_image_write already handles fine. ---
+FetchContent_Declare(
+  lodepng
+  GIT_REPOSITORY https://github.com/lvandeve/lodepng.git
+  GIT_TAG master
+  GIT_SHALLOW TRUE
+)
+FetchContent_MakeAvailable(lodepng)
+add_library(lodepng STATIC ${lodepng_SOURCE_DIR}/lodepng.cpp)
+target_include_directories(lodepng PUBLIC ${lodepng_SOURCE_DIR})
+
 # --- Core: portable generation math, no UE/UObject types, shared by CLI and GUI ---
 add_library(solarorbz_core STATIC
   src/core/NoiseBasis.cpp
@@ -45,7 +61,7 @@ target_link_libraries(solarorbz_core PUBLIC nlohmann_json::nlohmann_json)
 
 # --- CLI: config in, heightmap PNG + stats out ---
 add_executable(solarorbz_cli src/cli/main.cpp)
-target_link_libraries(solarorbz_cli PRIVATE solarorbz_core stb_image_write)
+target_link_libraries(solarorbz_cli PRIVATE solarorbz_core stb_image_write lodepng)
 
 # --- GUI: raylib + raygui live 3D preview ---
 if(SOLARORBZ_BUILD_GUI)

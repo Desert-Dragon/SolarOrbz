@@ -1136,6 +1136,46 @@ commitment or a schedule - just a place these don't get lost between sessions.
     verified standalone-tool fix (same ported formula, same defaults, confirmed working there via CLI/
     GUI). Worth a real in-Editor Plate Tectonics check (Mountain Height actually producing visible
     relief, at any Seed, without requiring Run Simulation first) next time this layer is touched in UE.
+  - **Seventh follow-up, asked directly: "let's get the output workflow started to bring it back into
+    UE5."** The real plugin already has an import path built for exactly this -
+    `USolarOrbzHeightmapTerrainLayer` samples an equirectangular grayscale `UTexture2D` via
+    `FSolarOrbzTextureHeightSampler`, remapping black/white to `MinHeightMeters`/`MaxHeightMeters` - so
+    this pass wires the standalone tool's CLI up to produce a texture in exactly that shape by default:
+    `<out-prefix>_heightmap_ue5.png`. Deliberately NOT the existing `_height.png`: that one is an
+    8-bit, deliberately nonlinear "sea-level split" contrast trick built for on-screen viewing, not
+    reimport - reimporting it would reproduce roughly the right silhouette but not the real heights,
+    quantized to tens of meters per step. The new file is a plain linear 0..1 ramp (black = this bake's
+    true minimum height, white its true maximum, both printed to stdout) and genuinely 16-bit -
+    `stb_image_write`'s own PNG writer (already used for every other output) is 8-bit-per-channel only
+    (confirmed by reading its header - no 16-bit code path exists at all), nowhere near enough vertical
+    precision for a real heightmap, which is exactly why `USolarOrbzHeightmapTerrainLayer`'s own header
+    comment recommends "16-bit or float source" in the first place. Added `lodepng` (FetchContent, a
+    small two-file public-domain library, linked only into `solarorbz_cli`) purely for this one
+    function - it supports genuine 16-bit grayscale PNG output, which stb_image_write does not.
+    Orientation needs no flip/rotation on either side of the round trip: `FLatLongGrid` (this tool) and
+    `FSolarOrbzLatLongGrid` (the UE plugin) already share the identical "north pole at `V=0`"
+    convention by construction (this tool is a direct port of that grid) - confirmed directly on a real
+    bake, not just by reading both headers: the written PNG's row 0 (and only row 0) comes out as a
+    single uniform value across every column, exactly what the north pole should produce (every
+    longitude there is the same physical point). Verified the encode itself is correct two ways: parsed
+    the written PNG's own IHDR chunk by hand (confirmed 16-bit depth, grayscale color type, correct
+    dimensions - an independent check of what lodepng actually wrote, not trusting its own return code
+    alone) and decoded it back with Pillow, confirming the min/max pixel values (0 and 65535) decode to
+    the exact Min/Max height the CLI printed, to the hundredth of a meter. Controlled by a new
+    `--no-ue5-heightmap` flag (written by default - this is meant to be the normal path now, not an
+    opt-in extra). Corrected one claim before it shipped: the first draft of the README's import steps
+    named a specific Compression Settings value (`VectorDisplacementmap`) based on guessing rather than
+    checking - a web search surfaced an older UE4 doc describing that setting's internal format as
+    8-bit `B8G8R8A8`, which would have quietly defeated the entire point of a 16-bit export. Replaced it
+    with what the plugin's own `USolarOrbzHeightmapTerrainLayer` header comment already specifies
+    ("Import with compression set to None so full precision survives") rather than inventing a new
+    claim, and explained why it matters less than it sounds for this specific layer anyway -
+    `EnsureDecoded` reads `Texture->Source` (the pristine imported data UE keeps alongside the
+    GPU-compressed runtime texture) directly, bypassing whatever Compression Settings produced
+    entirely, per that function's own in-code comment ("works regardless of compression settings").
+    Full step-by-step (exact import settings and why each one matters, plus what this workflow does
+    NOT cover yet - biome/material/climate data has no equivalent export convention) in
+    `Tools/StandaloneContinentGenerator/README.md`'s new "Bringing a planet into UE5" section.
 
 ## Documentation
 

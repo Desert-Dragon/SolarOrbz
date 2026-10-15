@@ -16,6 +16,7 @@
 #include <nlohmann/json.hpp>
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include <stb_image_write.h>
+#include <lodepng.h>
 
 #include <fstream>
 #include <iostream>
@@ -206,6 +207,41 @@ namespace
         stbi_write_png(Path.c_str(), Field.Width, Field.Height, 1, Pixels.data(), Field.Width);
     }
 
+    // Writes a genuine LINEAR 16-bit grayscale PNG - black (0) = MinVal, white (65535) = MaxVal -
+    // for round-tripping into the real UE plugin's USolarOrbzHeightmapTerrainLayer, NOT a copy of
+    // WriteSeaLevelSplitPng's 8-bit, sea-level-split, contrast-enhanced visualization above (that
+    // encoding is deliberately nonlinear and lossy - reimporting it would NOT reproduce the actual
+    // baked heights). stb_image_write's PNG writer is 8-bit-per-channel only (confirmed by reading
+    // its own header - no 16-bit code path exists), nowhere near enough vertical precision for a
+    // real heightmap (8 bits over a several-thousand-meter range is tens of meters per step); lodepng
+    // is used here instead, purely for this one function, since it supports genuine 16-bit grayscale
+    // PNG output. Orientation matches FSolarOrbzLatLongGrid/FLatLongGrid's own shared convention
+    // exactly (Y=0 row is the north pole, X increasing is increasing longitude) - the same "north
+    // pole at top" equirectangular layout USolarOrbzHeightmapTerrainLayer's own header comment
+    // documents, confirmed by comparing both grids' identical V=0-at-north-pole convention, so no
+    // flip/rotation is needed on either side of the round trip.
+    bool WriteUE5HeightmapPng16(const std::string& Path, const FHeightField& Field, float MinVal, float MaxVal)
+    {
+        const float Range = std::max(MaxVal - MinVal, 1e-6f);
+        std::vector<uint8_t> Bytes((size_t)Field.HeightMeters.size() * 2);
+        for (size_t i = 0; i < Field.HeightMeters.size(); ++i)
+        {
+            const float Normalized = MathUtil::Clamp((Field.HeightMeters[i] - MinVal) / Range, 0.0f, 1.0f);
+            const uint16_t Value16 = (uint16_t)std::lround(Normalized * 65535.0f);
+            // PNG (and lodepng's raw-buffer convention for bitdepth > 8) stores multi-byte samples
+            // big-endian (most significant byte first) regardless of host endianness.
+            Bytes[i * 2 + 0] = (uint8_t)(Value16 >> 8);
+            Bytes[i * 2 + 1] = (uint8_t)(Value16 & 0xFF);
+        }
+        const unsigned Error = lodepng::encode(Path, Bytes, (unsigned)Field.Width, (unsigned)Field.Height, LCT_GREY, 16);
+        if (Error != 0)
+        {
+            std::cerr << "Failed to write " << Path << ": " << lodepng_error_text(Error) << "\n";
+            return false;
+        }
+        return true;
+    }
+
     void PrintUsage(const char* Argv0)
     {
         std::cout <<
@@ -215,6 +251,8 @@ namespace
             "  --image-width <N>         Output image width in pixels (default: 1024)\n"
             "  --image-height <N>        Output image height in pixels (default: 512)\n"
             "  --seed <N>                Override the pipeline's Seed\n"
+            "  --no-ue5-heightmap        Skip writing <prefix>_heightmap_ue5.png (written by default -\n"
+            "                            see README.md's \"Bringing a planet into UE5\" for the import steps)\n"
             "  --help                    Show this message\n";
     }
 }
@@ -227,6 +265,7 @@ int main(int argc, char** argv)
     int32_t ImageHeight = 512;
     bool bHasSeedOverride = false;
     int32_t SeedOverride = 0;
+    bool bWriteUE5Heightmap = true;
 
     for (int i = 1; i < argc; ++i)
     {
@@ -257,6 +296,7 @@ int main(int argc, char** argv)
         else if (Arg == "--image-width") ImageWidth = std::stoi(NextArg("--image-width"));
         else if (Arg == "--image-height") ImageHeight = std::stoi(NextArg("--image-height"));
         else if (Arg == "--seed") { SeedOverride = std::stoi(NextArg("--seed")); bHasSeedOverride = true; }
+        else if (Arg == "--no-ue5-heightmap") bWriteUE5Heightmap = false;
         else
         {
             std::cerr << "Unknown argument: " << Arg << "\n";
@@ -373,11 +413,17 @@ int main(int argc, char** argv)
     const std::string BiomePath = OutPrefix + "_biome.png";
     const std::string TempPath = OutPrefix + "_temperature.png";
     const std::string MoisturePath = OutPrefix + "_moisture.png";
+    const std::string UE5HeightmapPath = OutPrefix + "_heightmap_ue5.png";
 
     WriteSeaLevelSplitPng(HeightPath, HeightImage, MinHeight, MaxHeight);
     stbi_write_png(BiomePath.c_str(), ImageWidth, ImageHeight, 3, BiomePixels.data(), ImageWidth * 3);
     WriteGrayscalePng(TempPath, TempImage, ClimateConfig.PoleTempC, ClimateConfig.EquatorTempC);
     WriteGrayscalePng(MoisturePath, MoistureImage, 0.0f, 1.0f);
+    bool bUE5HeightmapWritten = false;
+    if (bWriteUE5Heightmap)
+    {
+        bUE5HeightmapWritten = WriteUE5HeightmapPng16(UE5HeightmapPath, HeightImage, MinHeight, MaxHeight);
+    }
 
     // Diagnostic land-coverage/biome-mix sample, independent of ImageWidth/Height.
     int32_t BiomeCounts[(size_t)EBiome::Count] = { 0 };
@@ -406,6 +452,22 @@ int main(int argc, char** argv)
         std::cout << "    " << GetBiomeName((EBiome)i) << ": " << (100.0 * BiomeCounts[i] / TotalCells) << "%\n";
     }
     std::cout << "  Wrote:              " << HeightPath << ", " << BiomePath << ", " << TempPath << ", " << MoisturePath << "\n";
+
+    if (bUE5HeightmapWritten)
+    {
+        // The exact values to put in the UE plugin's Heightmap Layer so the reimported planet
+        // reproduces this bake's real heights, not just its shape - MinHeight/MaxHeight here are
+        // this run's ACTUAL baked range (computed above, same values the "Height range" line already
+        // reports), not a rounded/arbitrary guess, so this is the one true mapping for this PNG.
+        std::cout << "  Wrote (UE5):        " << UE5HeightmapPath << " (16-bit linear, "
+            << ImageWidth << "x" << ImageHeight << ")\n"
+            << "    Import into UE5.8 with Compression Settings: None, sRGB OFF, Mip Gen Settings:\n"
+            << "    NoMipmaps - then on a Heightmap Layer, set:\n"
+            << "      Min Height Meters = " << MinHeight << "\n"
+            << "      Max Height Meters = " << MaxHeight << "\n"
+            << "    See Tools/StandaloneContinentGenerator/README.md's \"Bringing a planet into UE5\"\n"
+            << "    section for the full step-by-step.\n";
+    }
 
     return 0;
 }

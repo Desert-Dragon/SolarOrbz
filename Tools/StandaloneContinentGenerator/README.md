@@ -130,9 +130,80 @@ omitted stages/fields keep their defaults:
 lives in). Output: `<out-prefix>_height.png` (a sea-level-split grayscale heightmap - ocean and land
 are normalized separately around a fixed sea-level midpoint, since a real planet's ocean-trench vs.
 eroded-land relief span wildly different magnitude ranges and a single linear min/max normalization
-crushes land into an indistinguishable sliver), `<out-prefix>_biome.png` (biome color map),
-`<out-prefix>_temperature.png`, `<out-prefix>_moisture.png`, plus land coverage %, per-biome mix %,
-and (Plate Tectonics only) simulated age and live plate count, printed to stdout.
+crushes land into an indistinguishable sliver - **view-only, not reimportable**: see below for that),
+`<out-prefix>_biome.png` (biome color map), `<out-prefix>_temperature.png`,
+`<out-prefix>_moisture.png`, `<out-prefix>_heightmap_ue5.png` (linear 16-bit, see below), plus land
+coverage %, per-biome mix %, and (Plate Tectonics only) simulated age and live plate count, printed
+to stdout.
+
+## Bringing a planet into UE5
+
+The real UE plugin already has an import path built for exactly this - `USolarOrbzHeightmapTerrainLayer`
+("Heightmap Layer" in the layer stack) samples an equirectangular grayscale `UTexture2D` via
+`FSolarOrbzTextureHeightSampler`, remapping black/white to `MinHeightMeters`/`MaxHeightMeters`. This
+tool's CLI writes a texture in exactly that shape by default: `<out-prefix>_heightmap_ue5.png`.
+
+**Why not the view-only `_height.png`:** that one is deliberately nonlinear (a sea-level-split
+contrast trick for *looking at* a heightmap on screen, where ocean and land are each normalized to
+their own half of the range around a fixed midpoint) and only 8 bits deep - reimporting it would
+reproduce roughly the right silhouette but NOT the real heights, and would quantize relief to tens of
+meters per step. `_heightmap_ue5.png` instead is a plain, linear 0..1 ramp (black = the bake's true
+minimum height, white its true maximum - the exact values are printed to stdout as "Wrote (UE5):"),
+and genuinely 16-bit (via `lodepng` - `stb_image_write`'s own PNG writer is 8-bit-per-channel only, the
+one format already in this project nowhere near precise enough for a real heightmap, which is exactly
+why `USolarOrbzHeightmapTerrainLayer`'s own header comment recommends "16-bit or float source" in the
+first place). Verified round-trip-correct: decoded the written PNG back with Pillow and confirmed its
+minimum/maximum pixel values (0 and 65535) decode to the exact same Min/Max height the CLI printed, to
+the hundredth of a meter, with no byte-order or off-by-one error.
+
+Orientation needs no flip or rotation on either side: `FLatLongGrid` (this tool) and
+`FSolarOrbzLatLongGrid` (the UE plugin) share the identical "north pole at `V=0`" convention by
+construction (this tool is a direct port of that grid), which is the same "north pole at top,
+X = longitude" layout `USolarOrbzHeightmapTerrainLayer`'s own header comment documents for the texture
+it expects - confirmed directly on a real bake: the written PNG's row 0 (and only row 0) is a single
+uniform value across every column, exactly what you'd expect from the north pole (every longitude at
+the pole is the same physical point, so of course they bake to the same height) landing at the top of
+the image, not partway down it or at the bottom.
+
+Steps:
+
+1. Generate normally: `./solarorbz_cli --config path.json --out-prefix /tmp/myplanet --image-width 2048 --image-height 1024`
+   (pick a resolution with the planet's final on-screen size in mind - this is a real texture import,
+   not a quick preview, so there's no reason to default to the CLI's normal 1024x512). Note the two
+   `Min Height Meters`/`Max Height Meters` values it prints.
+2. Drag `myplanet_heightmap_ue5.png` into the Content Browser. In its Texture import settings:
+   **Compression Settings**: `None` - exactly what `USolarOrbzHeightmapTerrainLayer`'s own header
+   comment already specifies ("Import with compression set to None so full precision survives"), not
+   a setting picked here independently. This matters less than it sounds for THIS layer specifically -
+   `FSolarOrbzTextureHeightSampler::EnsureDecoded` reads `Texture->Source` (the pristine imported data
+   UE keeps alongside the GPU-compressed runtime texture for reimport purposes) directly via
+   `GetMipImage`/`CopyTo`, bypassing whatever the GPU/runtime compression produced entirely - its own
+   comment says so explicitly ("works regardless of compression settings"). None is still the right
+   choice: there's no reason to spend GPU memory/compute compressing a texture this layer never
+   actually samples on the GPU. **sRGB**: unchecked - this one DOES matter, independent of Compression
+   Settings: `EnsureDecoded` converts the source image to `R32F` preserving `RawImage.GammaSpace`
+   as-is rather than forcing linear, specifically so an already-correctly-imported (sRGB off) texture
+   round-trips with the exact same numeric values - leaving sRGB on would gamma-skew every height
+   value on decode. **Mip Gen Settings**: `NoMipmaps` (an auto-generated mip would blend neighboring
+   texels together, quietly smoothing out relief at a distance - harmless for a material's color
+   texture, not for a height source sampled directly).
+3. Add a **Heightmap Layer** to the planet's terrain layer stack (or `USolarOrbzPlanetSpawnerGraph`'s
+   embedded terrain chain), assign the imported texture to **Heightmap Texture**, and set
+   **Min Height Meters**/**Max Height Meters** to the two values from step 1 exactly - these aren't
+   placeholders or safe defaults, they're the specific range this PNG's black/white actually encode,
+   and using different values will scale/shift every height in the import.
+4. Regenerate the planet. This one layer now reproduces the full baked pipeline output (Continent +
+   Noise + erosion, all of it) as a single authored heightmap - same as temporarily replacing the
+   whole live layer stack with this one import, which is the point: iterate on terrain math in this
+   fast-rebuild standalone tool, then bring only the final result into the real engine when it's ready,
+   without needing every individual layer type (Plate Tectonics simulation, hydraulic/thermal erosion)
+   reimplemented or re-tuned by hand inside the Editor.
+
+**Not yet covered by this workflow:** biome/material data (`_biome.png`) and climate data
+(`_temperature.png`/`_moisture.png`) aren't wired into any equivalent authored-import path yet - the
+real plugin's biome system (`USolarOrbzBiomeMask`) is a different shape (a mask/condition system, not
+a simple texture sample) and would need its own export convention. Height is the first, and currently
+only, round-trip this tool supports back into UE5.
 
 ## GUI usage
 
