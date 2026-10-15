@@ -223,6 +223,9 @@ public:
 	/** Same idea as AnyLayerNeedsClimateData, for Context.Slope (see USolarOrbzBiomeMask::NeedsSlope). */
 	bool AnyLayerNeedsSlope() const;
 
+	/** Same idea as AnyLayerNeedsClimateData, for Context.LocalGradient (see USolarOrbzBiomeMask::NeedsLocalGradient). */
+	bool AnyLayerNeedsLocalGradient() const;
+
 private:
 	/**
 	 * Finite-difference slope estimate (0 = flat, 1 = vertical) for a layer's Mask that needs one
@@ -234,6 +237,18 @@ private:
 	 */
 	float EstimateSlopeUpTo(int32 EndIndexExclusive, const FVector& UnitDirection, const FVector2D& UV, const FSolarOrbzClimateGrid* ClimateGrid) const;
 
+	/**
+	 * Tangential height gradient estimate for a layer's Mask that needs direction, not just
+	 * magnitude (e.g. a Sun Exposure range on Climate Mask, which cares which way a slope faces, not
+	 * only how steep it is) - X = toward local north, Y = toward local east, a right-handed tangent
+	 * basis with UnitDirection as the outward axis (same north-reference tangent EstimateSlopeUpTo
+	 * already builds, extended to a second, perpendicular axis). Forward-difference against a single
+	 * shared center sample, same cost shape as EstimateSlopeUpTo's own one extra sample - just paid
+	 * twice (once per axis) since direction needs both. Only ever paid when a masked layer's
+	 * Mask::NeedsLocalGradient() is true.
+	 */
+	FVector2D EstimateLocalGradientUpTo(int32 EndIndexExclusive, const FVector& UnitDirection, const FVector2D& UV, const FSolarOrbzClimateGrid* ClimateGrid) const;
+
 	// Cached once per regenerate - by ApplyPlanetaryContext (Sea Level) and PrepareLayers (Radius) -
 	// so EvaluateHeightUpTo can build a full FSolarOrbzBiomeSampleContext for a masked layer without
 	// needing either threaded through every call site.
@@ -244,6 +259,9 @@ private:
 	// (which, for a Composite Mask, walks a whole tree of referenced Biomes) on every single vertex
 	// inside EvaluateHeightUpTo - the answer is invariant for the whole regenerate.
 	mutable TArray<bool> CachedLayerNeedsSlope;
+
+	/** Same idea as CachedLayerNeedsSlope, for Mask->NeedsLocalGradient(). */
+	mutable TArray<bool> CachedLayerNeedsLocalGradient;
 };
 
 // ================================================================================================
@@ -268,6 +286,20 @@ enum class ESolarOrbzNoiseType : uint8
 	/** Cellular/Worley noise - distance to the nearest randomly-placed feature point. Produces cell-like patterns rather than smooth ridges/hills - blobby plateaus with sharper boundaries between cells. */
 	Voronoi,
 };
+
+/**
+ * The two pieces of SolarOrbzTerrainLayers.cpp's own internal noise machinery that
+ * USolarOrbzNoiseBiomeMask (SolarOrbzBiomeSystem.h) also needs - a procedural mask samples the same
+ * basis functions a Noise Terrain Layer does, just as a 0..1 weight instead of a height. Declared
+ * here (rather than kept file-static) specifically so a second .cpp can call them; the rest of that
+ * namespace's helpers (Hash3D, Fade, ValueNoise3D, CellularNoise3D) stay internal-linkage, since only
+ * these two are ever called from outside SolarOrbzTerrainLayers.cpp itself.
+ */
+namespace SolarOrbzNoiseBasis
+{
+	FVector ComputeSeedOffset(int32 Seed);
+	float SampleBasis(ESolarOrbzNoiseType Type, const FVector& Pos, int32 Seed);
+}
 
 UCLASS(Abstract, EditInlineNew)
 class SOLARORBZ_API USolarOrbzFractalNoiseTerrainLayerBase : public USolarOrbzTerrainLayer

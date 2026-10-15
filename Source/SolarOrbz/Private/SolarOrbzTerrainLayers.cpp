@@ -57,10 +57,12 @@ void USolarOrbzTerrainLayerStack::PrepareLayers(double RadiusCm) const
 	// EvaluateHeightUpTo (via PriorLayersHeight) for any earlier layer, which needs this already
 	// filled in for the indices it touches.
 	CachedLayerNeedsSlope.SetNum(Layers.Num());
+	CachedLayerNeedsLocalGradient.SetNum(Layers.Num());
 	for (int32 i = 0; i < Layers.Num(); ++i)
 	{
 		const USolarOrbzTerrainLayer* Layer = Layers[i];
 		CachedLayerNeedsSlope[i] = Layer && Layer->Mask && Layer->Mask->NeedsSlope();
+		CachedLayerNeedsLocalGradient[i] = Layer && Layer->Mask && Layer->Mask->NeedsLocalGradient();
 	}
 
 	// Unconditional (every enabled layer, not just RequiresWholeSurfaceBake() ones) and single-
@@ -159,6 +161,11 @@ float USolarOrbzTerrainLayerStack::EvaluateHeightUpTo(int32 EndIndexExclusive, c
 			if (CachedLayerNeedsSlope.IsValidIndex(i) && CachedLayerNeedsSlope[i])
 			{
 				Context.Slope = EstimateSlopeUpTo(i, UnitDirection, UV, ClimateGrid);
+			}
+
+			if (CachedLayerNeedsLocalGradient.IsValidIndex(i) && CachedLayerNeedsLocalGradient[i])
+			{
+				Context.LocalGradient = EstimateLocalGradientUpTo(i, UnitDirection, UV, ClimateGrid);
 			}
 
 			if (ClimateGrid && ClimateGrid->IsValid())
@@ -265,6 +272,71 @@ float USolarOrbzTerrainLayerStack::EstimateSlopeUpTo(int32 EndIndexExclusive, co
 	return FMath::Clamp((float)(FMath::Atan(SlopeRatio) / (PI * 0.5)), 0.0f, 1.0f);
 }
 
+bool USolarOrbzTerrainLayerStack::AnyLayerNeedsLocalGradient() const
+{
+	for (const TObjectPtr<USolarOrbzTerrainLayer>& Layer : Layers)
+	{
+		if (Layer && Layer->Mask && Layer->Mask->NeedsLocalGradient())
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
+FVector2D USolarOrbzTerrainLayerStack::EstimateLocalGradientUpTo(int32 EndIndexExclusive, const FVector& UnitDirection, const FVector2D& UV, const FSolarOrbzClimateGrid* ClimateGrid) const
+{
+	// Same recursion-depth guard as EstimateSlopeUpTo, own counter so the two don't share a budget
+	// (a single vertex could in principle need both a Slope-masked and a Sun-Exposure-masked layer).
+	static thread_local int32 RecursionDepth = 0;
+	constexpr int32 MaxRecursionDepth = 4;
+	if (RecursionDepth >= MaxRecursionDepth)
+	{
+		return FVector2D::ZeroVector;
+	}
+
+	// TangentA/TangentB form a local north/east basis at UnitDirection - TangentA is the exact same
+	// construction EstimateSlopeUpTo already uses for its own single probe direction, extended here
+	// with a second, perpendicular axis since a Sun Exposure mask cares which way a slope faces, not
+	// only how steep it is.
+	FVector TangentA = FVector::CrossProduct(FVector::UpVector, UnitDirection);
+	if (!TangentA.Normalize())
+	{
+		TangentA = FVector::ForwardVector; // degenerate at the poles - arbitrary but deterministic, same as EstimateSlopeUpTo
+	}
+	const FVector TangentB = FVector::CrossProduct(UnitDirection, TangentA);
+
+	constexpr double AngularEpsilonRadians = 0.001; // same epsilon EstimateSlopeUpTo uses
+	const double RadiusCm = FMath::Max(CachedRadiusCmForMasking, 1.0);
+	const double ArcLengthCm = RadiusCm * AngularEpsilonRadians;
+
+	auto SampleHeightAt = [this, EndIndexExclusive, ClimateGrid](const FVector& Dir) -> float
+	{
+		// Recomputed from Dir rather than reusing UV verbatim - see EstimateSlopeUpTo's own comment
+		// on why a perturbed (non-vertex) direction needs its own freshly-derived UV.
+		const double Azimuth = FMath::Atan2((double)Dir.Y, (double)Dir.X);
+		const double PerturbedU = 0.5 + Azimuth / (2.0 * FSolarOrbzLatLongGrid::PI_D);
+		const double Polar = FMath::Acos(FMath::Clamp((double)Dir.Z, -1.0, 1.0));
+		const double PerturbedV = Polar / FSolarOrbzLatLongGrid::PI_D;
+		return EvaluateHeightUpTo(EndIndexExclusive, Dir, FVector2D((float)PerturbedU, (float)PerturbedV), ClimateGrid);
+	};
+
+	++RecursionDepth;
+	const float HeightHere = SampleHeightAt(UnitDirection);
+	const float HeightPlusA = SampleHeightAt((UnitDirection + TangentA * (float)AngularEpsilonRadians).GetSafeNormal());
+	const float HeightPlusB = SampleHeightAt((UnitDirection + TangentB * (float)AngularEpsilonRadians).GetSafeNormal());
+	--RecursionDepth;
+
+	if (ArcLengthCm <= KINDA_SMALL_NUMBER)
+	{
+		return FVector2D::ZeroVector;
+	}
+
+	// Forward difference against the shared center sample, one extra EvaluateHeightUpTo call per
+	// axis - same cost shape as EstimateSlopeUpTo's own single extra sample, just paid twice.
+	return FVector2D((float)((HeightPlusA - HeightHere) / ArcLengthCm), (float)((HeightPlusB - HeightHere) / ArcLengthCm));
+}
+
 // ================================================================================================
 // USolarOrbzFractalNoiseTerrainLayerBase
 // ================================================================================================
@@ -357,7 +429,7 @@ namespace SolarOrbzNoiseBasis
 	 * (its own field seeding) and Terrace Layer (its coastline-style irregularity jitter) - same
 	 * formula, same "seed -> offset" need, previously duplicated verbatim in both places.
 	 */
-	static FVector ComputeSeedOffset(int32 Seed)
+	FVector ComputeSeedOffset(int32 Seed)
 	{
 		return FVector(
 			FMath::Frac(FMath::Sin((float)Seed * 12.9898f) * 43758.5453f) * 1000.0f,
@@ -366,7 +438,7 @@ namespace SolarOrbzNoiseBasis
 	}
 
 	/** Samples one octave using the given basis type. All five return roughly -1..1, so they combine identically in the fractal sum regardless of which is chosen. */
-	static float SampleBasis(ESolarOrbzNoiseType Type, const FVector& Pos, int32 Seed)
+	float SampleBasis(ESolarOrbzNoiseType Type, const FVector& Pos, int32 Seed)
 	{
 		switch (Type)
 		{

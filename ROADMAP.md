@@ -580,6 +580,70 @@ commitment or a schedule - just a place these don't get lost between sessions.
     static mesh's material slots are populated in the same order the polygon groups were created
     (matching this codebase's existing single-slot convention, now extended to N+1 slots).
 
+- **Biome mask Distribution overhaul, phase 1** - asked directly to start the larger follow-up the
+  World Creator research surfaced (see "Planetary / World" below for the research itself): WC's own
+  Distribution system splits mask inputs into Noise/Layer/Terrain categories, far richer than Climate
+  Mask's fixed Elevation/Latitude/Temperature/Moisture/Slope ranges. Scoped into two buildable pieces
+  and one deliberately deferred one, rather than attempted as a single generalized node-graph rewrite:
+  - **Sun Exposure** (WC's "Sun Direction" terrain input) - new `SunExposure`/`SunAzimuthDegrees` on
+    `USolarOrbzClimateBiomeMask`: 0 = a slope faces directly away from the configured compass bearing
+    (the classic shaded, snow/moisture-lingers side of a ridge), 1 = faces directly toward it. Needed
+    a new `FSolarOrbzBiomeSampleContext::LocalGradient` (tangential height gradient - direction, not
+    just magnitude, unlike the existing `Slope` field) and a matching `USolarOrbzBiomeMask::
+    NeedsLocalGradient()` opt-in flag (`USolarOrbzCompositeBiomeMask` override walks referenced
+    Biomes the same way its existing `NeedsSlope`/`NeedsClimateData` already do). Populated two
+    different ways depending on which pass is asking, a real distinction worth getting right rather
+    than papering over: mid-Pass-A (a masked layer inside the main Terrain Layer Stack, before any
+    real mesh normal exists) pays for it via a new `USolarOrbzTerrainLayerStack::
+    EstimateLocalGradientUpTo` - two extra finite-difference height samples (one per tangent axis),
+    same recursion-guarded pattern as the existing `EstimateSlopeUpTo`, just doubled since direction
+    needs both axes where magnitude alone only needed one. Pass B (actual `USolarOrbzBiome::Mask`
+    evaluation, biome/material/scatter selection) is unconditional and nearly free instead, the same
+    way `Context.Slope` already is there - a real mesh normal already exists by Pass B, so
+    `LocalGradient` falls out of its tangential tilt against `UnitDirection` with no extra sampling at
+    all. Catching that Pass B ALSO needed wiring (not just the Terrain Layer Stack's own Pass-A path)
+    was the one real near-miss here: `USolarOrbzBiome::Mask` is the actual primary intended consumer
+    of Sun Exposure (picking which biome paints where), and it builds its own
+    `FSolarOrbzBiomeSampleContext` independently, in two places (`SolarOrbzIcoSphere.cpp`'s per-vertex
+    and per-triangle-centroid blocks) - missing either would have left Sun Exposure silently always
+    neutral (0.5) for every real biome, the actual intended use case, while still "working" for the
+    rarer masked-terrain-layer case. Both now populate it, projected onto one shared local north/east
+    tangent frame (`TangentA = Cross(Up, Direction)`, degenerate-at-poles fallback to `ForwardVector`,
+    reused verbatim from `EstimateSlopeUpTo`'s own construction) so a mask's `SunAzimuthDegrees` means
+    the same compass bearing regardless of which pass computed the gradient.
+  - **Noise Mask** (WC's whole "Noise" Distribution category) - new `USolarOrbzNoiseBiomeMask`:
+    Perlin/Ridged/Billow/Value/Voronoi (reusing exactly what `ESolarOrbzNoiseType` already supports,
+    not WC's full 14-basis list - Gabor/Phasor/Splatter/Wave/White/Worley/Dots/Fill/Simplex/NoiseValue
+    aren't implemented anywhere in this plugin and adding them is a change to the shared enum itself,
+    not something to do piecemeal just for masking), Frequency/Octaves/Seed, and an optional
+    `Threshold` range (same `FSolarOrbzMaskRange` carve-a-band idea Climate Mask's own ranges use) to
+    turn the raw graduated noise field into a harder-edged band when wanted. Required exposing two of
+    `SolarOrbzTerrainLayers.cpp`'s previously file-`static` noise helpers (`ComputeSeedOffset`,
+    `SampleBasis` - the rest, `Hash3D`/`Fade`/`ValueNoise3D`/`CellularNoise3D`, stay internal) so a
+    second .cpp could call them without duplicating the actual noise math - declared in
+    `SolarOrbzTerrainLayers.h`, which `SolarOrbzBiomeSystem.h` now `#include`s directly (previously
+    just forward-declared `USolarOrbzTerrainLayerStack`) - confirmed no circular-include risk first
+    (`SolarOrbzTerrainLayers.h` itself only forward-declares `USolarOrbzBiomeMask`, never includes
+    `SolarOrbzBiomeSystem.h` back). Deliberately skips the amplitude-compensation/calibration
+    machinery `USolarOrbzFractalNoiseTerrainLayerBase::Bake()` uses for height-shaping noise - a 0..1
+    mask weight doesn't need per-seed-calibrated statistics the way height amplitude does, and
+    reusing that machinery would have meant giving the mask its own `Bake()`-equivalent lifecycle hook
+    for no real benefit. Persistence/Lacunarity fixed at 0.5/2.0 (no domain warp) rather than
+    separately authored fields, same "mask weight doesn't need a height layer's full authoring
+    surface" reasoning as the Threshold-not-a-whole-second-mask-type choice above.
+  - **Deliberately NOT started**: WC's "Layer" Distribution category (Area/Border Blend/Filter
+    Change/Mask paint/Model/Path/Polygon/Rivers/Simulation) - interactive authoring tools (paint
+    brushes, a spline/path tool, a river generator, simulation outputs - water flow accumulation, snow
+    melt - this plugin doesn't compute anywhere) rather than more range-based math, so none of it fits
+    the existing `USolarOrbzBiomeMask` polymorphic-range-class pattern the way Sun Exposure/Noise Mask
+    both do. Each is its own separate, larger undertaking - scoped as a future phase, not attempted as
+    a shallow/fake version here. Not compiled against a live UE5.8 editor (none available in this
+    environment, this whole session's standing constraint) - hand-matched against this file's own
+    established `NeedsSlope`/`EstimateSlopeUpTo`/Composite-Mask-recursion-guard conventions instead,
+    including tracing through exactly where every existing `FSolarOrbzBiomeSampleContext` gets
+    constructed (both Pass A call sites and both Pass B call sites) rather than assuming a single
+    construction point.
+
 - **PCG Biome Core integration** for content scattering (trees, rocks, and eventually
   civilization - roads, farms, settlements). SolarOrbz's Climate + BiomeStack system stays the
   classification authority ("what biome is here"); PCG Biome Core would consume that as its

@@ -95,6 +95,25 @@ float USolarOrbzClimateBiomeMask::GetWeight(const FSolarOrbzBiomeSampleContext& 
 			MoistureValue = FMath::PerlinNoise3D(Context.UnitDirection * MoistureFrequency + SeedOffset) * 0.5f + 0.5f; // 0..1
 		}
 		Weight *= Moisture.Evaluate(MoistureValue);
+		if (Weight <= KINDA_SMALL_NUMBER)
+		{
+			return 0.0f;
+		}
+	}
+
+	if (SunExposure.bEnabled)
+	{
+		float ExposureValue = 0.5f; // flat ground (or no gradient computed at all) - neutral, no facing direction
+		if (!Context.LocalGradient.IsNearlyZero())
+		{
+			const float SunAzimuthRadians = FMath::DegreesToRadians(SunAzimuthDegrees);
+			const FVector2D SunDirection(FMath::Cos(SunAzimuthRadians), FMath::Sin(SunAzimuthRadians));
+			// The gradient points uphill; a slope "faces" the direction you'd walk downhill from its
+			// peak, so negate it before comparing against the sun's bearing.
+			const float CosAngle = FVector2D::DotProduct(-Context.LocalGradient.GetSafeNormal(), SunDirection);
+			ExposureValue = CosAngle * 0.5f + 0.5f; // -1..1 -> 0..1
+		}
+		Weight *= SunExposure.Evaluate(ExposureValue);
 	}
 
 	return FMath::Clamp(Weight, 0.0f, 1.0f);
@@ -217,6 +236,56 @@ bool USolarOrbzCompositeBiomeMask::NeedsSlope() const
 	}
 	--RecursionDepth;
 	return bNeeds;
+}
+
+bool USolarOrbzCompositeBiomeMask::NeedsLocalGradient() const
+{
+	static thread_local int32 RecursionDepth = 0;
+	constexpr int32 MaxRecursionDepth = 16;
+	if (RecursionDepth >= MaxRecursionDepth)
+	{
+		return false;
+	}
+
+	++RecursionDepth;
+	bool bNeeds = false;
+	for (const TObjectPtr<USolarOrbzBiome>& Biome : Biomes)
+	{
+		if (Biome && Biome->Mask && Biome->Mask->NeedsLocalGradient())
+		{
+			bNeeds = true;
+			break;
+		}
+	}
+	--RecursionDepth;
+	return bNeeds;
+}
+
+// ================================================================================================
+// USolarOrbzNoiseBiomeMask
+// ================================================================================================
+float USolarOrbzNoiseBiomeMask::GetWeight(const FSolarOrbzBiomeSampleContext& Context) const
+{
+	const FVector SeedOffset = SolarOrbzNoiseBasis::ComputeSeedOffset(Seed);
+	FVector SamplePos = Context.UnitDirection * Frequency + SeedOffset;
+
+	// Fixed Persistence (0.5) / Lacunarity (2.0) - see this class's own header comment for why a
+	// mask weight doesn't need those as separate authored fields the way a height-shaping Noise
+	// Terrain Layer does.
+	float Sum = 0.0f;
+	float MaxPossible = 0.0f;
+	float OctaveAmplitude = 1.0f;
+	for (int32 Octave = 0; Octave < FMath::Max(Octaves, 1); ++Octave)
+	{
+		Sum += SolarOrbzNoiseBasis::SampleBasis(NoiseType, SamplePos, Seed) * OctaveAmplitude;
+		MaxPossible += OctaveAmplitude;
+		OctaveAmplitude *= 0.5f;
+		SamplePos *= 2.0f;
+	}
+	const float RawNoise = MaxPossible > KINDA_SMALL_NUMBER ? FMath::Clamp(Sum / MaxPossible, -1.0f, 1.0f) : 0.0f;
+	const float Normalized = RawNoise * 0.5f + 0.5f; // -1..1 -> 0..1, matching GetWeight's own documented 0..1 contract
+
+	return Threshold.bEnabled ? Threshold.Evaluate(Normalized) : Normalized;
 }
 
 // ================================================================================================

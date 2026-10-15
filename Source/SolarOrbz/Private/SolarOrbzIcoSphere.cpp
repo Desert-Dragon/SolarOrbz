@@ -845,6 +845,11 @@ void ASolarOrbzIcoSphereActor::RegenerateMesh()
 			UE_LOG(LogSolarOrbz, Log, TEXT("SolarOrbz Terrain: at least one layer's Mask reads Slope - those layers pay for a small finite-difference height sample per vertex to estimate it."));
 		}
 
+		if (TerrainStack->AnyLayerNeedsLocalGradient())
+		{
+			UE_LOG(LogSolarOrbz, Log, TEXT("SolarOrbz Terrain: at least one layer's Mask reads Sun Exposure (or otherwise needs LocalGradient) - those layers pay for two small finite-difference height samples per vertex to estimate facing direction."));
+		}
+
 		RunTerrainPassA(nullptr);
 	}
 	else
@@ -972,6 +977,26 @@ void ASolarOrbzIcoSphereActor::RegenerateMesh()
 			Context.UV = CachedMeshData.UVs[i];
 			Context.Elevation = FVector::DotProduct(CachedMeshData.Vertices[i], UnitDirection) - RadiusCm;
 			Context.Slope = FMath::Clamp(1.0f - FVector::DotProduct(CachedMeshData.Normals[i], UnitDirection), 0.0f, 1.0f);
+
+			// Same tangential-tilt idea as Slope above (cheap here - a real mesh normal already
+			// exists, unlike mid-Pass-A, which is why Sun Exposure masks need USolarOrbzBiomeMask::
+			// NeedsLocalGradient's expensive finite-difference fallback only for masked TERRAIN
+			// layers, never for biome masks) - computed unconditionally, same as Slope, rather than
+			// gated behind a Needs-check the way the more expensive Pass-A estimate is. TangentA/
+			// TangentB match USolarOrbzTerrainLayerStack::EstimateLocalGradientUpTo's own north/east
+			// basis exactly, so a mask's SunAzimuthDegrees means the same thing whichever pass computed it.
+			{
+				FVector TangentA = FVector::CrossProduct(FVector::UpVector, UnitDirection);
+				if (!TangentA.Normalize())
+				{
+					TangentA = FVector::ForwardVector; // degenerate at the poles - arbitrary but deterministic
+				}
+				const FVector TangentB = FVector::CrossProduct(UnitDirection, TangentA);
+				const FVector& Normal = CachedMeshData.Normals[i];
+				const FVector TangentialTilt = Normal - UnitDirection * FVector::DotProduct(Normal, UnitDirection);
+				Context.LocalGradient = FVector2D(FVector::DotProduct(TangentialTilt, TangentA), FVector::DotProduct(TangentialTilt, TangentB));
+			}
+
 			Context.SeaLevel = ClimateSimulation ? ClimateSimulation->SeaLevel : 0.0f; // authored value, valid even if the simulation itself hasn't produced a grid
 
 			if (CachedClimateGrid.IsValid())
@@ -1065,6 +1090,29 @@ void ASolarOrbzIcoSphereActor::RegenerateMesh()
 				FVector::DotProduct(CachedMeshData.Normals[I0], OriginalUnitDirections[I0]) +
 				FVector::DotProduct(CachedMeshData.Normals[I1], OriginalUnitDirections[I1]) +
 				FVector::DotProduct(CachedMeshData.Normals[I2], OriginalUnitDirections[I2])) / 3.0f, 0.0f, 1.0f);
+
+			// Same idea as the per-vertex block above - each corner's own tangential tilt, projected
+			// onto one shared tangent frame (built from CentroidDirection, matching Context.UnitDirection
+			// above) so the three corners' contributions average in a common reference rather than each
+			// in its own, geometrically incomparable, basis.
+			{
+				FVector TangentA = FVector::CrossProduct(FVector::UpVector, CentroidDirection);
+				if (!TangentA.Normalize())
+				{
+					TangentA = FVector::ForwardVector; // degenerate at the poles - arbitrary but deterministic
+				}
+				const FVector TangentB = FVector::CrossProduct(CentroidDirection, TangentA);
+				auto TangentialTiltAt = [](const FVector& Normal, const FVector& Dir) -> FVector
+				{
+					return Normal - Dir * FVector::DotProduct(Normal, Dir);
+				};
+				const FVector AvgTilt = (
+					TangentialTiltAt(CachedMeshData.Normals[I0], OriginalUnitDirections[I0]) +
+					TangentialTiltAt(CachedMeshData.Normals[I1], OriginalUnitDirections[I1]) +
+					TangentialTiltAt(CachedMeshData.Normals[I2], OriginalUnitDirections[I2])) / 3.0f;
+				Context.LocalGradient = FVector2D(FVector::DotProduct(AvgTilt, TangentA), FVector::DotProduct(AvgTilt, TangentB));
+			}
+
 			Context.SeaLevel = ClimateSimulation ? ClimateSimulation->SeaLevel : 0.0f;
 
 			if (CachedClimateGrid.IsValid())

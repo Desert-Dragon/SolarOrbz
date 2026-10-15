@@ -12,6 +12,17 @@
 // combines their embedded masks, rather than referencing separate preset files. So "Icy Chemical
 // Mountain" is built by creating a Biome whose own Mask is a Composite Mask listing your existing
 // "Icy" and "Mountain" biomes - reusing their conditions without redefining them.
+//
+// Mask selector inputs are modeled on World Creator's own Distribution system (verified against its
+// public features page/real editor screenshots - not decompiled or copied, the input categories and
+// panel shape are what's referenced, not any of its code or assets), which splits mask inputs into
+// Noise/Layer/Terrain categories. Climate Mask already covered most of its "Terrain" category
+// (Elevation=Height, Slope) plus true climate signals (Temperature/Moisture/Latitude) it doesn't
+// have at all; this pass adds Sun Exposure (WC's "Sun Direction") to Climate Mask, and a new Noise
+// Mask for WC's whole "Noise" category. WC's "Layer" category (Area/Border Blend/Mask paint/Model/
+// Path/Polygon/Rivers/Simulation) is deliberately NOT started here - those are interactive authoring
+// tools (brushes, splines, a river generator, simulation outputs this plugin doesn't compute), not
+// more range-based math, and each is its own separate undertaking.
 
 #pragma once
 
@@ -19,9 +30,9 @@
 #include "UObject/Object.h"
 #include "Engine/DataAsset.h"
 #include "Engine/DataTable.h"
+#include "SolarOrbzTerrainLayers.h"
 #include "SolarOrbzBiomeSystem.generated.h"
 
-class USolarOrbzTerrainLayerStack;
 class USolarOrbzBiome;
 
 // ================================================================================================
@@ -84,6 +95,18 @@ struct SOLARORBZ_API FSolarOrbzBiomeSampleContext
 	 */
 	UPROPERTY(BlueprintReadOnly, Category = "SolarOrbz|Biome", meta = (Units = "m"))
 	float SeaLevel = 0.0f;
+
+	/**
+	 * Tangential height gradient at this point - X = toward local north, Y = toward local east (a
+	 * right-handed tangent basis with UnitDirection as the outward axis), roughly rise-per-unit-
+	 * tangential-distance along each. Only meaningful when a mask opted in via
+	 * USolarOrbzBiomeMask::NeedsLocalGradient() (see USolarOrbzTerrainLayerStack::
+	 * EstimateLocalGradientUpTo) - zero otherwise, same "not yet computed, don't trust it" convention
+	 * Slope already uses when NeedsSlope() is false. Magnitude is Slope-like (steeper = larger); a
+	 * mask that only cares which way a slope faces, not how steep, should normalize it itself.
+	 */
+	UPROPERTY(BlueprintReadOnly, Category = "SolarOrbz|Biome")
+	FVector2D LocalGradient = FVector2D::ZeroVector;
 };
 
 UCLASS(Abstract, EditInlineNew, DefaultToInstanced, BlueprintType)
@@ -106,6 +129,9 @@ public:
 
 	/** Same idea as NeedsClimateData, for Context.Slope - which (unlike Elevation) isn't cheap to know mid-Pass-A, since it needs a finite-difference estimate rather than a real mesh normal. Default false. */
 	virtual bool NeedsSlope() const { return false; }
+
+	/** Same idea as NeedsSlope, for Context.LocalGradient - a direction, not just a magnitude, so it costs two finite-difference samples mid-Pass-A instead of Slope's one (see USolarOrbzTerrainLayerStack::EstimateLocalGradientUpTo). Default false. */
+	virtual bool NeedsLocalGradient() const { return false; }
 };
 
 // ================================================================================================
@@ -181,9 +207,26 @@ public:
 	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Climate", meta = (EditCondition = "Moisture.bEnabled", ClampMin = "0.01"))
 	float MoistureFrequency = 1.5f;
 
+	/**
+	 * How directly this point's slope faces toward SunAzimuthDegrees below - 0 = faces directly away
+	 * (the classic "shaded, snow/moisture lingers longer" side of a ridge), 1 = faces directly toward
+	 * it (dries out and melts first), 0.5 on flat ground (no facing direction to speak of) or a slope
+	 * facing exactly sideways. World Creator calls the equivalent terrain input "Sun Direction" -
+	 * verified against its own public features page, not guessed. Costs two extra finite-difference
+	 * height samples mid-Pass-A (see USolarOrbzBiomeMask::NeedsLocalGradient) - same cost class as
+	 * Slope above, just doubled, since direction (not only steepness) is what this axis needs.
+	 */
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Climate")
+	FSolarOrbzMaskRange SunExposure;
+
+	/** Compass bearing the sun/key light comes from - 0 = local north, 90 = local east, matching Latitude's own geometric convention. A flat ground-plane bearing only; no elevation angle or day/night model. Only used when SunExposure.bEnabled. */
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Climate", meta = (EditCondition = "SunExposure.bEnabled", ClampMin = "0.0", ClampMax = "360.0"))
+	float SunAzimuthDegrees = 0.0f;
+
 	virtual float GetWeight(const FSolarOrbzBiomeSampleContext& Context) const override;
 	virtual bool NeedsClimateData() const override { return Temperature.bEnabled || Moisture.bEnabled; }
 	virtual bool NeedsSlope() const override { return Slope.bEnabled; }
+	virtual bool NeedsLocalGradient() const override { return SunExposure.bEnabled; }
 };
 
 // ================================================================================================
@@ -218,6 +261,52 @@ public:
 	virtual float GetWeight(const FSolarOrbzBiomeSampleContext& Context) const override;
 	virtual bool NeedsClimateData() const override;
 	virtual bool NeedsSlope() const override;
+	virtual bool NeedsLocalGradient() const override;
+};
+
+// ================================================================================================
+// USolarOrbzNoiseBiomeMask - a pure procedural mask, independent of terrain shape or climate -
+// World Creator's "Noise" Distribution category (verified against its own public features page: a
+// 14-basis-type library used as a mask input, separate from its "Terrain" category's shape-derived
+// signals). Reuses exactly the basis types a Noise Terrain Layer already supports
+// (Perlin/Ridged/Billow/Value/Voronoi, SolarOrbzNoiseBasis in SolarOrbzTerrainLayers.h/.cpp) rather
+// than the full 14 (Gabor/Phasor/Splatter/Wave/White/Worley/Dots/Fill/Simplex/NoiseValue aren't
+// implemented anywhere in this plugin yet) - a deliberate scope-cut, not an oversight: adding a new
+// basis type is a change to ESolarOrbzNoiseType itself, shared with every terrain-shaping Noise
+// Layer too, not something to do piecemeal just for masking. Persistence/Lacunarity/domain warp are
+// fixed (0.5/2.0/none) rather than separately authored fields - a mask weight doesn't need the full
+// authoring surface a height-shaping layer does, just enough multi-octave variation to avoid a
+// single flat basis reading too mechanically regular.
+// ================================================================================================
+UCLASS(EditInlineNew, meta = (DisplayName = "Noise Mask"))
+class SOLARORBZ_API USolarOrbzNoiseBiomeMask : public USolarOrbzBiomeMask
+{
+	GENERATED_BODY()
+
+public:
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Noise")
+	ESolarOrbzNoiseType NoiseType = ESolarOrbzNoiseType::Perlin;
+
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Noise", meta = (ClampMin = "0.01"))
+	float Frequency = 2.0f;
+
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Noise", meta = (ClampMin = "1", ClampMax = "8"))
+	int32 Octaves = 3;
+
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Noise")
+	int32 Seed = 0;
+
+	/**
+	 * Carves a band out of the raw noise field (remapped 0..1 from the basis's native -1..1) - same
+	 * soft-edged [Min, Max] idea Climate Mask's own ranges use, so "only the top 30% of the noise
+	 * field" is one enabled range rather than a second mask type. Disabled (default): the raw 0..1
+	 * noise value is used directly as the weight, for a soft, fully-graduated blend instead of a
+	 * carved band.
+	 */
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Noise")
+	FSolarOrbzMaskRange Threshold;
+
+	virtual float GetWeight(const FSolarOrbzBiomeSampleContext& Context) const override;
 };
 
 // ================================================================================================
