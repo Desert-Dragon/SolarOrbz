@@ -697,6 +697,61 @@ commitment or a schedule - just a place these don't get lost between sessions.
     construction, so this doesn't regress anything there. The remaining 4 Layer entries (Mask paint,
     Model, Rivers, Simulation) are unchanged from Phase 2's reasoning - still blocked on interactive
     editor tooling or missing simulation prerequisites, not attempted here.
+  - **Phase 4, asked directly to "build the subsystems"**: closed out Rivers and Simulation, the two
+    Layer entries whose blocker genuinely was a missing subsystem rather than a mask-authoring pattern
+    gap - leaving only Mask paint (needs a real editor brush tool) and Model (needs the objects/
+    scattering panel this project already deliberately deferred to PCGEX/UE5 editor, back at the very
+    start of this whole Layer-category effort - building it here now would contradict that explicit
+    scoping call, not just be more of the same work) of WC's original 9.
+    - **New subsystem**: `USolarOrbzHydrologySimulationAsset` (`SolarOrbzHydrologySimulation.h/.cpp`,
+      new files) - a whole-planet D8 (8-neighbor steepest-descent) flow-accumulation simulation,
+      mirroring `USolarOrbzClimateSimulationAsset`'s own shape exactly (an independent lat/long grid,
+      `Simulate()` called once per regenerate from `ASolarOrbzIcoSphereActor::RegenerateMesh`, a
+      `FSolarOrbzHydrologyGrid` bilinear-sampled into `FSolarOrbzBiomeSampleContext` for Pass B). Same
+      deterministic grid-routing technique (not droplet/particle-based) `USolarOrbzErosionTerrainLayer`
+      already uses for its hydraulic pass - process every cell highest-elevation-first so each cell's
+      single steepest-descent neighbor has already received every upstream contributor's flow by the
+      time it's processed, letting one sorted pass accumulate flow correctly with no iteration. This is
+      literally the standard real-world GIS technique for extracting river networks from a DEM:
+      thresholding a flow-accumulation grid naturally produces thin, branching, realistic channels
+      without hand-authoring a path per river. Moved the shared D8 neighbor-finding helpers
+      (`WrapX`/`InBoundsY`/`FindSteepestDescentNeighbor`) onto `FSolarOrbzLatLongGrid` itself - that
+      header's own top comment already states its purpose as centralizing grid logic "so future layers
+      don't need a sixth copy" - rather than keeping a third private copy; deliberately did NOT refactor
+      Erosion's existing file-static copy in `SolarOrbzTerrainLayers.cpp` to call through to the new
+      shared one, since that's a stylistic dedup with no functional benefit and no compiler available to
+      verify the refactor didn't subtly change already-working code. Ocean cells (below the asset's own
+      Sea Level) are a terminal sink - they still receive flow (so river mouths correctly read as high)
+      but don't route it onward, or accumulated flow would keep compounding across the whole connected
+      ocean body and swamp the normalization. Optionally weights each cell's rainfall contribution by
+      Climate Simulation's own already-baked Moisture (when assigned) instead of a flat amount -
+      addresses, in this new system at least, the same "not yet driven by real rainfall" gap
+      `USolarOrbzErosionTerrainLayer::RainfallAmount`'s own comment still flags as unresolved there.
+    - **`USolarOrbzRiversBiomeMask`** (WC's "Rivers" Layer entry) - thresholds the new
+      `FlowAccumulation01` (an optional `FSolarOrbzMaskRange`, same carve-a-band idea every other
+      optional range in this file already uses) into a river-network mask. Pass-B-only, the opposite
+      limitation Filter Change Mask has: Pass A (mid-Terrain-Layer-Stack, before Hydrology Simulation
+      has run) has no flow data to read and returns a neutral 1.0 there - see the new
+      `Context.bHasHydrologyData`.
+    - **`USolarOrbzSimulationBiomeMask`** (WC's "Simulation" Layer entry, distinct from Rivers) - a
+      snow-accumulation mask, deliberately NOT built as its own new whole-surface simulation: a real
+      seasonal snowpack model (degree-day accumulation/melt integrated over simulated time, wind
+      redistribution) needs a time-step concept this plugin has nowhere at all, a much bigger
+      undertaking than this phase's scope. Instead derives a snow-favorability proxy entirely from data
+      Climate Simulation already bakes every regenerate - cold (`Context.Temperature` at/below a
+      `FreezingPointKelvin`, softly ramping to unfavorable over `TemperatureFalloffKelvin` above it) and
+      wet (`Context.Moisture`, optionally range-gated) both favor snow, while `Context.Slope` sheds it
+      past `MaxClingingSlope` (scree/rock faces stay bare even when cold and wet, matching real alpine
+      treelines). Documented plainly as "does this point's current climate favor standing snow," not "how
+      much snow has actually accumulated over a simulated season" - an honest proxy, not a stand-in
+      claiming to be the real thing.
+    - Confirmed both of Pass B's `FSolarOrbzBiomeSampleContext` construction sites in
+      `SolarOrbzIcoSphere.cpp` (per-vertex and per-triangle-centroid) now also sample
+      `CachedHydrologyGrid` unconditionally when valid, same "cheap now that a real per-point value
+      already exists" treatment Slope/LocalGradient/Temperature/Moisture already get there - no
+      `Needs*()` gating was needed for Hydrology at all, since (unlike the Pass-A-only Slope/
+      LocalGradient finite-difference estimates) sampling an already-baked grid costs nothing worth
+      gating behind a per-mask opt-in.
 
 - **PCG Biome Core integration** for content scattering (trees, rocks, and eventually
   civilization - roads, farms, settlements). SolarOrbz's Climate + BiomeStack system stays the

@@ -593,6 +593,7 @@ void ASolarOrbzIcoSphereActor::PostEditChangeProperty(FPropertyChangedEvent& Pro
 		GET_MEMBER_NAME_CHECKED(ASolarOrbzIcoSphereActor, TerrainStack),
 		GET_MEMBER_NAME_CHECKED(ASolarOrbzIcoSphereActor, BiomeStack),
 		GET_MEMBER_NAME_CHECKED(ASolarOrbzIcoSphereActor, ClimateSimulation),
+		GET_MEMBER_NAME_CHECKED(ASolarOrbzIcoSphereActor, HydrologySimulation),
 		GET_MEMBER_NAME_CHECKED(ASolarOrbzIcoSphereActor, Profile),
 		GET_MEMBER_NAME_CHECKED(ASolarOrbzIcoSphereActor, bShowBiomeDebugColors),
 		GET_MEMBER_NAME_CHECKED(ASolarOrbzIcoSphereActor, DebugBiomeMaterial),
@@ -664,6 +665,10 @@ bool ASolarOrbzIcoSphereActor::IsObjectRelevantToLivePreview(const UObject* Obje
 	if (ClimateSimulation)
 	{
 		Roots.Add(ClimateSimulation);
+	}
+	if (HydrologySimulation)
+	{
+		Roots.Add(HydrologySimulation);
 	}
 	if (Profile)
 	{
@@ -909,6 +914,24 @@ void ASolarOrbzIcoSphereActor::RegenerateMesh()
 		UE_LOG(LogSolarOrbz, Warning, TEXT("SolarOrbz Climate: no ClimateSimulation assigned on the actor - any Climate Biome Mask using Moisture/Temperature is running on its no-simulation fallback, not real simulated data."));
 	}
 
+	// --- Hydrology simulation: runs once on its own lat/long grid (not per-vertex), after Climate ---
+	// Simulation above so it can weight rainfall by real simulated Moisture when available. Feeds Pass
+	// B's sample context below (FlowAccumulation01/bHasHydrologyData) for USolarOrbzRiversBiomeMask.
+	CachedHydrologyGrid.Reset();
+	if (HydrologySimulation)
+	{
+		HydrologySimulation->Simulate(TerrainStack, RadiusCm, CachedClimateGrid.IsValid() ? &CachedClimateGrid : nullptr, CachedHydrologyGrid);
+
+		if (!CachedHydrologyGrid.IsValid())
+		{
+			UE_LOG(LogSolarOrbz, Warning, TEXT("SolarOrbz Hydrology: HydrologySimulation is assigned but produced an invalid grid (check Grid Width/Height)."));
+		}
+	}
+	else if (bShowBiomeDebugColors)
+	{
+		UE_LOG(LogSolarOrbz, Warning, TEXT("SolarOrbz Hydrology: no HydrologySimulation assigned on the actor - any Rivers Biome Mask is running on its no-simulation fallback (neutral, no restriction), not real flow-accumulation data."));
+	}
+
 	// --- Pass A, final re-run: only when a layer's Mask actually needs Temperature/Moisture and a ---
 	// real grid is now available - re-evaluates the whole base terrain pass so those masks see real
 	// climate data instead of the seed pass's no-simulation fallback. Free (skipped entirely) for
@@ -1004,6 +1027,12 @@ void ASolarOrbzIcoSphereActor::RegenerateMesh()
 				Context.bHasClimateData = true;
 				CachedClimateGrid.Sample(UnitDirection, Context.Temperature, Context.Moisture);
 				NumWithClimateData.Increment();
+			}
+
+			if (CachedHydrologyGrid.IsValid())
+			{
+				Context.bHasHydrologyData = true;
+				Context.FlowAccumulation01 = CachedHydrologyGrid.Sample(UnitDirection);
 			}
 
 			// Evaluated once per vertex and reused below - every biome's mask used to be evaluated
@@ -1119,6 +1148,12 @@ void ASolarOrbzIcoSphereActor::RegenerateMesh()
 			{
 				Context.bHasClimateData = true;
 				CachedClimateGrid.Sample(CentroidDirection, Context.Temperature, Context.Moisture);
+			}
+
+			if (CachedHydrologyGrid.IsValid())
+			{
+				Context.bHasHydrologyData = true;
+				Context.FlowAccumulation01 = CachedHydrologyGrid.Sample(CentroidDirection);
 			}
 
 			TriangleMaterials[TriIndex] = BiomeStack->SelectMaterial(Context);

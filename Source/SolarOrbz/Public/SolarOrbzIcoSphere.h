@@ -10,6 +10,7 @@
 #include "GameFramework/Actor.h"
 #include "ProceduralMeshComponent.h"
 #include "SolarOrbzClimateSimulation.h"
+#include "SolarOrbzHydrologySimulation.h"
 #include "SolarOrbzIcoSphere.generated.h"
 
 class UTexture2D;
@@ -211,6 +212,18 @@ public:
 	TObjectPtr<class USolarOrbzClimateSimulationAsset> ClimateSimulation;
 
 	/**
+	 * Optional. Runs a whole-planet D8 flow-accumulation simulation once per regenerate, after
+	 * TerrainStack and (if assigned) Climate Simulation - the real hydrology prerequisite World
+	 * Creator's own "Rivers" and "Simulation" Distribution Layer entries read from, which this plugin
+	 * didn't compute anywhere before this. Feeds FlowAccumulation01 into every Biome's own sample
+	 * context for USolarOrbzRiversBiomeMask to threshold into river-network-shaped masks. When
+	 * Climate Simulation above is also assigned, rainfall driving the flow is weighted by its real
+	 * simulated Moisture instead of a flat per-cell amount.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "SolarOrbz|Hydrology")
+	TObjectPtr<class USolarOrbzHydrologySimulationAsset> HydrologySimulation;
+
+	/**
 	 * Optional. This body's physical identity - gravity, atmosphere, landmass counts for a planet;
 	 * different data entirely for a star or asteroid. Assign a Planet/Star/Asteroid Profile asset
 	 * here. When a Planet Profile is assigned, its Atmosphere Density At Sea Level feeds the Climate
@@ -301,6 +314,9 @@ public:
 	/** Climate grid from the last RegenerateMesh() call. Invalid (Width/Height 0) if no ClimateSimulation is assigned. */
 	const FSolarOrbzClimateGrid& GetCachedClimateGrid() const { return CachedClimateGrid; }
 
+	/** Hydrology (flow accumulation) grid from the last RegenerateMesh() call. Invalid (Width/Height 0) if no HydrologySimulation is assigned. */
+	const FSolarOrbzHydrologyGrid& GetCachedHydrologyGrid() const { return CachedHydrologyGrid; }
+
 protected:
 	virtual void OnConstruction(const FTransform& Transform) override;
 #if WITH_EDITOR
@@ -315,6 +331,7 @@ private:
 	// Cached from the last RegenerateMesh() call so Bake doesn't need to redo the generation work.
 	FSolarOrbzIcoSphereMeshData CachedMeshData;
 	FSolarOrbzClimateGrid CachedClimateGrid;
+	FSolarOrbzHydrologyGrid CachedHydrologyGrid;
 	int32 LastSubdivisionLevelUsed = 0;
 	int32 LastRequestedSubdivisionLevel = 0;
 

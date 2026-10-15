@@ -103,4 +103,45 @@ struct FSolarOrbzLatLongGrid
 	{
 		return SampleAtCell(Grid, Width, ComputeBilinearCell(UnitDirection));
 	}
+
+	// --- D8 (8-neighbor steepest-descent) flow routing - shared by Erosion Layer's hydraulic pass ---
+	// and Hydrology Simulation's flow accumulation (SolarOrbzHydrologySimulation.h/.cpp). Erosion Layer
+	// predates this and still keeps its own file-static copy in SolarOrbzTerrainLayers.cpp (identical
+	// logic) rather than being migrated to call through here - not touched when these were added, to
+	// avoid any risk to already-working code for a purely stylistic dedup with no compiler available to
+	// verify the refactor. New flow-routing code should use these instead of adding a third copy.
+
+	/** Wraps a longitude index around the seam; latitude has no wrap (poles are edges, not a loop). */
+	static int32 WrapX(int32 X, int32 W) { return ((X % W) + W) % W; }
+
+	static bool InBoundsY(int32 Y, int32 H) { return Y >= 0 && Y < H; }
+
+	/** Finds the lowest of a cell's 8 neighbors. Returns INDEX_NONE if this cell is already a local minimum (a basin - nowhere lower to route to). */
+	static int32 FindSteepestDescentNeighbor(const TArray<float>& HeightField, int32 X, int32 Y, int32 W, int32 H, float SelfHeight)
+	{
+		static constexpr int32 NeighborOffsetX[8] = { -1, 0, 1, -1, 1, -1, 0, 1 };
+		static constexpr int32 NeighborOffsetY[8] = { -1, -1, -1, 0, 0, 1, 1, 1 };
+
+		int32 LowestIdx = INDEX_NONE;
+		float LowestHeight = SelfHeight;
+
+		for (int32 N = 0; N < 8; ++N)
+		{
+			const int32 NX = WrapX(X + NeighborOffsetX[N], W);
+			const int32 NY = Y + NeighborOffsetY[N];
+			if (!InBoundsY(NY, H))
+			{
+				continue;
+			}
+
+			const int32 NIdx = NY * W + NX;
+			if (HeightField[NIdx] < LowestHeight)
+			{
+				LowestHeight = HeightField[NIdx];
+				LowestIdx = NIdx;
+			}
+		}
+
+		return LowestIdx;
+	}
 };

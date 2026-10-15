@@ -548,6 +548,47 @@ float USolarOrbzFilterChangeBiomeMask::GetWeight(const FSolarOrbzBiomeSampleCont
 }
 
 // ================================================================================================
+// USolarOrbzRiversBiomeMask
+// ================================================================================================
+float USolarOrbzRiversBiomeMask::GetWeight(const FSolarOrbzBiomeSampleContext& Context) const
+{
+	// Pass A (mid Terrain Layer Stack, before Hydrology Simulation has run) or no HydrologySimulation
+	// assigned on the actor - nothing to threshold, so don't restrict (see
+	// Context.bHasHydrologyData's own comment on this).
+	if (!Context.bHasHydrologyData)
+	{
+		return 1.0f;
+	}
+
+	const float Weight = FlowThreshold.bEnabled ? FlowThreshold.Evaluate(Context.FlowAccumulation01) : Context.FlowAccumulation01;
+	return bInvert ? 1.0f - Weight : Weight;
+}
+
+// ================================================================================================
+// USolarOrbzSimulationBiomeMask
+// ================================================================================================
+float USolarOrbzSimulationBiomeMask::GetWeight(const FSolarOrbzBiomeSampleContext& Context) const
+{
+	// No real ClimateSimulation assigned - same "fall back to a plain latitude/neutral proxy" idea
+	// Climate Mask's own Temperature/Moisture-reading branches already use, rather than letting an
+	// unsimulated default (288K/0.5 moisture) silently read as "always slightly favors snow".
+	if (!Context.bHasClimateData)
+	{
+		return 1.0f;
+	}
+
+	const float TemperatureFalloff = FMath::Max(TemperatureFalloffKelvin, KINDA_SMALL_NUMBER);
+	const float ColdFactor = FMath::Clamp((FreezingPointKelvin - Context.Temperature) / TemperatureFalloff + 1.0f, 0.0f, 1.0f);
+
+	const float MoistureFactor = MoistureRange.bEnabled ? MoistureRange.Evaluate(Context.Moisture) : Context.Moisture;
+
+	const float MaxClinging = FMath::Max(MaxClingingSlope, KINDA_SMALL_NUMBER);
+	const float SlopeFactor = 1.0f - FMath::Clamp(Context.Slope / MaxClinging, 0.0f, 1.0f);
+
+	return ColdFactor * MoistureFactor * SlopeFactor;
+}
+
+// ================================================================================================
 // USolarOrbzBiome
 // ================================================================================================
 float USolarOrbzBiome::GetWeight(const FSolarOrbzBiomeSampleContext& Context) const

@@ -21,12 +21,19 @@
 // have at all; a later pass added Sun Exposure (WC's "Sun Direction") to Climate Mask, and a Noise
 // Mask for WC's whole "Noise" category. A later pass covered 4 of WC's 9 "Layer" category entries -
 // Area Mask, Polygon Mask, Path Mask, Border Blend Mask - the ones that are placed geometry (typed
-// Latitude/Longitude points), not interactive authoring tools; and this pass adds a 5th, Filter
+// Latitude/Longitude points), not interactive authoring tools; a further pass added a 5th, Filter
 // Change Mask, once it turned out its "before/after delta" data was already sitting unused in
 // USolarOrbzTerrainLayerStack::EvaluateHeightUpTo's own masking block rather than needing new height
-// evaluations. The remaining 4 (Mask paint/Model/Rivers/Simulation) are still deliberately NOT
-// started - see the comment block directly above the Layer-category classes below for why each one
-// specifically doesn't fit this same pattern.
+// evaluations; and THIS pass adds a 6th and 7th - Rivers Mask and Simulation Mask - the two entries
+// whose blocker really was a missing subsystem rather than a new mask-authoring pattern, closed out
+// by a new whole-planet D8 flow-accumulation simulation (SolarOrbzHydrologySimulation.h/.cpp, mirrors
+// USolarOrbzClimateSimulationAsset's own grid-simulation shape) for Rivers, and a derived proxy
+// reusing Climate Simulation's already-baked Temperature/Moisture/Slope for Simulation (a full
+// seasonal snowpack model being real infrastructure this plugin has no time-step concept to hang on
+// at all - see USolarOrbzSimulationBiomeMask's own comment for the honest scope of what this is and
+// isn't). Only Mask (hand-painted) and Model (an imported mesh's own footprint) remain - see the
+// comment block directly above the Layer-category classes below for why those two specifically still
+// don't fit this pattern.
 
 #pragma once
 
@@ -135,6 +142,25 @@ struct SOLARORBZ_API FSolarOrbzBiomeSampleContext
 	 */
 	UPROPERTY(BlueprintReadOnly, Category = "SolarOrbz|Biome")
 	bool bHasElevationDelta = false;
+
+	/**
+	 * 0 = a ridge/divide cell that only ever sees its own rainfall, 1 = the single cell on this
+	 * planet with the largest upstream drainage area (a major river mouth/outlet) - see
+	 * FSolarOrbzHydrologyGrid::FlowAccumulation01 (SolarOrbzHydrologySimulation.h) for exactly what
+	 * this measures and how it's derived. Only meaningful when bHasHydrologyData is true.
+	 */
+	UPROPERTY(BlueprintReadOnly, Category = "SolarOrbz|Biome")
+	float FlowAccumulation01 = 0.0f;
+
+	/**
+	 * True once FlowAccumulation01 above has been filled in by a HydrologySimulation asset assigned
+	 * on the actor. False = no simulation assigned, or (unlike Temperature/Moisture/Slope) this
+	 * context was built mid-Pass-A while masking a Terrain Layer Stack entry rather than evaluating a
+	 * Biome's own top-level Mask - Hydrology is Pass-B-only (see USolarOrbzRiversBiomeMask's own
+	 * comment for why), the opposite limitation USolarOrbzFilterChangeBiomeMask has.
+	 */
+	UPROPERTY(BlueprintReadOnly, Category = "SolarOrbz|Biome")
+	bool bHasHydrologyData = false;
 };
 
 UCLASS(Abstract, EditInlineNew, DefaultToInstanced, BlueprintType)
@@ -359,15 +385,16 @@ public:
 // same spirit as ShapeStampNode's own placement convention in the standalone tool (and this file's
 // existing USolarOrbzStampTerrainLayer, whose exact Latitude/Longitude -> direction formula these
 // reuse verbatim, via SolarOrbzSphericalGeometry::DirectionFromLatLong below, for one consistent
-// placement convention plugin-wide). WC's other 4 remaining Layer entries - Mask (hand-painted,
-// needs a real brush tool), Model (an imported mesh's own footprint), Rivers (flow-routed channel
-// carving), Simulation (reads a water-flow/snow-melt simulation this plugin doesn't compute
-// anywhere) - are still deliberately NOT attempted here: real interactive editor tooling (viewport
-// painting, a live brush) too risky to hand-write without ever running it in an actual UE5.8 editor,
-// or blocked on a simulation this plugin has no prerequisite for yet. Each is its own separate
-// undertaking, same reasoning as last time's "Layer category deferred" note. (Filter Change, the
-// 9th entry, turned out NOT to need that same kind of blocked infrastructure once actually traced
-// through - see USolarOrbzFilterChangeBiomeMask right after Border Blend Mask below.)
+// placement convention plugin-wide). WC's other 2 remaining Layer entries - Mask (hand-painted,
+// needs a real brush tool) and Model (an imported mesh's own footprint, which would mean building
+// the objects/scattering panel this project already deliberately deferred to PCGEX in the UE5 editor
+// instead of standalone - see the top-of-file comment's own history) - are still deliberately NOT
+// attempted here: real interactive editor tooling (viewport painting, a live brush, or scattering
+// authoring this project scoped to a different system entirely) too risky or out of scope to
+// hand-write here. (Filter Change, Rivers, and Simulation - the 9th, 7th, and 8th entries - turned
+// out NOT to need that same kind of blocked infrastructure once actually traced through: see
+// USolarOrbzFilterChangeBiomeMask, USolarOrbzRiversBiomeMask, and USolarOrbzSimulationBiomeMask
+// right after Border Blend Mask below.)
 //
 // Polygon/Path both need "is this point near a set of points on a sphere" math, which doesn't
 // reduce to flat 2D geometry directly - solved by projecting every point (vertices and the query
@@ -540,6 +567,98 @@ public:
 
 	virtual float GetWeight(const FSolarOrbzBiomeSampleContext& Context) const override;
 	virtual bool NeedsElevationDelta() const override { return true; }
+};
+
+// ================================================================================================
+// USolarOrbzRiversBiomeMask - World Creator's "Rivers" Layer entry: thresholds the new
+// FSolarOrbzHydrologyGrid (SolarOrbzHydrologySimulation.h/.cpp, assigned on the actor as
+// HydrologySimulation) into river-network-shaped masks. Unlike Area/Polygon/Path above, rivers
+// aren't hand-authored geometry here - they're wherever a real D8 flow-accumulation simulation
+// says enough upstream drainage converges, the same "threshold a flow accumulation grid" technique
+// real-world GIS hydrology tools use to extract river networks from elevation data. That's also why
+// this needed an actual new whole-planet simulation subsystem rather than fitting the existing
+// range/geometry-mask pattern: unlike Filter Change (whose "before/after delta" data turned out to
+// already be sitting unused in EvaluateHeightUpTo), there was no existing data anywhere in this
+// plugin that already encoded "how much water drains through this point."
+//
+// Pass-B-only (a Biome's own top-level Mask), the opposite limitation Filter Change Mask has: Pass A
+// (a Terrain Layer's own Mask, mid-stack before any whole-surface simulation has run) has no
+// FlowAccumulation01 to read and always returns a neutral 1.0 there - see Context.bHasHydrologyData.
+// ================================================================================================
+UCLASS(EditInlineNew, meta = (DisplayName = "Rivers Mask"))
+class SOLARORBZ_API USolarOrbzRiversBiomeMask : public USolarOrbzBiomeMask
+{
+	GENERATED_BODY()
+
+public:
+	/**
+	 * Band over FlowAccumulation01 (0 = ridge, 1 = the planet's single largest drainage outlet).
+	 * Because real drainage area is extremely skewed - the overwhelming majority of a planet's land
+	 * surface is ridges and hillslopes, with only a thin, branching set of cells carrying real
+	 * channelized flow - a fairly high Min (0.5-0.8) with a soft Falloff for riverbanks is the normal
+	 * authoring pattern, not a wide band. Disabled (default, matching every other optional
+	 * FSolarOrbzMaskRange in this file): the raw FlowAccumulation01 is used directly as the weight,
+	 * a fully-graduated "more weight the more water drains through here" blend instead of a carved
+	 * channel - rarely what you actually want for Rivers specifically, but kept for consistency and
+	 * for Simulation Mask-style gradual uses (e.g. feeding a wetness gradient into a terrain Mask).
+	 */
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Rivers")
+	FSolarOrbzMaskRange FlowThreshold;
+
+	/** Weight away from the river network instead of along it - "everywhere except rivers", e.g. for a Mask excluding a terrain detail layer from being submerged by the channel it sits in. */
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Rivers")
+	bool bInvert = false;
+
+	virtual float GetWeight(const FSolarOrbzBiomeSampleContext& Context) const override;
+};
+
+// ================================================================================================
+// USolarOrbzSimulationBiomeMask - World Creator's "Simulation" Layer entry (distinct from "Rivers"
+// above, WC's own 9th and final Layer entry): reacts to snow accumulation, a genuine simulated
+// physical quantity WC's own public materials describe this entry covering alongside water flow.
+// Deliberately NOT a new whole-surface simulation subsystem of its own - a full snowpack model
+// (degree-day accumulation/melt integrated over time, wind redistribution) is real additional
+// infrastructure this plugin has no seasonal/time-step concept to hang it on at all, a much bigger
+// undertaking than this pass's scope. Instead derives a snow-accumulation PROXY entirely from data
+// Climate Simulation already produces every regenerate - cold (Context.Temperature below
+// FreezingPointKelvin) and available precipitation (Context.Moisture) both favor snow, while a steep
+// Slope sheds it (scree/rock faces stay bare even when cold and wet, matching every real alpine
+// treeline) - same spirit as a classic degree-day index, just evaluated from one already-baked
+// climate snapshot instead of integrated across simulated time. Honest about the gap: this is "does
+// this point's current climate favor standing snow", not "how much snow has actually accumulated
+// over a simulated season" - good enough to mask a snowcap biome onto cold wet peaks, not a
+// substitute for a real seasonal snowpack simulation if one gets built later.
+// ================================================================================================
+UCLASS(EditInlineNew, meta = (DisplayName = "Simulation Mask"))
+class SOLARORBZ_API USolarOrbzSimulationBiomeMask : public USolarOrbzBiomeMask
+{
+	GENERATED_BODY()
+
+public:
+	/** Temperature (Kelvin) at and below which conditions are fully favorable for standing snow - water's freezing point, 273.15K, unless deliberately authoring for an exotic atmosphere. */
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Simulation", meta = (ClampMin = "0.0", Units = "Kelvin"))
+	float FreezingPointKelvin = 273.15f;
+
+	/** How many Kelvin above Freezing Point it takes to reach fully unfavorable (weight 0) - at or below Freezing Point itself is always fully favorable (weight 1.0); this is the soft transition band above it, rather than a hard cutoff exactly at freezing. */
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Simulation", meta = (ClampMin = "0.01", Units = "Kelvin"))
+	float TemperatureFalloffKelvin = 10.0f;
+
+	/** Slope (Context.Slope convention: 0 flat .. 1 vertical) at and beyond which snow can no longer cling at all - bare rock/scree, regardless of how cold or wet. */
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Simulation", meta = (ClampMin = "0.01", ClampMax = "1.0"))
+	float MaxClingingSlope = 0.6f;
+
+	/**
+	 * Optional extra restriction on Moisture (precipitation availability) beyond the implicit "some
+	 * snow can accumulate even in modest moisture" baseline - disabled (default) lets any non-zero
+	 * Moisture contribute; enable to require real wet conditions (e.g. Min 0.4) before snow favors
+	 * at all, for a planet where only genuinely stormy peaks should snowcap.
+	 */
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Simulation")
+	FSolarOrbzMaskRange MoistureRange;
+
+	virtual float GetWeight(const FSolarOrbzBiomeSampleContext& Context) const override;
+	virtual bool NeedsClimateData() const override { return true; }
+	virtual bool NeedsSlope() const override { return true; }
 };
 
 // ================================================================================================
