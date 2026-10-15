@@ -262,19 +262,42 @@ trench/cliff WALLS, not at elevation extrema, since a local max/min is where the
 definition, not where it's steepest), and independently recomputed one row's position vector magnitude
 by hand (404066.75m) against that row's own Radius + Elevation (400,000m + 4,066.75m) - exact match.
 
-**On the exact PCG/PCGEx node that turns a DataTable into point data:** genuinely could not verify a
-specific current node name for this in this environment (no live UE5.8 editor, no PCGEx installed) -
-web search turned up Epic's own core PCG framework having external-data/row-to-point machinery
-(`FPCGExternalDataContext`) but not a confirmed node name, and PCGEx's own documentation describes it
-as doing "data sampling and blending... between point sets, surfaces, splines, and textures" without
-surfacing its exact external-file-import mechanics either. What IS fully verified and version-stable:
-the CSV itself, and that a code-defined `FTableRowBase`-derived USTRUCT with UPROPERTY names matching
-the CSV's header row (case-sensitive) is the long-standing, engine-version-independent way to import a
-CSV as a UE DataTable at all - `FSolarOrbzPCGScatterPointRow` does exactly that. From a DataTable of
-that type, search your installed engine/PCGEx version's node palette for a Data Table point source;
-once points exist with these attributes, any PCGEx (or vanilla PCG) filter node can branch on
-`BiomeName` the way described above. This half of the pipeline is left to verify against your actual
-installed version rather than asserted as fact here.
+**Verified directly against the real PCGEx docs** (pcgex.gitbook.io, fetched and cross-checked across
+several of its pages rather than assumed from training data) **- correcting and sharpening the honest
+"couldn't verify" this section originally shipped with:**
+
+- **PCGEx's own node library has no CSV/DataTable import category at all** - confirmed by reading its
+  Node Library overview, which lists exactly 13 top-level categories (Common Settings, Clusters,
+  Filters, Metadata, Pathfinding, Paths, Sampling, Shapes, Staging, Tensors, Topology, Spatial,
+  Utilities) and none of them is "import external data." Getting a DataTable's rows onto the graph as
+  points is squarely core PCG's (Epic's own framework, not PCGEx) job - PCGEx picks up from there.
+  `FSolarOrbzPCGScatterPointRow` + this CSV still gets you a correctly-shaped DataTable; search your
+  installed engine version's own node palette (not PCGEx's) for how it turns one into points.
+- **PCGEx DOES have a confirmed, real path that doesn't need the CSV at all for BiomeName specifically:
+  its Sampling category includes a genuine three-stage "Textures" pipeline** (Definition - picks the
+  channel/output type/scaling; Loading - loads the texture, with an explicit choice between bilinear
+  and **point** filtering; Sampling - reads values at UV coordinates taken from existing point
+  attributes, writing a new point attribute). This is close to a perfect match for
+  `_biomeid_ue5.png`: generate a dense point cloud some other way (e.g. a surface sampler on the
+  imported Heightmap Layer's own mesh), make sure each point carries a UV attribute in this tool's own
+  equirectangular convention (U = `0.5 + atan2(Y, X) / (2*PI)`, V = `acos(Z / R) / PI` for a point at
+  local position `(X, Y, Z)` relative to planet center, `R` the radius - the same formula
+  `FLatLongGrid`/`FSolarOrbzLatLongGrid` both already use), then feed that UV and the texture into
+  PCGEx's Textures sampler with **point filtering explicitly selected** (not the default/bilinear) for
+  exactly the reason given above - and the result is a per-point `BiomeName`-equivalent attribute with
+  no DataTable step at all. The docs describe this pipeline's three stages clearly but don't surface
+  the exact verbatim node title text for each stage (gitbook's own content didn't expose it to repeated
+  fetching) - search the Sampling category for "Texture" once you're in the node picker.
+- **For matching `BiomeName` against a value once points have it (either path above):** PCGEx's
+  Filters > Point Filters > Attribute Filters category is confirmed to include an exact-match string
+  filter ("test whether a string attribute equals a given value"), a substring filter, prefix/suffix
+  filters, and an Enum filter (checks an integer-backed attribute against named enum entries) -
+  whichever best fits how you've modeled biome-to-scatter-rule matching in your own graph. For the
+  CSV's numeric columns (`Slope`, `ElevationCm`, `TemperatureKelvin`, `Moisture`), `Filter : Compare
+  (Numeric)` is a confirmed exact node name for comparisons, and a confirmed `Range` filter variant
+  exists for min/max bounds - directly usable against a `FSolarOrbzBiomeScatterEntry`'s own
+  `MinSlope`/`MaxSlope`. `Uber Filter` (splits Inside/Outside) and `Filter Group` (set to `Or` for
+  "any of several filters") are the confirmed nodes for combining several of these into one decision.
 
 ## GUI usage
 

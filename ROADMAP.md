@@ -1230,6 +1230,33 @@ commitment or a schedule - just a place these don't get lost between sessions.
     standing, version-independent UE behavior) and left the exact downstream node as something to check
     against the user's own installed version, rather than guessing a name the way the first Compression
     Settings draft did.
+  - **Ninth follow-up: the user supplied the real PCGEx documentation (pcgex.gitbook.io) to close the
+    exact gap the eighth follow-up left open.** Fetched and cross-checked several of its pages (Node
+    Library overview, Filters, Sampling/Textures, Point Filters/Attribute Filters) rather than taking
+    any single page's summary at face value. Confirmed, and corrected the README's previous hedge with,
+    two concrete findings: PCGEx's own node library has NO data-import category at all (13 top-level
+    categories enumerated directly from its overview page - Common Settings/Clusters/Filters/Metadata/
+    Pathfinding/Paths/Sampling/Shapes/Staging/Tensors/Topology/Spatial/Utilities - getting a DataTable's
+    rows onto the graph as points is core PCG's job, not PCGEx's, so the CSV + `FSolarOrbzPCGScatterPointRow`
+    pairing from the eighth follow-up is still the right shape, just handed off one level up from where
+    PCGEx itself starts); and PCGEx DOES have a confirmed, genuinely better-matched alternative for
+    `BiomeName` specifically that needs no DataTable step at all - a real three-stage Textures sampling
+    pipeline under its Sampling category (Definition/Loading/Sampling) that reads a texture at per-point
+    UV and writes a new point attribute, with an explicit Loading-stage choice between bilinear and
+    POINT filtering - exactly the discrete-category correctness requirement `_biomeid_ue5.png`'s own
+    README section already called out, now backed by a real node that actually offers that choice.
+    Documented the UV formula (`FLatLongGrid`/`FSolarOrbzLatLongGrid`'s own
+    `U = 0.5 + atan2(Y,X)/(2*PI)`, `V = acos(Z/R)/PI`) so a point cloud without matching UVs already can
+    get them. Also confirmed real, usable node names for downstream filtering: `Filter : Compare
+    (Numeric)` and a Range filter variant (both directly useful against the CSV's Slope/Elevation/
+    Temperature/Moisture columns and a `FSolarOrbzBiomeScatterEntry`'s own `MinSlope`/`MaxSlope`), an
+    Attribute Filters category confirmed to include an exact-match string filter plus substring/prefix/
+    suffix/Enum variants (for `BiomeName` matching from either path), and `Uber Filter`/`Filter Group`
+    for combining several into one decision. Left one thing honestly still unconfirmed rather than
+    guessed a second time: gitbook's own content didn't surface the exact verbatim node title text for
+    the Textures pipeline's three stages or the precise string-exact-match filter's title, despite
+    repeated fetching - documented the categories/behavior that IS confirmed and named what to search
+    for in the node picker instead of inventing a title.
 
 ## Documentation
 
