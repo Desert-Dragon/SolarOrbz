@@ -631,18 +631,48 @@ commitment or a schedule - just a place these don't get lost between sessions.
     for no real benefit. Persistence/Lacunarity fixed at 0.5/2.0 (no domain warp) rather than
     separately authored fields, same "mask weight doesn't need a height layer's full authoring
     surface" reasoning as the Threshold-not-a-whole-second-mask-type choice above.
-  - **Deliberately NOT started**: WC's "Layer" Distribution category (Area/Border Blend/Filter
-    Change/Mask paint/Model/Path/Polygon/Rivers/Simulation) - interactive authoring tools (paint
-    brushes, a spline/path tool, a river generator, simulation outputs - water flow accumulation, snow
-    melt - this plugin doesn't compute anywhere) rather than more range-based math, so none of it fits
-    the existing `USolarOrbzBiomeMask` polymorphic-range-class pattern the way Sun Exposure/Noise Mask
-    both do. Each is its own separate, larger undertaking - scoped as a future phase, not attempted as
-    a shallow/fake version here. Not compiled against a live UE5.8 editor (none available in this
-    environment, this whole session's standing constraint) - hand-matched against this file's own
-    established `NeedsSlope`/`EstimateSlopeUpTo`/Composite-Mask-recursion-guard conventions instead,
-    including tracing through exactly where every existing `FSolarOrbzBiomeSampleContext` gets
-    constructed (both Pass A call sites and both Pass B call sites) rather than assuming a single
-    construction point.
+  - **Deliberately NOT started in this pass**: WC's "Layer" Distribution category (Area/Border
+    Blend/Filter Change/Mask paint/Model/Path/Polygon/Rivers/Simulation) - interactive authoring
+    tools (paint brushes, a spline/path tool, a river generator, simulation outputs - water flow
+    accumulation, snow melt - this plugin doesn't compute anywhere) rather than more range-based
+    math, so none of it fits the existing `USolarOrbzBiomeMask` polymorphic-range-class pattern the
+    way Sun Exposure/Noise Mask both do. Each is its own separate, larger undertaking - scoped as a
+    future phase, not attempted as a shallow/fake version here. Not compiled against a live UE5.8
+    editor (none available in this environment, this whole session's standing constraint) - hand-
+    matched against this file's own established `NeedsSlope`/`EstimateSlopeUpTo`/Composite-Mask-
+    recursion-guard conventions instead, including tracing through exactly where every existing
+    `FSolarOrbzBiomeSampleContext` gets constructed (both Pass A call sites and both Pass B call
+    sites) rather than assuming a single construction point.
+  - **Phase 2, asked directly to make the Layer category "the primary goal for right now"**: of WC's
+    9 Layer entries, landed the 4 that are pure placed-geometry math rather than interactive
+    authoring tools - `USolarOrbzAreaBiomeMask` (a circular region, Latitude/Longitude center +
+    Radius, soft edge), `USolarOrbzPolygonBiomeMask` (an ordered, implicitly-closed list of
+    Latitude/Longitude vertices), `USolarOrbzPathBiomeMask` (an ordered, open polyline with its own
+    Width), and `USolarOrbzBorderBlendBiomeMask` (an `Instanced` reference to any other mask type,
+    weight 1.0 exactly at that mask's own 0.5-weight transition, fading out `BandHalfWidth` away from
+    it in either direction - a ring around whatever boundary the referenced mask defines). The other
+    5 (Mask paint, Model, Rivers, Simulation, Filter Change) still aren't started, for the same
+    reasons as phase 1's note above plus one more specific to Filter Change: it would need a mask to
+    know which stack layer index it's attached to, to diff that layer's own before/after height - a
+    bigger change to the mask/context shape than a new leaf mask type, not attempted alongside these 4.
+    The real design problem Polygon/Path both hit: "is this point near a set of points" doesn't
+    reduce to flat 2D math directly on a sphere. Solved by reusing (not reinventing) the exact
+    azimuthal-equidistant local-tangent-plane projection the standalone tool's own `ShapeStampNode`
+    already established for its Canyon archetype - project every vertex and the query point into one
+    shared 2D frame centered on the shape's own average direction, then run ordinary flat point-in-
+    polygon (the standard PNPOLY ray-casting algorithm) and point-to-segment-distance math on the
+    projected points. A full spherical cross-track/great-circle-segment-distance formula was worked
+    out by hand first and then deliberately set aside in favor of this - reusing one already-reasoned-
+    through projection technique across both new mask types is lower-risk with no compiler to catch a
+    sign error in a second, more intricate piece of hand-derived spherical trig. Border Blend needed
+    no new math at all - just reads another mask's own `GetWeight()` and forwards its three `Needs*`
+    flags, mirroring how `USolarOrbzCompositeBiomeMask` already forwards them across a list of
+    referenced Biomes. Reused `USolarOrbzStampTerrainLayer`'s own (private) Latitude/Longitude ->
+    direction formula verbatim (confirmed identical to the standalone tool's own
+    `DirectionFromLatLongDegrees` - this plugin and that tool independently converged on the same
+    convention) rather than inventing a second one, kept as its own small copy in
+    `SolarOrbzBiomeSystem.cpp` since the original is private to an unrelated class not worth exposing
+    just for this.
 
 - **PCG Biome Core integration** for content scattering (trees, rocks, and eventually
   civilization - roads, farms, settlements). SolarOrbz's Climate + BiomeStack system stays the

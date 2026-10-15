@@ -18,11 +18,12 @@
 // panel shape are what's referenced, not any of its code or assets), which splits mask inputs into
 // Noise/Layer/Terrain categories. Climate Mask already covered most of its "Terrain" category
 // (Elevation=Height, Slope) plus true climate signals (Temperature/Moisture/Latitude) it doesn't
-// have at all; this pass adds Sun Exposure (WC's "Sun Direction") to Climate Mask, and a new Noise
-// Mask for WC's whole "Noise" category. WC's "Layer" category (Area/Border Blend/Mask paint/Model/
-// Path/Polygon/Rivers/Simulation) is deliberately NOT started here - those are interactive authoring
-// tools (brushes, splines, a river generator, simulation outputs this plugin doesn't compute), not
-// more range-based math, and each is its own separate undertaking.
+// have at all; a later pass added Sun Exposure (WC's "Sun Direction") to Climate Mask, and a Noise
+// Mask for WC's whole "Noise" category. This pass covers 4 of WC's 9 "Layer" category entries - Area
+// Mask, Polygon Mask, Path Mask, Border Blend Mask - the ones that are placed geometry (typed
+// Latitude/Longitude points), not interactive authoring tools. The other 5 (Mask paint/Model/Rivers/
+// Simulation/Filter Change) are deliberately NOT started - see the comment block directly above
+// those 4 classes below for why each one specifically doesn't fit this same pattern.
 
 #pragma once
 
@@ -307,6 +308,146 @@ public:
 	FSolarOrbzMaskRange Threshold;
 
 	virtual float GetWeight(const FSolarOrbzBiomeSampleContext& Context) const override;
+};
+
+// ================================================================================================
+// USolarOrbzAreaBiomeMask / USolarOrbzPolygonBiomeMask / USolarOrbzPathBiomeMask /
+// USolarOrbzBorderBlendBiomeMask - World Creator's "Layer" Distribution category: hand-placed
+// geometric regions/lines, as opposed to Terrain's shape-derived signals or Noise's procedural
+// field. Covers 4 of WC's 9 Layer entries (Area, Polygon, Path, Border Blend) - the ones that are
+// pure placed-geometry math, authored by typing in an ordered list of Latitude/Longitude points,
+// same spirit as ShapeStampNode's own placement convention in the standalone tool (and this file's
+// existing USolarOrbzStampTerrainLayer, whose exact Latitude/Longitude -> direction formula these
+// reuse verbatim, via SolarOrbzSphericalGeometry::DirectionFromLatLong below, for one consistent
+// placement convention plugin-wide). WC's other 5 Layer entries - Mask (hand-painted, needs a real
+// brush tool), Model (an imported mesh's own footprint), Rivers (flow-routed channel carving),
+// Simulation (reads a water-flow/snow-melt simulation this plugin doesn't compute anywhere), Filter
+// Change (reacts to a specific stack layer's own before/after delta, which would need a mask to see
+// which stack index it's attached to - a bigger context-shape change) - are deliberately NOT
+// attempted here: either real interactive editor tooling (viewport painting, a live brush) too risky
+// to hand-write without ever running it in an actual UE5.8 editor, or blocked on a simulation/
+// plumbing change that doesn't exist yet. Each is its own separate undertaking, same reasoning as
+// last time's "Layer category deferred" note.
+//
+// Polygon/Path both need "is this point near a set of points on a sphere" math, which doesn't
+// reduce to flat 2D geometry directly - solved by projecting every point (vertices and the query
+// point alike) onto one shared local tangent plane via an azimuthal-equidistant projection centered
+// on the shape's own average direction (exact same technique ShapeStampNode's Canyon archetype
+// already uses in the standalone tool: the projected 2D distance between two points equals their
+// true great-circle angular distance, in radians, for anything not spanning more than roughly a
+// hemisphere from the projection center - an accepted approximation for a very large region, same
+// trade-off already accepted there), then doing ordinary flat-2D point-in-polygon/point-to-segment
+// math on the projected points. Deliberately NOT exact spherical trig (a cross-track/great-circle-
+// segment-distance formula was drafted and then set aside in favor of this - reusing one already-
+// reasoned-through projection technique across both new mask types is lower-risk than introducing a
+// second, more intricate piece of hand-derived spherical geometry with no compiler to catch a sign
+// error in either).
+// ================================================================================================
+
+UCLASS(EditInlineNew, meta = (DisplayName = "Area Mask"))
+class SOLARORBZ_API USolarOrbzAreaBiomeMask : public USolarOrbzBiomeMask
+{
+	GENERATED_BODY()
+
+public:
+	/** Where the area is centered, in degrees - same convention as USolarOrbzStampTerrainLayer's own Latitude/Longitude. */
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Area", meta = (ClampMin = "-90.0", ClampMax = "90.0"))
+	float LatitudeDegrees = 0.0f;
+
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Area", meta = (ClampMin = "-180.0", ClampMax = "180.0"))
+	float LongitudeDegrees = 0.0f;
+
+	/** How far the area reaches from its center, in degrees of arc along the sphere's surface. */
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Area", meta = (ClampMin = "0.01"))
+	float RadiusDegrees = 10.0f;
+
+	/** How gradual the transition at the edge is, in degrees. 0 = hard cutoff - same idea as FSolarOrbzMaskRange::Falloff. */
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Area", meta = (ClampMin = "0.0"))
+	float FalloffDegrees = 2.0f;
+
+	/** Weight outside the area instead of inside - "everywhere except here" rather than "only here". */
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Area")
+	bool bInvert = false;
+
+	virtual float GetWeight(const FSolarOrbzBiomeSampleContext& Context) const override;
+};
+
+UCLASS(EditInlineNew, meta = (DisplayName = "Polygon Mask"))
+class SOLARORBZ_API USolarOrbzPolygonBiomeMask : public USolarOrbzBiomeMask
+{
+	GENERATED_BODY()
+
+public:
+	/**
+	 * Ordered boundary points - X = Latitude degrees, Y = Longitude degrees, same convention as
+	 * Area Mask above. Implicitly closed (the last point connects back to the first) - at least 3
+	 * needed for a meaningful region; fewer always evaluates to 0 (outside everywhere).
+	 */
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Polygon")
+	TArray<FVector2D> VertexLatLongDegrees;
+
+	/** How gradual the transition at the boundary is, in degrees. 0 = hard cutoff. */
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Polygon", meta = (ClampMin = "0.0"))
+	float FalloffDegrees = 2.0f;
+
+	/** Weight outside the polygon instead of inside. */
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Polygon")
+	bool bInvert = false;
+
+	virtual float GetWeight(const FSolarOrbzBiomeSampleContext& Context) const override;
+};
+
+UCLASS(EditInlineNew, meta = (DisplayName = "Path Mask"))
+class SOLARORBZ_API USolarOrbzPathBiomeMask : public USolarOrbzBiomeMask
+{
+	GENERATED_BODY()
+
+public:
+	/**
+	 * Ordered points along the path - X = Latitude degrees, Y = Longitude degrees. NOT closed, unlike
+	 * Polygon Mask above - a line, not a region. At least 2 needed; fewer always evaluates to 0.
+	 */
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Path")
+	TArray<FVector2D> PointsLatLongDegrees;
+
+	/** Half-width of the path's full-weight core, in degrees of arc. */
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Path", meta = (ClampMin = "0.0"))
+	float WidthDegrees = 1.0f;
+
+	/** How gradual the transition beyond Width is, in degrees. 0 = hard cutoff. */
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Path", meta = (ClampMin = "0.0"))
+	float FalloffDegrees = 2.0f;
+
+	virtual float GetWeight(const FSolarOrbzBiomeSampleContext& Context) const override;
+};
+
+UCLASS(EditInlineNew, meta = (DisplayName = "Border Blend Mask"))
+class SOLARORBZ_API USolarOrbzBorderBlendBiomeMask : public USolarOrbzBiomeMask
+{
+	GENERATED_BODY()
+
+public:
+	/**
+	 * Any other mask type (an Area/Polygon/Climate/... Mask, picked from the same dropdown a Biome's
+	 * own Mask uses) - Border Blend reads its weight but doesn't use it directly; see BandHalfWidth.
+	 */
+	UPROPERTY(EditAnywhere, Instanced, Category = "SolarOrbz|BorderBlend")
+	TObjectPtr<USolarOrbzBiomeMask> ReferenceMask;
+
+	/**
+	 * Border Blend's own weight is 1.0 exactly where ReferenceMask's weight crosses 0.5 (its own
+	 * transition edge, wherever that falls), fading to 0.0 once ReferenceMask's weight is more than
+	 * BandHalfWidth away from 0.5 in either direction - a ring around whatever boundary
+	 * ReferenceMask itself defines, rather than the region on one side of it. 0 (unset/no Reference
+	 * Mask) always evaluates to 0.
+	 */
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|BorderBlend", meta = (ClampMin = "0.001", ClampMax = "0.5"))
+	float BandHalfWidth = 0.1f;
+
+	virtual float GetWeight(const FSolarOrbzBiomeSampleContext& Context) const override;
+	virtual bool NeedsClimateData() const override { return ReferenceMask && ReferenceMask->NeedsClimateData(); }
+	virtual bool NeedsSlope() const override { return ReferenceMask && ReferenceMask->NeedsSlope(); }
+	virtual bool NeedsLocalGradient() const override { return ReferenceMask && ReferenceMask->NeedsLocalGradient(); }
 };
 
 // ================================================================================================
