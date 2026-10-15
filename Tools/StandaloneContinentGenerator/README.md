@@ -392,6 +392,17 @@ The left panel follows the pipeline order:
 - **View** - Height/Biome toggle for the sphere's surface coloring, plus the visualization-only
   **Height Exaggeration** slider (not part of any config - lets you see relief that would otherwise be
   invisible at true Earth-like scale).
+- **Export** - an editable output-prefix text box plus an **Export to UE5** button: writes the exact
+  same files the CLI's own default run does (`<prefix>_heightmap_ue5.png`, `<prefix>_biomeid_ue5.png`,
+  `<prefix>_pcg_points.csv`, plus the four visualization PNGs) from whatever is currently baked/live-
+  edited right here in the preview - erosion included, if you've clicked Run Hydraulic/Thermal Erosion
+  - instead of requiring a drop back to the CLI with a hand-written config to reproduce the same
+  planet. Both frontends call the same `ExportPlanetToUE5` (`src/core/PlanetExport.h/.cpp`), so the
+  files are identical either way; see "Bringing a planet into UE5" and "PCG scatter-point dataset"
+  above for what to do with them. RadiusMeters for the PCG CSV's Slope column is taken from the
+  **Radius (km)** slider above, so it already matches whatever this preview is showing. A status line
+  under the button reports the written height range (the exact values to put in the UE plugin's
+  Heightmap Layer) once it's run, or "Export FAILED - see console" if a file couldn't be written.
 
 The bottom of the panel shows live Land coverage % (computed directly from the current baked height
 field, so it reflects Noise/HeightAdjust/erosion too, not just the raw Continent output).

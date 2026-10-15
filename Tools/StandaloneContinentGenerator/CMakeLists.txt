@@ -50,18 +50,21 @@ add_library(lodepng STATIC ${lodepng_SOURCE_DIR}/lodepng.cpp)
 target_include_directories(lodepng PUBLIC ${lodepng_SOURCE_DIR})
 
 # --- Core: portable generation math, no UE/UObject types, shared by CLI and GUI ---
+# PlanetExport.cpp (the UE5-import-ready PNG/CSV writers) is in core, not the CLI, specifically so
+# the GUI's own "Export" button can call the exact same code the CLI does - see PlanetExport.h.
 add_library(solarorbz_core STATIC
   src/core/NoiseBasis.cpp
   src/core/ContinentLayer.cpp
   src/core/Nodes/HydraulicErosionNode.cpp
   src/core/Nodes/ThermalErosionNode.cpp
+  src/core/PlanetExport.cpp
 )
 target_include_directories(solarorbz_core PUBLIC src/core)
-target_link_libraries(solarorbz_core PUBLIC nlohmann_json::nlohmann_json)
+target_link_libraries(solarorbz_core PUBLIC nlohmann_json::nlohmann_json stb_image_write lodepng)
 
 # --- CLI: config in, heightmap PNG + stats out ---
 add_executable(solarorbz_cli src/cli/main.cpp)
-target_link_libraries(solarorbz_cli PRIVATE solarorbz_core stb_image_write lodepng)
+target_link_libraries(solarorbz_cli PRIVATE solarorbz_core)
 
 # --- GUI: raylib + raygui live 3D preview ---
 if(SOLARORBZ_BUILD_GUI)

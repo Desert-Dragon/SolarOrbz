@@ -1296,6 +1296,35 @@ commitment or a schedule - just a place these don't get lost between sessions.
     dependency on the other side" approach `NoiseBasis.h`'s standalone-tool port already uses. Not
     compiled against a live UE5.8 editor (none available here, per this whole session's standing
     constraint) - hand-matched against this codebase's own established Json/FFileHelper usage instead.
+  - **Eleventh follow-up, asked directly: "now lets get that export button added to the program."**
+    The CLI's UE5-import-ready writers (`_heightmap_ue5.png`/`_biomeid_ue5.png`/`_pcg_points.csv`, plus
+    the four visualization PNGs) previously lived only in `src/cli/main.cpp`'s own anonymous namespace -
+    the GUI had no equivalent, so trying a config change meant dropping back to the CLI with a hand-
+    written JSON config to reproduce whatever was just tuned live in the 3D preview. Factored that
+    writer logic out into `src/core/PlanetExport.h/.cpp` (new `ExportPlanetToUE5()`, part of
+    `solarorbz_core` now, not the CLI) verbatim - same resample loop, same `WriteSeaLevelSplitPng`/
+    `WriteUE5HeightmapPng16`/`WriteUE5BiomeIdPng`/`WritePcgPointsCsv` - so the CLI and GUI share one
+    implementation instead of risking two copies drifting apart; the CLI's own `main()` was rewired onto
+    it and produces byte-identical output (confirmed - a before/after run at the same seed/prefix matches).
+    Added a new "Export" section to the GUI panel: an editable output-prefix `GuiTextBox` plus an
+    **Export to UE5** button that calls `ExportPlanetToUE5` on whatever's currently baked/live-edited
+    (`BakedTerrain`/`Climate`/`Biomes`, erosion included) at the `Radius (km)` slider's own value, with a
+    status line reporting the written height range (the exact numbers for the UE plugin's Heightmap
+    Layer) or a failure notice. One real build-time snag, not just application code: linking
+    `solarorbz_gui` failed with "multiple definition of `stbi_write_png`" and similar - raylib's own
+    `rtextures.c` embeds its own `stb_image_write.h` implementation (`SUPPORT_IMAGE_EXPORT`, on by
+    default), and once `PlanetExport.cpp`'s `STB_IMAGE_WRITE_IMPLEMENTATION` landed in a binary that
+    also links raylib (the GUI, not the CLI, which never linked raylib before), both definitions
+    collided at link time. Fixed with `STB_IMAGE_WRITE_STATIC` (a real, documented flag in stb_image_
+    write.h itself - confirmed by reading the fetched header directly rather than assuming the fix
+    would work) before the implementation include, giving every `stbi_write_*` symbol internal linkage
+    in that one translation unit. Actually built and run this time, not just hand-matched against
+    convention (a UE5.8 compiler still isn't available, but this tool has no UE dependency at all -
+    CMake fetches raylib/raygui/stb/lodepng/json and compiles clean): `solarorbz_cli` re-verified at a
+    test seed (output unchanged from before the refactor), and `solarorbz_gui` exercised under Xvfb with
+    synthetic X input (`xdotool`) - a real mousedown/mouseup on the Export button at its actual rendered
+    screen position produced all seven output files and the expected "Wrote `<prefix>`_* (height ...)"
+    status line, confirmed via screenshot, not just by reading the code.
 
 ## Documentation
 

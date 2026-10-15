@@ -11,6 +11,7 @@
 #include "Climate.h"
 #include "BiomeClassifier.h"
 #include "SphereMesh.h"
+#include "PlanetExport.h"
 
 #include <raylib.h>
 #include <rlgl.h>
@@ -279,6 +280,14 @@ int main()
     bool bNeedsClimateRefresh = false;
     bool bAlgorithmDropdownOpen = false;
     int32_t AlgorithmIndex = 0; // RadialSeeds=0, VoronoiGrowth=1, PlateTectonics=2
+
+    // "Export" section state (see below, near the Regenerate button) - writes the exact same
+    // UE5-import-ready files the CLI's --config run does (ExportPlanetToUE5, shared via
+    // src/core/PlanetExport.h), from whatever is currently baked/live-edited in this preview,
+    // instead of requiring a drop back to the CLI with a hand-written config to reproduce it.
+    char ExportPrefixBuf[128] = "solarorbz_export";
+    bool bExportPrefixEditMode = false;
+    char ExportStatusBuf[192] = "";
 
     // The panel's own content (Planet/Algorithm/Base Layer Adjust/.../stats) is taller than
     // ScreenHeight once every section is visible at once (confirmed - the "Simulated age"/"Plates"
@@ -592,6 +601,40 @@ int main()
         {
             RecomputeClimateAndRefresh();
             bNeedsClimateRefresh = false;
+        }
+
+        SectionLabel("Export");
+        {
+            // Click toggles edit mode, same pattern GuiTextBox's own raygui examples use - no GuiLock
+            // needed around it (unlike the Algorithm dropdown above): a text box doesn't expand over
+            // other controls, it just captures keyboard input while editing.
+            if (GuiTextBox(Rectangle{ 10, (float)Y, PanelWidth - 20.0f, 22 }, ExportPrefixBuf, (int)sizeof(ExportPrefixBuf), bExportPrefixEditMode))
+            {
+                bExportPrefixEditMode = !bExportPrefixEditMode;
+            }
+            Y += 26;
+
+            if (GuiButton(Rectangle{ 10, (float)Y, PanelWidth - 20.0f, 26 }, "Export to UE5"))
+            {
+                // Writes from BakedTerrain/Climate/Biomes exactly as currently shown in the 3D
+                // preview (erosion included, if "Run Hydraulic/Thermal Erosion" was clicked) - not a
+                // fresh bake. RadiusMeters mirrors the "Radius (km)" slider above (Viz.PreviewRadiusMeters)
+                // so the PCG points CSV's Slope column means the same thing here as it would reimported
+                // into a UE planet actually built at this radius - see WritePcgPointsCsv's own comment.
+                FPlanetExportOptions ExportOptions;
+                ExportOptions.OutPrefix = ExportPrefixBuf;
+                ExportOptions.RadiusMeters = (double)Viz.PreviewRadiusMeters;
+                const FPlanetExportResult ExportResult = ExportPlanetToUE5(BakedTerrain, Climate, Biomes, ClimateConfig, ExportOptions);
+                std::snprintf(ExportStatusBuf, sizeof(ExportStatusBuf),
+                    ExportResult.bOk ? "Wrote %s_* (height %.0fm..%.0fm)" : "Export FAILED - see console (%s_*, %.0fm..%.0fm attempted)",
+                    ExportPrefixBuf, ExportResult.MinHeightMeters, ExportResult.MaxHeightMeters);
+            }
+            Y += 30;
+
+            if (ExportStatusBuf[0] != '\0')
+            {
+                GuiLabel(Rectangle{ 10, (float)Y, PanelWidth - 20.0f, 18 }, ExportStatusBuf); Y += 18;
+            }
         }
 
         const FContinentStatus Status = ContinentNodeRaw->Layer.GetStatus();
