@@ -1325,6 +1325,52 @@ commitment or a schedule - just a place these don't get lost between sessions.
     synthetic X input (`xdotool`) - a real mousedown/mouseup on the Export button at its actual rendered
     screen position produced all seven output files and the expected "Wrote `<prefix>`_* (height ...)"
     status line, confirmed via screenshot, not just by reading the code.
+  - **Twelfth follow-up: reviewed World Creator (a real commercial terrain tool) as a feature
+    reference**, at the user's direction - not decompiled or run (a 383MB closed-source Windows
+    installer the user shared was deliberately NOT fetched/executed in this environment; its public
+    features page and three real editor screenshots were reviewed instead, same spirit as any
+    competitive-analysis review). One concretely scoped, user-confirmed feature came out of that
+    review: **Shape Stamps** - hand-placed archetype terrain features (WC's own "Shape Layers":
+    a Shape Type dropdown, then Base/Placement/Noise/Fractal sections per layer), as opposed to
+    Continent's seed-grown landmasses or Noise's everywhere-at-once fractal detail.
+    Landed as `ShapeStampNode` (`src/core/Nodes/ShapeStampNode.h`, new) with 4 archetypes - Mountain
+    (a plain radial dome), Volcano (the same cone with a crater notch cut into the summit), Crater (a
+    bowl plus a raised rim, no summit cone), and Canyon (a directional V-shaped trench along a
+    rotatable axis, standing in for WC's whole Cliff/Cracks/Furrows family) - chosen to cover the
+    structurally distinct cases WC's own larger archetype list falls into; more archetypes are the
+    same per-archetype profile-function pattern added to one switch, not a framework change. Each
+    stamp is placed by explicit Latitude/Longitude (matching WC's own hand-set Offset X/Z fields - a
+    Shape Layer is positioned deliberately, not scattered from a seed) via an exact azimuthal-
+    equidistant projection onto the tangent plane at the stamp's own center - reusing the same
+    `acos(Dot(Direction, Center))` angular-distance pattern `ContinentLayer::GetRawHeightRadialSeeds`
+    already established for its own radial seeds, not a new approximation. Each stamp also carries its
+    own nested noise overlay (WC's own Noise/Fractal sections), masked by the same footprint falloff
+    as the base shape. Added `DirectionFromLatLongDegrees` to `LatLongGrid.h` (the exact inverse of
+    `CellToDirection`'s own convention) to support explicit-coordinate placement, a first for this
+    codebase (every existing seed/placement system grows from a random direction, not an author-typed
+    coordinate).
+    Wired into both frontends: the CLI's config JSON gained a `ShapeStamps` array (same "array in
+    config, see Pipeline above" shape as `Noise`); the GUI gained a new "Shape Stamp" panel section
+    editing `Stamps[0]` only (same "CLI array, GUI edits one" split already established for Secondary
+    Noise), pre-seeded disabled so a fresh planet never silently gets an unexpected mountain, with
+    Crater Depth Frac / Length+Rotation sliders shown conditionally only for the archetypes that use
+    them. Verified, not just hand-matched: a CLI render (Seed 7, one of each archetype at different
+    coordinates, including a 30-degree-rotated Canyon) produced four clearly distinct, correctly-
+    shaped silhouettes in the sea-level-split heightmap PNG - exactly the solid-dome/notched-cone/
+    bowl-plus-rim/tapered-trench shapes intended, at the expected rotation. Also exercised live through
+    the GUI under Xvfb: enabling the panel's stamp and raising its Height slider visibly bulged the 3D
+    preview's sphere silhouette at the expected location - confirms the panel's wiring, not just the
+    underlying math. (One real but environment-specific snag along the way, not a product bug: rapid
+    synthetic xdotool clicks mixing left-button and scroll-wheel input occasionally produced a spurious
+    extra checkbox toggle under Xvfb - reproduced, isolated to that test harness by re-running single
+    clicks in isolation, and confirmed stable there; a physical mouse's distinct scroll/left-button
+    inputs don't have this failure mode.)
+    The biome-distribution overhaul the same World Creator review surfaced (a much richer Noise/Layer/
+    Terrain-signal-driven mask-selector system - Curvature/Flow/Occlusion/Sun Direction/Sea Level and
+    more, replacing `USolarOrbzClimateBiomeMask`'s fixed Elevation/Latitude/Temperature/Moisture/Slope
+    ranges) is deliberately NOT started here - scoped as its own, larger follow-up, per explicit
+    decision to tackle Shape Stamps first since it was the concretely confirmed, smaller-footprint
+    piece.
 
 ## Documentation
 

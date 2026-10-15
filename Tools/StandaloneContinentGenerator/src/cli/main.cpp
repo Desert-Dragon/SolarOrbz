@@ -10,6 +10,7 @@
 #include "Nodes/CombineNode.h"
 #include "Nodes/HydraulicErosionNode.h"
 #include "Nodes/ThermalErosionNode.h"
+#include "Nodes/ShapeStampNode.h"
 #include "Climate.h"
 #include "BiomeClassifier.h"
 #include "PlanetExport.h"
@@ -106,6 +107,33 @@ namespace
         if (J.contains("Lacunarity")) Config.Lacunarity = J.at("Lacunarity").get<float>();
         if (J.contains("AmplitudeMeters")) Config.AmplitudeMeters = J.at("AmplitudeMeters").get<float>();
         if (J.contains("SeedOffset")) Config.SeedOffset = J.at("SeedOffset").get<int32_t>();
+    }
+
+    EShapeStampArchetype ShapeStampArchetypeFromString(const std::string& S)
+    {
+        if (S == "Volcano") return EShapeStampArchetype::Volcano;
+        if (S == "Crater") return EShapeStampArchetype::Crater;
+        if (S == "Canyon") return EShapeStampArchetype::Canyon;
+        return EShapeStampArchetype::Mountain;
+    }
+
+    void ApplyJsonToShapeStamp(const nlohmann::json& J, FShapeStamp& Stamp)
+    {
+        if (J.contains("Enabled")) Stamp.bEnabled = J.at("Enabled").get<bool>();
+        if (J.contains("Archetype")) Stamp.Archetype = ShapeStampArchetypeFromString(J.at("Archetype").get<std::string>());
+        if (J.contains("LatitudeDegrees")) Stamp.LatitudeDegrees = J.at("LatitudeDegrees").get<float>();
+        if (J.contains("LongitudeDegrees")) Stamp.LongitudeDegrees = J.at("LongitudeDegrees").get<float>();
+        if (J.contains("RadiusDegrees")) Stamp.RadiusDegrees = J.at("RadiusDegrees").get<float>();
+        if (J.contains("LengthDegrees")) Stamp.LengthDegrees = J.at("LengthDegrees").get<float>();
+        if (J.contains("RotationDegrees")) Stamp.RotationDegrees = J.at("RotationDegrees").get<float>();
+        if (J.contains("HeightMeters")) Stamp.HeightMeters = J.at("HeightMeters").get<float>();
+        if (J.contains("CraterDepthFraction")) Stamp.CraterDepthFraction = J.at("CraterDepthFraction").get<float>();
+        if (J.contains("NoiseType")) Stamp.NoiseType = NoiseTypeFromString(J.at("NoiseType").get<std::string>());
+        if (J.contains("NoiseStrengthMeters")) Stamp.NoiseStrengthMeters = J.at("NoiseStrengthMeters").get<float>();
+        if (J.contains("NoiseFrequency")) Stamp.NoiseFrequency = J.at("NoiseFrequency").get<float>();
+        if (J.contains("NoiseOctaves")) Stamp.NoiseOctaves = J.at("NoiseOctaves").get<int32_t>();
+        if (J.contains("NoisePersistence")) Stamp.NoisePersistence = J.at("NoisePersistence").get<float>();
+        if (J.contains("NoiseLacunarity")) Stamp.NoiseLacunarity = J.at("NoiseLacunarity").get<float>();
     }
 
     void ApplyJsonToHeightAdjustConfig(const nlohmann::json& J, FHeightAdjustConfig& Config)
@@ -250,6 +278,18 @@ int main(int argc, char** argv)
     if (RootJson.contains("Continent")) ApplyJsonToContinentConfig(RootJson.at("Continent"), ContinentNodePtr->Config);
     ContinentNode* ContinentNodeRaw = ContinentNodePtr.get();
     Pipeline.Nodes.push_back(std::move(ContinentNodePtr));
+
+    if (RootJson.contains("ShapeStamps") && RootJson.at("ShapeStamps").is_array())
+    {
+        auto Node = std::make_unique<ShapeStampNode>();
+        for (const nlohmann::json& StampJson : RootJson.at("ShapeStamps"))
+        {
+            FShapeStamp Stamp;
+            ApplyJsonToShapeStamp(StampJson, Stamp);
+            Node->Stamps.push_back(Stamp);
+        }
+        Pipeline.Nodes.push_back(std::move(Node));
+    }
 
     if (RootJson.contains("Noise") && RootJson.at("Noise").is_array())
     {

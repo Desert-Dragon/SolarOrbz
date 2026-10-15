@@ -100,6 +100,22 @@ inline void GetGridNeighbors4(int32_t Idx, int32_t GridW, int32_t GridH, int32_t
     OutNeighbors[3] = (int32_t)MathUtil::Clamp(Y - 1, 0, GridH - 1) * GridW + X;
 }
 
+/**
+ * Inverse of FLatLongGrid::CellToDirection's own convention (not a member since it needs no Width/
+ * Height - it's exact for any point, not just a grid cell), for features placed by explicit
+ * coordinate rather than grown from a seed (e.g. ShapeStampNode) - LatitudeDegrees: +90 at the
+ * north pole (+Z) .. -90 at the south pole; LongitudeDegrees: matches CellToDirection's own
+ * Azimuth = (U-0.5)*2*PI, so 0 deg sits at U=0.5.
+ */
+inline Vec3 DirectionFromLatLongDegrees(double LatitudeDegrees, double LongitudeDegrees)
+{
+    const double Polar = MathUtil::DegreesToRadians(90.0 - LatitudeDegrees);
+    const double Azimuth = MathUtil::DegreesToRadians(LongitudeDegrees);
+    const double Z = std::cos(Polar);
+    const double SinPolar = std::sin(Polar);
+    return Vec3(SinPolar * std::cos(Azimuth), SinPolar * std::sin(Azimuth), Z);
+}
+
 /** Nearest grid cell index for an arbitrary direction - good enough for picking a growth/plate seed's starting cell. */
 inline int32_t DirectionToNearestCellIdx(const FLatLongGrid& Grid, const Vec3& Dir)
 {

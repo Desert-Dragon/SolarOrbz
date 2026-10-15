@@ -31,6 +31,7 @@ of scope here.
 | Stage | Node | Source technique |
 |---|---|---|
 | Base shape | `ContinentNode` | The ported Continent Layer (Radial Seeds / Voronoi Growth / Plate Tectonics) |
+| Hand-placed features | `ShapeStampNode` (one or more) | Archetype "stamps" (Mountain/Volcano/Crater/Canyon) placed at an explicit Latitude/Longitude - see "Shape Stamps" below |
 | Additive detail | `NoiseNode` (one or more) | Fractal (fBm) Perlin/Ridged/Billow/Value/Voronoi noise |
 | Base-layer adjust | `HeightAdjustNode` | Scale / offset / power-curve remap of the whole field |
 | (built, not yet wired) | `CombineNode` | Secondary-noise blend (Add/Subtract/Multiply/Max/Min/Average) |
@@ -115,6 +116,7 @@ omitted stages/fields keep their defaults:
   "Continent": { "Algorithm": "PlateTectonics", "NumPlates": 16, "MountainHeightMeters": 6000.0 },
   "AdvanceSteps": 20,
   "AdvanceMyr": 10,
+  "ShapeStamps": [ { "Archetype": "Volcano", "LatitudeDegrees": 20.0, "LongitudeDegrees": -60.0, "RadiusDegrees": 12.0, "HeightMeters": 4000.0 } ],
   "Noise": [ { "Amplitude": 150.0, "Frequency": 4.0 } ],
   "HeightAdjust": { "ScaleMultiplier": 1.0, "PowerCurve": 1.0 },
   "HydraulicErosion": { "NumDroplets": 2000 },
@@ -124,10 +126,12 @@ omitted stages/fields keep their defaults:
 }
 ```
 
-`Continent`/`Noise`/`HeightAdjust` fields are named identically to their `FContinentConfig`/
-`FNoiseNodeConfig`/`FHeightAdjustConfig` C++ struct fields; `HydraulicErosion`/`ThermalErosion`/
-`Climate`/`Biome` likewise match their own config structs (see "Pipeline" above for the header each
-lives in). Output: `<out-prefix>_height.png` (a sea-level-split grayscale heightmap - ocean and land
+`Continent`/`ShapeStamps`/`Noise`/`HeightAdjust` fields are named identically to their
+`FContinentConfig`/`FShapeStamp`/`FNoiseNodeConfig`/`FHeightAdjustConfig` C++ struct fields;
+`HydraulicErosion`/`ThermalErosion`/`Climate`/`Biome` likewise match their own config structs (see
+"Pipeline" above for the header each lives in). `ShapeStamps` is a JSON array like `Noise` - as many
+entries as wanted, each one independently placed and archetyped - see "Shape Stamps" below for the
+full field list and what each archetype does. Output: `<out-prefix>_height.png` (a sea-level-split grayscale heightmap - ocean and land
 are normalized separately around a fixed sea-level midpoint, since a real planet's ocean-trench vs.
 eroded-land relief span wildly different magnitude ranges and a single linear min/max normalization
 crushes land into an indistinguishable sliver - **view-only, not reimportable**: see below for that),
@@ -136,6 +140,55 @@ crushes land into an indistinguishable sliver - **view-only, not reimportable**:
 `<out-prefix>_biomeid_ue5.png` (discrete biome-ID map, see below), `<out-prefix>_pcg_points.csv`
 (scatter-point attribute dataset, see below), plus land coverage %, per-biome mix %, and (Plate
 Tectonics only) simulated age and live plate count, printed to stdout.
+
+## Shape Stamps
+
+Hand-placed terrain features - "put a volcano here, a canyon there" - as opposed to Continent's own
+seed-grown/simulated landmasses or Noise's everywhere-at-once fractal detail. Modeled directly on
+World Creator's own "Shape Layers" (`Landscape Settings` panel: a `Shape Type` archetype dropdown,
+then `Base`/`Placement`/`Noise`/`Fractal` sections) - a real competing terrain tool whose public
+feature page and screenshots were reviewed for this (not decompiled or copied - the archetype concept
+and panel layout are what's modeled, not any of its code or assets).
+
+Four archetypes ship (`EShapeStampArchetype`, `src/core/Nodes/ShapeStampNode.h`), chosen to cover the
+structurally distinct cases WC's own larger archetype list (Alpine/Canyon/Cliff/Cracks/Crater/Crater
+Field/Dunes/Furrows/Island/Mountain/Noise/Single Crack/Volcano) falls into - more are the same
+per-archetype profile-function pattern added to `ApplyStamp`'s switch, not a framework change:
+
+| Archetype | Shape |
+|---|---|
+| `Mountain` | A single smooth radial dome |
+| `Volcano` | The same cone, with a crater notch cut into the summit |
+| `Crater` | A central bowl plus a raised rim, no summit cone |
+| `Canyon` | A directional V-shaped trench along an axis, fading at both ends - stands in for WC's whole Cliff/Cracks/Furrows family |
+
+Every stamp is placed by explicit `LatitudeDegrees`/`LongitudeDegrees` (not grown from a random seed
+direction like Continent's own radial seeds) - matching WC's own hand-set `Offset X`/`Offset Z`
+fields: a Shape Layer is something an author positions deliberately. `RadiusDegrees` is the angular
+footprint for every archetype (Canyon's across-axis half-width too); `LengthDegrees`/
+`RotationDegrees` only matter for Canyon (WC's own panel has the same "not every field applies to
+every archetype" shape - Rotation/elongation only meaningfully vary for its directional shapes
+either). Each stamp also carries its own nested noise overlay (`NoiseType`/`NoiseStrengthMeters`/
+`NoiseFrequency`/`NoiseOctaves`/...) - WC's own `Noise`/`Fractal` sections under a Shape Layer -
+masked by the same footprint falloff as the base shape so detail doesn't bleed past the stamp's edge.
+
+Placement math is an exact azimuthal-equidistant projection onto the tangent plane at the stamp's own
+center (not a flat-earth shortcut) - `Perp = (Dir - Center*Dot(Dir,Center)).Normalized() * acos(Dot
+(Dir,Center))` gives a 2D offset whose magnitude is the true great-circle angular distance from
+center in whatever bearing `Dir` sits at; Canyon's along/across-axis coordinates are just that
+vector's dot product against the stamp's own rotated tangent frame. Same `acos(Dot(...))`
+angular-distance pattern `ContinentLayer::GetRawHeightRadialSeeds` already uses for its own radial
+seeds, reused here rather than reinvented.
+
+The GUI exposes one stamp (`ShapeStampNodeRaw->Stamps[0]`, pre-seeded disabled so a fresh planet never
+silently gets an unexpected mountain) - the same "CLI supports an array, GUI edits one" split this
+file already uses for Noise. Verified by CLI render at Seed 7 with one of each archetype placed at
+different coordinates (a Mountain, Volcano, Crater, and a 30deg-rotated Canyon) - the sea-level-split
+heightmap PNG showed four clearly distinct, correctly-shaped silhouettes: a solid dome, a bright rim
+with a dark summit notch, a subdued rim around a dark bowl (no summit), and a tapered diagonal trench
+at the expected rotation. Also exercised through the GUI itself (Xvfb, synthetic input): enabling the
+panel's stamp and raising its Height slider visibly bulged the live 3D preview's sphere silhouette at
+the expected location, confirming the panel's wiring (not just the underlying math) is correct too.
 
 ## Bringing a planet into UE5
 
@@ -373,6 +426,13 @@ The left panel follows the pipeline order:
 - **Algorithm** - the Continent Layer's own sliders (same as before), switching to Plate Tectonics
   adds Num Plates/Mountain Height/Trench Depth/Steps Per Run/Myr Per Step plus a **Run Simulation**
   button that advances the persistent plate state and rebakes.
+- **Shape Stamp** - one hand-placed archetype feature (see "Shape Stamps" above for the full field
+  list and what each archetype does) - an **Enabled** checkbox (off by default), a Mountain/Volcano/
+  Crater/Canyon toggle group, Latitude/Longitude/Radius/Height sliders, Crater Depth Frac (Volcano/
+  Crater only) or Length/Rotation (Canyon only) shown conditionally on the selected archetype, and its
+  own Noise Type toggle group plus Strength/Frequency sliders. Edits `Stamps[0]` only - the CLI's own
+  `ShapeStamps` JSON key supports an unbounded array, same "CLI array, GUI edits one" split this panel
+  already uses for Secondary Noise.
 - **Base Layer Adjust** - Scale/Offset/Power Curve, applied to the whole baked field.
 - **Secondary Noise** - an additive fractal noise layer: a Perlin/Ridged/Billow/Value/Voronoi toggle
   group plus Amplitude/Frequency. **On by default** (Ridged, 350m/8.0) - the Continent layer alone

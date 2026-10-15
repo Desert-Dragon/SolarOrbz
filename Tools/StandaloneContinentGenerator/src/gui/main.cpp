@@ -8,6 +8,7 @@
 #include "Nodes/HeightAdjustNode.h"
 #include "Nodes/HydraulicErosionNode.h"
 #include "Nodes/ThermalErosionNode.h"
+#include "Nodes/ShapeStampNode.h"
 #include "Climate.h"
 #include "BiomeClassifier.h"
 #include "SphereMesh.h"
@@ -211,6 +212,15 @@ int main()
     auto ContinentNodePtr = std::make_unique<ContinentNode>();
     ContinentNode* ContinentNodeRaw = ContinentNodePtr.get();
     Pipeline.Nodes.push_back(std::move(ContinentNodePtr));
+
+    // GUI edits Stamps[0] only (same "CLI supports an array, GUI exposes one" split this file
+    // already uses for Noise) - pre-seeded with one entry, disabled by default, so the panel always
+    // has a live-bound stamp to show without silently placing an unexpected mountain on a fresh planet.
+    auto ShapeStampNodePtr = std::make_unique<ShapeStampNode>();
+    ShapeStampNodePtr->Stamps.push_back(FShapeStamp{});
+    ShapeStampNodePtr->Stamps[0].bEnabled = false;
+    ShapeStampNode* ShapeStampNodeRaw = ShapeStampNodePtr.get();
+    Pipeline.Nodes.push_back(std::move(ShapeStampNodePtr));
 
     auto NoiseNodePtr = std::make_unique<NoiseNode>();
     // On by default at a hill/mountain-scale frequency - the Continent layer alone only shapes
@@ -519,6 +529,57 @@ int main()
                 bNeedsRebuild = true;
             }
             Y += 30;
+        }
+
+        SectionLabel("Shape Stamp");
+        {
+            // GUI only ever edits Stamps[0] - see its construction comment above for why that's
+            // consistent with how this file already treats Noise (CLI array, GUI exposes one).
+            FShapeStamp& Stamp = ShapeStampNodeRaw->Stamps[0];
+
+            // GuiCheckBox's own int return is dead code too (same family of bug as GuiSlider/
+            // GuiToggleGroup documented below) - compare *bound value* before/after instead.
+            const bool bWasEnabled = Stamp.bEnabled;
+            GuiCheckBox(Rectangle{ 10, (float)Y, 20, 20 }, "Enabled", &Stamp.bEnabled);
+            if (Stamp.bEnabled != bWasEnabled) bNeedsRebuild = true;
+            Y += 26;
+
+            int32_t ArchetypeIndex = (int32_t)Stamp.Archetype;
+            const int32_t OldArchetypeIndex = ArchetypeIndex;
+            GuiToggleGroup(Rectangle{ 10, (float)Y, (PanelWidth - 20.0f) / 4.0f, 20 }, "Mountain;Volcano;Crater;Canyon", &ArchetypeIndex);
+            if (ArchetypeIndex != OldArchetypeIndex)
+            {
+                Stamp.Archetype = (EShapeStampArchetype)ArchetypeIndex;
+                bNeedsRebuild = true;
+            }
+            Y += 26;
+
+            SliderFloat("Latitude (deg)", Stamp.LatitudeDegrees, -90.0f, 90.0f, &bNeedsRebuild);
+            SliderFloat("Longitude (deg)", Stamp.LongitudeDegrees, -180.0f, 180.0f, &bNeedsRebuild);
+            SliderFloat("Radius (deg)", Stamp.RadiusDegrees, 1.0f, 60.0f, &bNeedsRebuild);
+            SliderFloat("Height (m)", Stamp.HeightMeters, 0.0f, 5000.0f, &bNeedsRebuild);
+
+            if (Stamp.Archetype == EShapeStampArchetype::Volcano || Stamp.Archetype == EShapeStampArchetype::Crater)
+            {
+                SliderFloat("Crater Depth Frac", Stamp.CraterDepthFraction, 0.0f, 1.0f, &bNeedsRebuild);
+            }
+            if (Stamp.Archetype == EShapeStampArchetype::Canyon)
+            {
+                SliderFloat("Length (deg)", Stamp.LengthDegrees, 1.0f, 90.0f, &bNeedsRebuild);
+                SliderFloat("Rotation (deg)", Stamp.RotationDegrees, 0.0f, 360.0f, &bNeedsRebuild);
+            }
+
+            int32_t StampNoiseTypeIndex = (int32_t)Stamp.NoiseType;
+            const int32_t OldStampNoiseTypeIndex = StampNoiseTypeIndex;
+            GuiToggleGroup(Rectangle{ 10, (float)Y, (PanelWidth - 20.0f) / 5.0f, 20 }, "Perlin;Ridged;Billow;Value;Voronoi", &StampNoiseTypeIndex);
+            if (StampNoiseTypeIndex != OldStampNoiseTypeIndex)
+            {
+                Stamp.NoiseType = (ENoiseType)StampNoiseTypeIndex;
+                bNeedsRebuild = true;
+            }
+            Y += 26;
+            SliderFloat("Stamp Noise (m)", Stamp.NoiseStrengthMeters, 0.0f, 1000.0f, &bNeedsRebuild);
+            SliderFloat("Stamp Noise Freq", Stamp.NoiseFrequency, 0.5f, 20.0f, &bNeedsRebuild);
         }
 
         SectionLabel("Base Layer Adjust");
