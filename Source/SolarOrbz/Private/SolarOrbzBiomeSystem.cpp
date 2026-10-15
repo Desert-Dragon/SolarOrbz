@@ -3,6 +3,13 @@
 #include "SolarOrbzBiomeSystem.h"
 #include "SolarOrbzTerrainLayers.h"
 #include "Materials/MaterialInterface.h"
+#include "Dom/JsonObject.h"
+#include "Dom/JsonValue.h"
+#include "Serialization/JsonWriter.h"
+#include "Serialization/JsonSerializer.h"
+#include "Misc/FileHelper.h"
+#include "Misc/Paths.h"
+#include "HAL/FileManager.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogSolarOrbzBiome, Log, All);
 
@@ -456,5 +463,88 @@ void USolarOrbzBiomeStack::EvaluateTopWeightedBiomes(const FSolarOrbzBiomeSample
 			Weight /= TotalWeight;
 		}
 	}
+}
+
+// ================================================================================================
+// USolarOrbzBiomeStack::ExportScatterEntriesToPCGExMeshCollectionJson - see the doc comment on the
+// declaration in SolarOrbzBiomeSystem.h for the verified schema and what's deliberately left out
+// (Density/MinSlope/MaxSlope).
+// ================================================================================================
+void USolarOrbzBiomeStack::ExportScatterEntriesToPCGExMeshCollectionJson()
+{
+	TArray<USolarOrbzBiome*> UniqueBiomes;
+	GetUniqueBiomes(UniqueBiomes);
+
+	TArray<TSharedPtr<FJsonValue>> EntriesArray;
+	int32 SkippedCount = 0;
+
+	for (const USolarOrbzBiome* Biome : UniqueBiomes)
+	{
+		if (!Biome)
+		{
+			continue;
+		}
+
+		for (const FSolarOrbzBiomeScatterEntry& ScatterEntry : Biome->ScatterEntries)
+		{
+			if (ScatterEntry.ScatterMesh.IsNull())
+			{
+				UE_LOG(LogSolarOrbzBiome, Warning,
+					TEXT("SolarOrbz Biome: scatter entry '%s' on biome '%s' has no ScatterMesh assigned - skipped from the PCGEx Mesh Collection export."),
+					*ScatterEntry.Tag.ToString(), *Biome->GetName());
+				++SkippedCount;
+				continue;
+			}
+
+			TSharedPtr<FJsonObject> EntryObj = MakeShared<FJsonObject>();
+			EntryObj->SetStringField(TEXT("type"), TEXT("Mesh"));
+			EntryObj->SetStringField(TEXT("StaticMesh"), ScatterEntry.ScatterMesh.ToSoftObjectPath().ToString());
+			EntryObj->SetStringField(TEXT("Category"), ScatterEntry.Tag.ToString());
+			EntryObj->SetNumberField(TEXT("Weight"), 1);
+			EntriesArray.Add(MakeShared<FJsonValueObject>(EntryObj));
+
+			UE_LOG(LogSolarOrbzBiome, Log,
+				TEXT("SolarOrbz Biome: exported scatter entry '%s' (biome '%s', mesh '%s') - density %.4f/m^2, slope [%.2f, %.2f] aren't part of this JSON (PCGEx models those on its own Distribute-family node); enter them there by hand."),
+				*ScatterEntry.Tag.ToString(), *Biome->GetName(), *ScatterEntry.ScatterMesh.ToSoftObjectPath().ToString(),
+				ScatterEntry.DensityPerSquareMeter, ScatterEntry.MinSlope, ScatterEntry.MaxSlope);
+		}
+	}
+
+	if (EntriesArray.Num() == 0)
+	{
+		UE_LOG(LogSolarOrbzBiome, Warning,
+			TEXT("SolarOrbz Biome: no ScatterEntry in this stack has a ScatterMesh assigned (%d skipped) - nothing to export."),
+			SkippedCount);
+		return;
+	}
+
+	TSharedPtr<FJsonObject> MembersObj = MakeShared<FJsonObject>();
+	MembersObj->SetArrayField(TEXT("Entries"), EntriesArray);
+
+	TSharedPtr<FJsonObject> DataObj = MakeShared<FJsonObject>();
+	DataObj->SetStringField(TEXT("class"), TEXT("/Script/PCGExCollections.PCGExMeshCollection"));
+	DataObj->SetObjectField(TEXT("members"), MembersObj);
+
+	TSharedPtr<FJsonObject> RootObj = MakeShared<FJsonObject>();
+	RootObj->SetStringField(TEXT("format"), TEXT("pcgex.object"));
+	RootObj->SetNumberField(TEXT("version"), 1);
+	RootObj->SetObjectField(TEXT("data"), DataObj);
+
+	FString OutputString;
+	TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&OutputString);
+	FJsonSerializer::Serialize(RootObj.ToSharedRef(), Writer);
+
+	const FString FilePath = FPaths::ProjectSavedDir() / TEXT("SolarOrbzPCGExExports") / (GetName() + TEXT("_ScatterCollection.json"));
+	IFileManager::Get().MakeDirectory(*FPaths::GetPath(FilePath), /*Tree=*/true);
+
+	if (!FFileHelper::SaveStringToFile(OutputString, *FilePath))
+	{
+		UE_LOG(LogSolarOrbzBiome, Warning, TEXT("SolarOrbz Biome: failed to write PCGEx Mesh Collection export to %s."), *FilePath);
+		return;
+	}
+
+	UE_LOG(LogSolarOrbzBiome, Log,
+		TEXT("SolarOrbz Biome: wrote %d scatter entries (%d skipped - no ScatterMesh) to %s. Feed this to PCGEx's ImportJson/CreateAsset tool action (via the PCGEx Assistant plugin) to get a real Mesh Collection asset."),
+		EntriesArray.Num(), SkippedCount, *FilePath);
 }
 

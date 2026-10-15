@@ -53,7 +53,8 @@ public class SolarOrbz : ModuleRules
 				"AssetRegistry",
 				"ImageCore",
 				"GraphEditor",
-				"AssetDefinition"
+				"AssetDefinition",
+				"Json"
 				// ... add private dependencies that you statically link with here ...
 			}
 			);

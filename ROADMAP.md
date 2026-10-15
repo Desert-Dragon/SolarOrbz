@@ -1257,6 +1257,45 @@ commitment or a schedule - just a place these don't get lost between sessions.
     the Textures pipeline's three stages or the precise string-exact-match filter's title, despite
     repeated fetching - documented the categories/behavior that IS confirmed and named what to search
     for in the node picker instead of inventing a title.
+  - **Tenth follow-up, asked directly: "is there anything you can apply to the plugin using PCGEX?"**,
+    then pointed at PCGEx's "Authoring with an Agent" doc page. That page (and its `collections` sub-
+    page) describes a separate "PCGEx Assistant" plugin exposing a JSON tool-call interface
+    (ListFormats/DescribeFormat/CreateAsset/ImportJson/ExportJson/...) to a *running* UE Editor session -
+    not directly usable here (no live Editor, no PCGEx Assistant installed), but its JSON *document
+    format* is fully specified independent of any live session, and a real worked example is quoted in
+    the docs: a one-entry Mesh Collection (`"format": "pcgex.object"`, `"version": 1`, `"data": {
+    "class": "/Script/PCGExCollections.PCGExMeshCollection", "members": { "Entries": [...] } }`, each row
+    `{ "type": "Mesh", "StaticMesh": "...", "Weight": ..., "Category": "..." }`). Cross-checked that
+    shape against PCGEx's own real source (`FPCGExAssetCollectionEntry` in
+    `Source/PCGExCollections/Public/Core/PCGExAssetCollection.h`, cloned read-only from
+    `github.com/PCGEx/PCGExtendedToolkit` for this - confirmed real UPROPERTY names `Weight`, `Category`,
+    not guessed) - also confirmed, by reading that header, that writing a custom PCGEx C++ collection-
+    type subclass is real but genuinely complex (macro-based registration, `FCache`/`FCategory`/
+    `FMicroCache`/`EntryIdBank` machinery) and not something to attempt confidently without a compiler to
+    verify against, so that path was explicitly ruled out in favor of the dependency-free JSON export
+    below.
+    Landed on `USolarOrbzBiomeStack::ExportScatterEntriesToPCGExMeshCollectionJson()` (new
+    `CallInEditor` button, `Source/SolarOrbz/Public/SolarOrbzBiomeSystem.h` +
+    `Private/SolarOrbzBiomeSystem.cpp`) - walks every
+    unique `USolarOrbzBiome` in the stack's `ScatterEntries` and writes exactly that verified document
+    shape to `Saved/SolarOrbzPCGExExports/<asset name>_ScatterCollection.json` (same
+    `ProjectSavedDir()`-relative convention as the existing tectonic-backup writer), one entry per
+    `FSolarOrbzBiomeScatterEntry` that has a mesh assigned. This closes a real, independent completeness
+    gap found along the way: `FSolarOrbzBiomeScatterEntry` previously had no asset reference at all (just
+    `Tag`/`DensityPerSquareMeter`/`MinSlope`/`MaxSlope`) - nothing to export without one - so a new
+    `ScatterMesh` (`TSoftObjectPtr<UStaticMesh>`) field was added first. `Tag` becomes the exported
+    entry's `Category`, so a PCGEx graph's own filter nodes can still group/branch on it exactly as the
+    field's original comment intended, now backed by a real mesh reference. `DensityPerSquareMeter`/
+    `MinSlope`/`MaxSlope` are deliberately NOT part of this JSON - PCGEx separates "what to place" (a
+    collection entry) from "how densely, where" (a separate Distribute-family node's own settings, a
+    document whose schema wasn't confirmed anywhere in the docs) - so those three are `UE_LOG`'d instead,
+    one line per exported entry, for hand-entry into whichever placement node a PCGEx graph actually
+    uses, rather than guessing a second unverified schema. Added the `"Json"` module to
+    `SolarOrbz.Build.cs` (`FJsonObject`/`FJsonSerializer`); no PCGEx dependency needed or added - this is
+    plain text generation matching PCGEx's own documented import format, the same "no compile-time
+    dependency on the other side" approach `NoiseBasis.h`'s standalone-tool port already uses. Not
+    compiled against a live UE5.8 editor (none available here, per this whole session's standing
+    constraint) - hand-matched against this codebase's own established Json/FFileHelper usage instead.
 
 ## Documentation
 

@@ -223,22 +223,35 @@ public:
 // ================================================================================================
 // FSolarOrbzBiomeScatterEntry / USolarOrbzBiome - a reusable bundle: the mask deciding where it
 // applies, optional extra terrain detail (blended in wherever that mask is active), and scatter
-// definitions that will feed a future PCG/PCGEx hookup. Store these as assets and reuse them
-// across planets, the same way World Creator's biome presets work.
+// definitions that feed a real PCG/PCGEx hookup - see
+// USolarOrbzBiomeStack::ExportScatterEntriesToPCGExMeshCollectionJson below. Store these as assets
+// and reuse them across planets, the same way World Creator's biome presets work.
 // ================================================================================================
 
 /**
- * Placeholder scatter rule - enough to describe "what goes where and how densely" for now.
- * The PCG/PCGEx graph will read these (matched by Tag) once that hookup exists.
+ * One scatter rule: what to place (ScatterMesh), how densely, and within what slope range.
+ * ScatterMesh is exported directly into a real PCGEx Mesh Collection (see
+ * USolarOrbzBiomeStack::ExportScatterEntriesToPCGExMeshCollectionJson) - Tag becomes that
+ * collection entry's Category, so a PCGEx graph's own filter/distribute nodes can still group and
+ * branch on it exactly as originally intended, now with a real asset behind each entry instead of
+ * only a name. DensityPerSquareMeter/MinSlope/MaxSlope describe PLACEMENT, not the asset itself -
+ * PCGEx models that as a separate concern from the collection entry (its own Distribute-family
+ * node settings, not a collection entry field), so these three aren't part of that JSON export;
+ * they're reported alongside it (see that function's own comment) for hand-entry into whichever
+ * distribute/density node a PCGEx graph actually uses.
  */
 USTRUCT(BlueprintType)
 struct SOLARORBZ_API FSolarOrbzBiomeScatterEntry
 {
 	GENERATED_BODY()
 
-	/** Matched against PCG graph settings later - e.g. "Rock_Large", "Tree_Pine", "Wildlife_Deer". */
+	/** Matched against PCG graph settings later - e.g. "Rock_Large", "Tree_Pine", "Wildlife_Deer". Exported as this entry's Category in a PCGEx Mesh Collection. */
 	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Scatter")
 	FName Tag;
+
+	/** What to scatter. Unset entries are skipped (with a warning) by ExportScatterEntriesToPCGExMeshCollectionJson - nothing to export without one. */
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Scatter")
+	TSoftObjectPtr<class UStaticMesh> ScatterMesh;
 
 	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Scatter", meta = (ClampMin = "0.0"))
 	float DensityPerSquareMeter = 0.01f;
@@ -471,4 +484,34 @@ public:
 
 	/** Same as above, but reuses precomputed LayerWeights instead of re-evaluating every layer's mask - see GetDominantBiome's precomputed overload above. */
 	class UMaterialInterface* SelectMaterial(const FSolarOrbzBiomeSampleContext& Context, const TArray<float>& LayerWeights) const;
+
+	/**
+	 * Writes every Biome in this stack's ScatterEntries (that have a ScatterMesh assigned - entries
+	 * without one are skipped, each logged once as a warning) as a real PCGEx Mesh Collection import
+	 * document: "format": "pcgex.object", "version": 1, "data": { "class":
+	 * "/Script/PCGExCollections.PCGExMeshCollection", "members": { "Entries": [...] } }, one entry per
+	 * ScatterEntry with "type": "Mesh", "StaticMesh": <ScatterMesh's path>, "Category": <Tag>, "Weight":
+	 * 1. This schema is matched against PCGEx's own documented agent-authoring format (pcgex.gitbook.io/
+	 * pcgex/developers-area/authoring-with-an-agent/collections, fetched directly - a real worked
+	 * example there is a one-entry Mesh Collection using this exact shape) and against
+	 * FPCGExAssetCollectionEntry's own real UPROPERTY names (Weight, Category - read directly from
+	 * PCGEx/PCGExtendedToolkit's own public source, not guessed), NOT compiled or run against PCGEx
+	 * itself - this plugin has no dependency on PCGEx and doesn't need one for this export, since it's
+	 * plain JSON text generation, matching PCGEx's own documented import format, exactly the way
+	 * NoiseBasis.h's standalone-tool port doesn't need UE itself to produce comparable output. Feed the
+	 * written file to PCGEx's own ImportJson/CreateAsset tool actions (via the PCGEx Assistant plugin)
+	 * to get a real, editable Mesh Collection asset.
+	 *
+	 * DensityPerSquareMeter/MinSlope/MaxSlope are NOT part of this document - PCGEx itself separates
+	 * "what to place" (a collection entry, exported here) from "how densely, where" (a separate
+	 * Distribute-family node's own settings, a different document this function doesn't have a
+	 * verified schema for) - so those three are logged instead (one line per exported entry), for
+	 * hand-entry into whichever placement/distribution node a PCGEx graph actually uses.
+	 *
+	 * Writes to Saved/SolarOrbzPCGExExports/<this asset's name>_ScatterCollection.json (same
+	 * ProjectSavedDir()-relative convention as GetTectonicBackupFilePath), creating the directory if
+	 * needed. No-op (logged) if no ScatterEntry anywhere in this stack has a ScatterMesh assigned.
+	 */
+	UFUNCTION(CallInEditor, Category = "SolarOrbz|Biome|PCGEx")
+	void ExportScatterEntriesToPCGExMeshCollectionJson();
 };

@@ -299,6 +299,19 @@ several of its pages rather than assumed from training data) **- correcting and 
   `MinSlope`/`MaxSlope`. `Uber Filter` (splits Inside/Outside) and `Filter Group` (set to `Or` for
   "any of several filters") are the confirmed nodes for combining several of these into one decision.
 
+**A separate, more direct PCGEx integration now lives in the UE plugin itself, not this standalone
+tool:** `USolarOrbzBiomeStack::ExportScatterEntriesToPCGExMeshCollectionJson()` (a `CallInEditor`
+button on the plugin's own `USolarOrbzBiomeStack` asset, see
+`Source/SolarOrbz/Public/SolarOrbzBiomeSystem.h`) writes each `FSolarOrbzBiomeScatterEntry`'s
+assigned `ScatterMesh` straight out as a real PCGEx Mesh Collection import document (`"format":
+"pcgex.object"`), verified against PCGEx's own documented agent-authoring JSON schema and its real
+`FPCGExAssetCollectionEntry` source - feed the written file to PCGEx's ImportJson/CreateAsset tool
+action (via the PCGEx Assistant plugin) to get a real, editable Mesh Collection asset without a CSV
+or DataTable step at all. This doesn't replace the CSV/texture paths above (it only carries *what*
+to scatter, not density/slope placement rules, which still belong on a PCGEx Distribute-family node
+by hand) - see this repo's `ROADMAP.md` ("Climate / Biome" → tenth follow-up) for the full
+verification trail.
+
 ## GUI usage
 
 Run `./solarorbz_gui`. The preview uses a visualization-only radius (400 km, deliberately not
