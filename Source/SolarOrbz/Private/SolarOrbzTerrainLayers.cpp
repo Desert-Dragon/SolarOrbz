@@ -1541,7 +1541,7 @@ void USolarOrbzContinentTerrainLayer::BakePlateTectonics(bool bEffectiveNorthPol
 			const FVector DriftB = (PlateB >= 0) ? Plates[PlateB].GetInstantaneousDrift() : FVector::ZeroVector;
 			const float Closure = FVector::DotProduct(DriftA, BoundaryAxis) - FVector::DotProduct(DriftB, BoundaryAxis);
 
-			constexpr float TransformThreshold = 0.25f;
+			const float TransformThreshold = ComputeTransformThreshold();
 			float Modifier = 0.0f;
 			if (Closure > TransformThreshold)
 			{
@@ -1856,7 +1856,7 @@ void USolarOrbzContinentTerrainLayer::UpdateBoundaryStress(float DeltaMyr)
 		return !LivePlateIds.Contains(State.PlateIdA) || !LivePlateIds.Contains(State.PlateIdB);
 	});
 
-	constexpr float TransformThreshold = 0.25f;
+	const float TransformThreshold = ComputeTransformThreshold();
 	TSet<int64> SeenThisStep;
 	TMap<int32, int32> PendingSplitsByPlateId; // plate id to split -> other plate id (for the rift axis)
 

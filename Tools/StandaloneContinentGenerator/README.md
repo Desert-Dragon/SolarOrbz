@@ -279,10 +279,11 @@ classification only needs the plates' current instantaneous drift, not accumulat
 whether mountains exist at all. Confirmed in the GUI too (Xvfb screenshot, Plate Tectonics, default
 Seed 0): a real, continuous, snow-capped mountain range along the plate boundary, immediately on
 selecting the algorithm. The real UE plugin (`Source/SolarOrbz/Private/SolarOrbzTerrainLayers.cpp`,
-`Source/SolarOrbz/Public/SolarOrbzTerrainLayers.h`) has the identical hardcoded `0.25` at both of its
-own call sites and is presumably affected the same way - left unchanged here since this pass was
-scoped to the standalone tool, but worth the same fix if anyone verifies the live plugin's Plate
-Tectonics mountain-building against this.
+`Source/SolarOrbz/Public/SolarOrbzTerrainLayers.h`) had the identical hardcoded `0.25` at both of its
+own call sites and was presumably affected the same way - since fixed there too (same
+`ComputeTransformThreshold()` approach; see ROADMAP.md's own entry for that pass, including the usual
+caveat for this file: not compiled or run in this environment, matched by hand against its existing
+`float`-throughout convention and the already-verified standalone fix).
 
 ## Repository layout
 

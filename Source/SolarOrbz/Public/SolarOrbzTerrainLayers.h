@@ -1147,6 +1147,30 @@ private:
 	/** Finds (adding a zeroed entry if needed) the FSolarOrbzTectonicBoundaryState for this plate pair - PlateIdA/PlateIdB order doesn't matter, the entry itself always stores the smaller id first. */
 	FSolarOrbzTectonicBoundaryState& FindOrAddBoundaryState(int32 PlateIdA, int32 PlateIdB);
 
+	/**
+	 * The Closure threshold BakePlateTectonics()/UpdateBoundaryStress() classify a plate boundary
+	 * convergent/divergent/transform against. Closure is a difference of two GetInstantaneousDrift()
+	 * projections, and GetInstantaneousDrift() is Cross(axis, dir) * AngularRateRadPerMyr, so its
+	 * magnitude can never exceed roughly the fastest single plate's drift speed, which itself scales
+	 * directly with InitialDriftSpeedDegreesPerMyr (converted to rad/Myr). A hardcoded absolute
+	 * threshold with no relationship to that speed is either permanently unreachable (every boundary
+	 * reads as "transform," contributing zero height, no matter how long the simulation runs) or, at
+	 * the opposite extreme, small enough that every boundary reads as convergent/divergent regardless
+	 * of the plates' actual relative motion. This was confirmed to be the former, in production, at
+	 * the 2.0 deg/Myr default: this class's own 1:1 port in Tools/StandaloneContinentGenerator (same
+	 * formula, same defaults - see that tool's ContinentLayer.h/.cpp and its README/ROADMAP entry)
+	 * had its live Closure values instrumented directly, clustering around 0.005-0.03 - nowhere near
+	 * the 0.25 this threshold used to be hardcoded to, so every boundary there silently fell back to
+	 * "transform" no matter what Mountain Height was set to or how long the simulation ran. Scaling
+	 * this threshold to the configured drift speed instead keeps it meaningful at any
+	 * InitialDriftSpeedDegreesPerMyr value.
+	 */
+	float ComputeTransformThreshold() const
+	{
+		const float MaxDriftRad = FMath::DegreesToRadians(InitialDriftSpeedDegreesPerMyr);
+		return MaxDriftRad * 0.3f;
+	}
+
 	/** Const lookup only (BakePlateTectonics' use case - read accumulated stress, never create an entry for a pair that's never been seen by UpdateBoundaryStress). Returns null if this pair has no recorded history. */
 	const FSolarOrbzTectonicBoundaryState* FindBoundaryState(int32 PlateIdA, int32 PlateIdB) const;
 

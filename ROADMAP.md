@@ -1119,6 +1119,23 @@ commitment or a schedule - just a place these don't get lost between sessions.
     immediately on selecting the algorithm, holding up correctly through Hydraulic Erosion and the
     Height/Biome toggle (no needle-spike recurrence near the poles). Re-ran the CLI regression
     (`full_pipeline.json`) after the fix.
+  - **Sixth follow-up, asked directly: "go ahead and fix it for the plugin too."** Applied the
+    identical fix to the real UE plugin (`Source/SolarOrbz/Public/SolarOrbzTerrainLayers.h`,
+    `Source/SolarOrbz/Private/SolarOrbzTerrainLayers.cpp`), which has the exact same bug (same
+    hardcoded `constexpr float TransformThreshold = 0.25f` at both of its own call sites in
+    `BakePlateTectonics`/`UpdateBoundaryStress`, same `GetInstantaneousDrift`/
+    `InitialDriftSpeedDegreesPerMyr` defaults - this is where the standalone tool's own version of the
+    bug was ported from). Added a private `ComputeTransformThreshold()` inline method to
+    `USolarOrbzContinentTerrainLayer` (same formula as the standalone fix:
+    `FMath::DegreesToRadians(InitialDriftSpeedDegreesPerMyr) * 0.3f`, `float` throughout rather than
+    `double` to match this file's own existing convention - `GetInstantaneousDrift`'s own `Closure`
+    usage is `float`), and replaced both `constexpr float TransformThreshold = 0.25f;` call sites with
+    it. Per this project's own established discipline for this file (see the Terrain Graph Editor
+    entries above - "no UE5.8 compiler is available in this environment to exercise it"), this was NOT
+    compiled or run - matched by hand against the file's existing types/conventions and the already-
+    verified standalone-tool fix (same ported formula, same defaults, confirmed working there via CLI/
+    GUI). Worth a real in-Editor Plate Tectonics check (Mountain Height actually producing visible
+    relief, at any Seed, without requiring Run Simulation first) next time this layer is touched in UE.
 
 ## Documentation
 
