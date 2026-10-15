@@ -58,11 +58,13 @@ void USolarOrbzTerrainLayerStack::PrepareLayers(double RadiusCm) const
 	// filled in for the indices it touches.
 	CachedLayerNeedsSlope.SetNum(Layers.Num());
 	CachedLayerNeedsLocalGradient.SetNum(Layers.Num());
+	CachedLayerNeedsElevationDelta.SetNum(Layers.Num());
 	for (int32 i = 0; i < Layers.Num(); ++i)
 	{
 		const USolarOrbzTerrainLayer* Layer = Layers[i];
 		CachedLayerNeedsSlope[i] = Layer && Layer->Mask && Layer->Mask->NeedsSlope();
 		CachedLayerNeedsLocalGradient[i] = Layer && Layer->Mask && Layer->Mask->NeedsLocalGradient();
+		CachedLayerNeedsElevationDelta[i] = Layer && Layer->Mask && Layer->Mask->NeedsElevationDelta();
 	}
 
 	// Unconditional (every enabled layer, not just RequiresWholeSurfaceBake() ones) and single-
@@ -172,6 +174,15 @@ float USolarOrbzTerrainLayerStack::EvaluateHeightUpTo(int32 EndIndexExclusive, c
 			{
 				Context.bHasClimateData = true;
 				ClimateGrid->Sample(UnitDirection, Context.Temperature, Context.Moisture);
+			}
+
+			// Unlike Slope/LocalGradient above, this needs no extra EvaluateHeightUpTo call at all -
+			// FullyAppliedAccum (this layer blended in) and Accum (everything below it) are already
+			// both sitting right here, computed above regardless of whether any mask needs them.
+			if (CachedLayerNeedsElevationDelta.IsValidIndex(i) && CachedLayerNeedsElevationDelta[i])
+			{
+				Context.bHasElevationDelta = true;
+				Context.ElevationDeltaMeters = (FullyAppliedAccum - Accum) / 100.0f; // cm -> meters, matching Elevation/SeaLevel's own convention
 			}
 
 			const float MaskWeight = Layer->Mask->GetWeight(Context);

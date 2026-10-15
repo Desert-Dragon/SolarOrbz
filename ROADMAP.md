@@ -651,10 +651,11 @@ commitment or a schedule - just a place these don't get lost between sessions.
     Width), and `USolarOrbzBorderBlendBiomeMask` (an `Instanced` reference to any other mask type,
     weight 1.0 exactly at that mask's own 0.5-weight transition, fading out `BandHalfWidth` away from
     it in either direction - a ring around whatever boundary the referenced mask defines). The other
-    5 (Mask paint, Model, Rivers, Simulation, Filter Change) still aren't started, for the same
-    reasons as phase 1's note above plus one more specific to Filter Change: it would need a mask to
-    know which stack layer index it's attached to, to diff that layer's own before/after height - a
-    bigger change to the mask/context shape than a new leaf mask type, not attempted alongside these 4.
+    5 (Mask paint, Model, Rivers, Simulation, Filter Change) still weren't started in this phase, for
+    the same reasons as phase 1's note above plus one more specific to Filter Change: it would need a
+    mask to know which stack layer index it's attached to, to diff that layer's own before/after
+    height - a bigger change to the mask/context shape than a new leaf mask type, not attempted
+    alongside these 4.
     The real design problem Polygon/Path both hit: "is this point near a set of points" doesn't
     reduce to flat 2D math directly on a sphere. Solved by reusing (not reinventing) the exact
     azimuthal-equidistant local-tangent-plane projection the standalone tool's own `ShapeStampNode`
@@ -673,6 +674,29 @@ commitment or a schedule - just a place these don't get lost between sessions.
     convention) rather than inventing a second one, kept as its own small copy in
     `SolarOrbzBiomeSystem.cpp` since the original is private to an unrelated class not worth exposing
     just for this.
+  - **Phase 3, continuing "get as far as you can" on the Layer category**: landed the 5th of WC's 9
+    Layer entries, `USolarOrbzFilterChangeBiomeMask` - reacts to how much a SPECIFIC Terrain Layer's
+    own contribution changed the height at a point (its own before/after delta), not the combined
+    terrain so far. Phase 2's note above assumed this would need "a mask to know which stack layer
+    index it's attached to" as new plumbing - re-examining `USolarOrbzTerrainLayerStack::
+    EvaluateHeightUpTo`'s own masking block found that assumption was wrong: `Accum` (everything
+    below this layer) and `FullyAppliedAccum` (this layer blended in) are already both sitting right
+    there, computed before `Layer->Mask->GetWeight(Context)` is ever called - no new height
+    evaluations needed, just two new `FSolarOrbzBiomeSampleContext` fields (`ElevationDeltaMeters`,
+    `bHasElevationDelta`) and a `NeedsElevationDelta()` flag on `USolarOrbzBiomeMask`, following the
+    exact same cache-once-per-regenerate pattern (`CachedLayerNeedsElevationDelta`) as `NeedsSlope`/
+    `NeedsLocalGradient` already use. Authored as `DeltaRange` (an optional carved band, same
+    `FSolarOrbzMaskRange` idea as Noise Mask's `Threshold`) plus `bUseSignedDelta` (react to "raised
+    the terrain" vs. "changed it either way") and a `FullWeightDeltaMeters` convenience scale for the
+    no-range-authored case. The one real limitation, documented on the new context fields rather than
+    hidden: this only works when the mask is attached to a specific Terrain Layer (`Layer->Mask`) -
+    used directly as a Biome's own top-level Mask instead (Pass B, `SolarOrbzIcoSphere.cpp`, which has
+    no specific layer to diff against at all) it has nothing to read and returns a neutral 1.0 rather
+    than silently masking everything out; both of Pass B's `FSolarOrbzBiomeSampleContext` construction
+    sites were confirmed to leave it at that default via plain `FSolarOrbzBiomeSampleContext Context;`
+    construction, so this doesn't regress anything there. The remaining 4 Layer entries (Mask paint,
+    Model, Rivers, Simulation) are unchanged from Phase 2's reasoning - still blocked on interactive
+    editor tooling or missing simulation prerequisites, not attempted here.
 
 - **PCG Biome Core integration** for content scattering (trees, rocks, and eventually
   civilization - roads, farms, settlements). SolarOrbz's Climate + BiomeStack system stays the

@@ -262,6 +262,16 @@ private:
 
 	/** Same idea as CachedLayerNeedsSlope, for Mask->NeedsLocalGradient(). */
 	mutable TArray<bool> CachedLayerNeedsLocalGradient;
+
+	/**
+	 * Same idea as CachedLayerNeedsSlope, for Mask->NeedsElevationDelta() - unlike Slope/
+	 * LocalGradient this gates no extra EvaluateHeightUpTo calls (the before/after values are already
+	 * both in scope right where EvaluateHeightUpTo calls Mask->GetWeight), just whether it's worth
+	 * writing them into Context at all, same once-per-regenerate-not-per-vertex reasoning as the
+	 * other two caches (a Composite Mask's NeedsElevationDelta() walks its whole referenced-Biomes
+	 * tree, same as NeedsSlope/NeedsLocalGradient do).
+	 */
+	mutable TArray<bool> CachedLayerNeedsElevationDelta;
 };
 
 // ================================================================================================

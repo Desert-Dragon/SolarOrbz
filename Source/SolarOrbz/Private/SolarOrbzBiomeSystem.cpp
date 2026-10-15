@@ -261,6 +261,29 @@ bool USolarOrbzCompositeBiomeMask::NeedsLocalGradient() const
 	return bNeeds;
 }
 
+bool USolarOrbzCompositeBiomeMask::NeedsElevationDelta() const
+{
+	static thread_local int32 RecursionDepth = 0;
+	constexpr int32 MaxRecursionDepth = 16;
+	if (RecursionDepth >= MaxRecursionDepth)
+	{
+		return false;
+	}
+
+	++RecursionDepth;
+	bool bNeeds = false;
+	for (const TObjectPtr<USolarOrbzBiome>& Biome : Biomes)
+	{
+		if (Biome && Biome->Mask && Biome->Mask->NeedsElevationDelta())
+		{
+			bNeeds = true;
+			break;
+		}
+	}
+	--RecursionDepth;
+	return bNeeds;
+}
+
 // ================================================================================================
 // USolarOrbzNoiseBiomeMask
 // ================================================================================================
@@ -490,6 +513,38 @@ float USolarOrbzBorderBlendBiomeMask::GetWeight(const FSolarOrbzBiomeSampleConte
 	const float ReferenceWeight = ReferenceMask->GetWeight(Context);
 	const float DistanceFromBoundary = FMath::Abs(ReferenceWeight - 0.5f);
 	return FMath::Clamp(1.0f - DistanceFromBoundary / FMath::Max(BandHalfWidth, KINDA_SMALL_NUMBER), 0.0f, 1.0f);
+}
+
+// ================================================================================================
+// USolarOrbzFilterChangeBiomeMask
+// ================================================================================================
+float USolarOrbzFilterChangeBiomeMask::GetWeight(const FSolarOrbzBiomeSampleContext& Context) const
+{
+	// Used directly as a Biome's own top-level Mask (Pass B) rather than a Terrain Layer's - there's
+	// no specific layer's delta to react to there, so don't restrict anything (see
+	// Context.bHasElevationDelta's own comment on this).
+	if (!Context.bHasElevationDelta)
+	{
+		return 1.0f;
+	}
+
+	const float Delta = bUseSignedDelta ? Context.ElevationDeltaMeters : FMath::Abs(Context.ElevationDeltaMeters);
+
+	if (DeltaRange.bEnabled)
+	{
+		return DeltaRange.Evaluate(Delta);
+	}
+
+	// No carved band authored - a smooth 0 (no change) .. 1 (FullWeightDeltaMeters or more) ramp.
+	// Signed mode leaves negative deltas at 0 rather than letting them wrap through the ramp the
+	// same way a magnitude would - "this layer raised the terrain here" has no sensible reading for
+	// a delta that lowered it instead.
+	if (bUseSignedDelta && Delta <= 0.0f)
+	{
+		return 0.0f;
+	}
+	const float FullWeightDelta = FMath::Max(FullWeightDeltaMeters, KINDA_SMALL_NUMBER);
+	return FMath::Clamp(Delta / FullWeightDelta, 0.0f, 1.0f);
 }
 
 // ================================================================================================

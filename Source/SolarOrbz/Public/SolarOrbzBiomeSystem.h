@@ -19,11 +19,14 @@
 // Noise/Layer/Terrain categories. Climate Mask already covered most of its "Terrain" category
 // (Elevation=Height, Slope) plus true climate signals (Temperature/Moisture/Latitude) it doesn't
 // have at all; a later pass added Sun Exposure (WC's "Sun Direction") to Climate Mask, and a Noise
-// Mask for WC's whole "Noise" category. This pass covers 4 of WC's 9 "Layer" category entries - Area
-// Mask, Polygon Mask, Path Mask, Border Blend Mask - the ones that are placed geometry (typed
-// Latitude/Longitude points), not interactive authoring tools. The other 5 (Mask paint/Model/Rivers/
-// Simulation/Filter Change) are deliberately NOT started - see the comment block directly above
-// those 4 classes below for why each one specifically doesn't fit this same pattern.
+// Mask for WC's whole "Noise" category. A later pass covered 4 of WC's 9 "Layer" category entries -
+// Area Mask, Polygon Mask, Path Mask, Border Blend Mask - the ones that are placed geometry (typed
+// Latitude/Longitude points), not interactive authoring tools; and this pass adds a 5th, Filter
+// Change Mask, once it turned out its "before/after delta" data was already sitting unused in
+// USolarOrbzTerrainLayerStack::EvaluateHeightUpTo's own masking block rather than needing new height
+// evaluations. The remaining 4 (Mask paint/Model/Rivers/Simulation) are still deliberately NOT
+// started - see the comment block directly above the Layer-category classes below for why each one
+// specifically doesn't fit this same pattern.
 
 #pragma once
 
@@ -108,6 +111,30 @@ struct SOLARORBZ_API FSolarOrbzBiomeSampleContext
 	 */
 	UPROPERTY(BlueprintReadOnly, Category = "SolarOrbz|Biome")
 	FVector2D LocalGradient = FVector2D::ZeroVector;
+
+	/**
+	 * How much THIS specific layer's own contribution changed the height at this point, in meters -
+	 * i.e. (height with this layer blended in) minus (height of every layer below it) - only
+	 * meaningful when a mask opted in via USolarOrbzBiomeMask::NeedsElevationDelta() AND this context
+	 * was built while masking a Terrain Layer Stack entry (USolarOrbzTerrainLayerStack::
+	 * EvaluateHeightUpTo), where "which layer" is well-defined. A Biome's own top-level Mask (Pass B,
+	 * SolarOrbzIcoSphere.cpp) has no such layer to diff against and never populates this - see
+	 * bHasElevationDelta.
+	 */
+	UPROPERTY(BlueprintReadOnly, Category = "SolarOrbz|Biome", meta = (Units = "m"))
+	float ElevationDeltaMeters = 0.0f;
+
+	/**
+	 * True only when ElevationDeltaMeters above was actually computed for this sample - i.e. this
+	 * context was built inside USolarOrbzTerrainLayerStack::EvaluateHeightUpTo while masking a
+	 * specific layer, and that layer's Mask::NeedsElevationDelta() returned true. False everywhere
+	 * else, Pass B's two FSolarOrbzBiomeSampleContext construction sites in SolarOrbzIcoSphere.cpp
+	 * included - a Filter Change Mask used directly as a Biome's own Mask (rather than a Terrain
+	 * Layer's) has nothing to diff and should read this and return a neutral 1.0 (no restriction)
+	 * rather than silently always masking everything out.
+	 */
+	UPROPERTY(BlueprintReadOnly, Category = "SolarOrbz|Biome")
+	bool bHasElevationDelta = false;
 };
 
 UCLASS(Abstract, EditInlineNew, DefaultToInstanced, BlueprintType)
@@ -133,6 +160,18 @@ public:
 
 	/** Same idea as NeedsSlope, for Context.LocalGradient - a direction, not just a magnitude, so it costs two finite-difference samples mid-Pass-A instead of Slope's one (see USolarOrbzTerrainLayerStack::EstimateLocalGradientUpTo). Default false. */
 	virtual bool NeedsLocalGradient() const { return false; }
+
+	/**
+	 * True if GetWeight ever reads Context.ElevationDeltaMeters - i.e. needs to know how much a
+	 * specific Terrain Layer's own contribution changed the height, not just the combined result so
+	 * far (Context.Elevation). Unlike Slope/LocalGradient this costs nothing extra to compute (see
+	 * USolarOrbzTerrainLayerStack::EvaluateHeightUpTo's own masking block - the before/after values
+	 * are already both in scope there), but it's still gated the same way for two reasons: so a mask
+	 * that doesn't need it never has to think about Context.bHasElevationDelta at all, and so Pass B
+	 * (SolarOrbzIcoSphere.cpp) - which never has a specific layer to diff - can tell at a glance this
+	 * context field is simply inapplicable there. Default false.
+	 */
+	virtual bool NeedsElevationDelta() const { return false; }
 };
 
 // ================================================================================================
@@ -263,6 +302,7 @@ public:
 	virtual bool NeedsClimateData() const override;
 	virtual bool NeedsSlope() const override;
 	virtual bool NeedsLocalGradient() const override;
+	virtual bool NeedsElevationDelta() const override;
 };
 
 // ================================================================================================
@@ -319,15 +359,15 @@ public:
 // same spirit as ShapeStampNode's own placement convention in the standalone tool (and this file's
 // existing USolarOrbzStampTerrainLayer, whose exact Latitude/Longitude -> direction formula these
 // reuse verbatim, via SolarOrbzSphericalGeometry::DirectionFromLatLong below, for one consistent
-// placement convention plugin-wide). WC's other 5 Layer entries - Mask (hand-painted, needs a real
-// brush tool), Model (an imported mesh's own footprint), Rivers (flow-routed channel carving),
-// Simulation (reads a water-flow/snow-melt simulation this plugin doesn't compute anywhere), Filter
-// Change (reacts to a specific stack layer's own before/after delta, which would need a mask to see
-// which stack index it's attached to - a bigger context-shape change) - are deliberately NOT
-// attempted here: either real interactive editor tooling (viewport painting, a live brush) too risky
-// to hand-write without ever running it in an actual UE5.8 editor, or blocked on a simulation/
-// plumbing change that doesn't exist yet. Each is its own separate undertaking, same reasoning as
-// last time's "Layer category deferred" note.
+// placement convention plugin-wide). WC's other 4 remaining Layer entries - Mask (hand-painted,
+// needs a real brush tool), Model (an imported mesh's own footprint), Rivers (flow-routed channel
+// carving), Simulation (reads a water-flow/snow-melt simulation this plugin doesn't compute
+// anywhere) - are still deliberately NOT attempted here: real interactive editor tooling (viewport
+// painting, a live brush) too risky to hand-write without ever running it in an actual UE5.8 editor,
+// or blocked on a simulation this plugin has no prerequisite for yet. Each is its own separate
+// undertaking, same reasoning as last time's "Layer category deferred" note. (Filter Change, the
+// 9th entry, turned out NOT to need that same kind of blocked infrastructure once actually traced
+// through - see USolarOrbzFilterChangeBiomeMask right after Border Blend Mask below.)
 //
 // Polygon/Path both need "is this point near a set of points on a sphere" math, which doesn't
 // reduce to flat 2D geometry directly - solved by projecting every point (vertices and the query
@@ -448,6 +488,58 @@ public:
 	virtual bool NeedsClimateData() const override { return ReferenceMask && ReferenceMask->NeedsClimateData(); }
 	virtual bool NeedsSlope() const override { return ReferenceMask && ReferenceMask->NeedsSlope(); }
 	virtual bool NeedsLocalGradient() const override { return ReferenceMask && ReferenceMask->NeedsLocalGradient(); }
+	virtual bool NeedsElevationDelta() const override { return ReferenceMask && ReferenceMask->NeedsElevationDelta(); }
+};
+
+// ================================================================================================
+// USolarOrbzFilterChangeBiomeMask - World Creator's "Filter Change" Layer entry: reacts to how much
+// a SPECIFIC layer's own contribution changed the height at a point, not the combined terrain so
+// far (that's what Context.Elevation already is). Concretely: "mask strength follows wherever the
+// Erosion Layer actually carved a valley" or "wherever this Stamp's falloff has faded to near-
+// nothing" - cases where the interesting signal is one layer's own before/after delta, not the
+// terrain shape itself. Only meaningful when used as a Terrain Layer's own Mask (Layer->Mask on the
+// USolarOrbzTerrainLayer this is attached to, in Source/SolarOrbz/Public/SolarOrbzTerrainLayers.h) -
+// USolarOrbzTerrainLayerStack::EvaluateHeightUpTo already has both the before and after height in
+// scope right where it calls Mask->GetWeight, so exposing the diff cost nothing extra to compute
+// (see Context.ElevationDeltaMeters). Used directly as a Biome's own top-level Mask instead (Pass B,
+// SolarOrbzIcoSphere.cpp) it has no specific layer to diff and always returns a neutral 1.0 (no
+// restriction) - see Context.bHasElevationDelta's own comment.
+// ================================================================================================
+UCLASS(EditInlineNew, meta = (DisplayName = "Filter Change Mask"))
+class SOLARORBZ_API USolarOrbzFilterChangeBiomeMask : public USolarOrbzBiomeMask
+{
+	GENERATED_BODY()
+
+public:
+	/**
+	 * Band over the layer's own height delta, meters. Disabled (default): the raw delta magnitude
+	 * (or signed value, see bUseSignedDelta) is remapped through a fixed soft curve instead of a
+	 * carved band - same "disabled range = use the raw graduated value" idea
+	 * USolarOrbzNoiseBiomeMask::Threshold already uses.
+	 */
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|FilterChange")
+	FSolarOrbzMaskRange DeltaRange;
+
+	/**
+	 * False (default): react to |delta| - how much the layer changed the height, regardless of
+	 * direction. True: react to the signed delta itself - positive only where the layer raised the
+	 * terrain, negative (always 0 weight without DeltaRange explicitly covering negative values)
+	 * where it lowered it.
+	 */
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|FilterChange")
+	bool bUseSignedDelta = false;
+
+	/**
+	 * Only used when DeltaRange is disabled - the delta magnitude (in meters) that reads as full
+	 * weight (1.0) before DeltaRange would apply; 0 always reads as weight 0. Purely a convenience
+	 * scale so modest layers (a gentle Noise Layer) and dramatic ones (a deep Erosion carve) can each
+	 * pick a sensible full-weight threshold without being forced to enable DeltaRange just to rescale.
+	 */
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|FilterChange", meta = (ClampMin = "0.01", EditCondition = "!DeltaRange.bEnabled"))
+	float FullWeightDeltaMeters = 5.0f;
+
+	virtual float GetWeight(const FSolarOrbzBiomeSampleContext& Context) const override;
+	virtual bool NeedsElevationDelta() const override { return true; }
 };
 
 // ================================================================================================
