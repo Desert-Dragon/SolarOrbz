@@ -1544,6 +1544,68 @@ commitment or a schedule - just a place these don't get lost between sessions.
     ranges) is deliberately NOT started here - scoped as its own, larger follow-up, per explicit
     decision to tackle Shape Stamps first since it was the concretely confirmed, smaller-footprint
     piece.
+  - **Thirteenth follow-up: stress-tested the standalone tool's whole pipeline** (asked to confirm
+    continents generate AND mountains/hills/other terrain features appear on top of them, "not only
+    because of the simulation steps") - the real UE plugin still can't be compiled/run in this
+    environment, so this tool is the closest available stand-in. Ran 6 CLI configs isolating each
+    terrain source (Continent alone / + Noise / + hand-placed Shape Stamps, both Continent
+    algorithms, with and without Hydraulic+Thermal Erosion) and wrote a small throwaway stats tool
+    (decodes `_heightmap_ue5.png`, reports land-only min/max/stddev/relief-span and a 10-band
+    elevation histogram) to make the comparison quantitative, not just eyeballed. Confirmed: Plate
+    Tectonics alone puts 93% of all land in one flat elevation band (relief only exists as thin
+    boundary-mountain arcs); adding Noise with erosion still OFF breaks that apart (dominant band
+    drops to 61%, a second band jumps from ~1% to 32%) - hills/relief appear across the whole
+    continent interior from the Continent+Noise layer stack alone, before any simulation step runs.
+    Hydraulic+Thermal Erosion afterward measurably reshapes that already-textured terrain (narrower
+    spread, lower peaks) rather than being where the texture came from. Shape Stamps (Mountain/
+    Volcano/Crater/Canyon) also confirmed independent of both Noise and erosion. One real mistake
+    caught along the way, in the test setup not the product: the first Shape Stamp config picked
+    Latitude/Longitude coordinates blind and all 4 landed in open ocean (a stamp's height adds onto
+    whatever's already there, so +3500m onto -4000m ocean floor is still underwater) - fixed by
+    pulling real land coordinates out of the pipeline's own `_pcg_points.csv` export instead of
+    guessing.
+  - **Fourteenth follow-up: added an Ocean Overlay toggle to the GUI**, plus a real depth-buffer-
+    precision bug it exposed and a genuine (if never fully root-caused) depth-test bug in the first
+    implementation attempt - both fixed, not worked around.
+    - **The toggle itself**: a translucent shell rendered at exactly `Viz.PreviewRadiusMeters` (the
+      "Radius (km)" slider) - sea level was already anchored to that exact value before this existed
+      (`BuildSphereMesh` displaces every vertex by `RadiusMeters + HeightMeters*Exaggeration`, and
+      Height is documented as "meters above/below sea level" - see `ContinentLayer.h`), so the ask
+      was really "make that already-true relationship visible," not a data-model change. Deliberately
+      NOT scaled by Height Exaggeration (sea level is always height=0, and 0 exaggerated by any
+      factor is still 0) - it would otherwise drift away from the terrain mesh's own true waterline
+      the moment Exaggeration != 1.
+    - **Bug 1, found immediately via screenshot**: the whole globe showed fine per-pixel speckle
+      (classic z-fighting) the instant the overlay was added. Root cause: `rlSetClipPlanes` was set
+      ONCE at startup to a fixed `0.1 .. 2e9` range sized for the "Radius (km)" slider's 100,000 km
+      max, regardless of its actual current value (400 km by default) - a near/far ratio ~7 orders of
+      magnitude wider than needed, which (standard, non-reversed depth buffers pack almost all their
+      precision near the near plane) left nowhere near enough precision at the planet's actual surface
+      to distinguish the sea-level shell from land only a few hundred meters above/below it. No
+      previous feature in this file ever needed two surfaces resolved at the same pixel, so nothing
+      had exposed this before. Fixed by recomputing both planes EVERY FRAME from the actual current
+      camera Distance/ReferenceLineRadius instead of a fixed worst-case constant - cut the near/far
+      ratio by several orders of magnitude for the common case, confirmed via screenshot (speckle
+      gone, clean rendering).
+    - **Bug 2, found via a half-radius diagnostic test**: the first implementation built the overlay
+      as a raylib `GenMeshSphere(1.0, ...)` scaled up to the live radius via `DrawModel`'s own `scale`
+      parameter. Even fully opaque, it rendered in front of the terrain unconditionally - confirmed
+      with a decisive test (drawing it at HALF `PreviewRadiusMeters`, a sphere strictly inside the
+      terrain and so geometrically impossible to see from any outside camera angle if depth testing
+      worked) still showed a solid circle covering everything, in either draw order. Never fully
+      root-caused (something about this environment's software GL rasterizer and a `scale` factor
+      applied via the transform matrix to a tiny 1.0-radius mesh, rather than real-world-scale
+      positions baked directly into the vertex buffer) - side-stepped rather than chased further, by
+      rebuilding the overlay the exact same way `PreviewModel` itself already works (`CreatePreviewModel`
+      for the static topology, a new `UpdateOceanModel` writing real-world-space positions into the
+      vertex buffer every frame, same Y-up remap convention) - a pattern already proven reliable in
+      this file, rather than a second, subtly-different one. Confirmed fixed via screenshot (land
+      correctly visible through the translucent shell, no "always in front" artifact) and the toggle
+      itself confirmed live (checked vs unchecked, via `GuiCheckBox`'s own filled-vs-empty box
+      render) - the one synthetic-input snag along the way (a single `xdotool click` not reliably
+      registering as a press-then-release under Xvfb, same family of flakiness already noted for
+      Shape Stamps above) was worked around with an explicit `mousedown`/short sleep/`mouseup`
+      instead, not a product issue.
 
 ## Documentation
 

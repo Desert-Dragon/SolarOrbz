@@ -16,7 +16,12 @@ Two frontends share one core library:
   generation or scripting.
 - **`solarorbz_gui`** - an interactive real-time 3D orbit-camera preview (raylib + raygui) with live
   sliders for every pipeline stage, "Run Hydraulic Erosion"/"Run Thermal Erosion"/"Run Simulation"
-  buttons for the stages too expensive to re-run on every slider drag, and a Height/Biome view toggle.
+  buttons for the stages too expensive to re-run on every slider drag, a Height/Biome view toggle, and
+  an Ocean Overlay toggle (a translucent shell rendered at exactly sea level - the same "Radius (km)"
+  slider value every baked height is already measured above/below, per `FContinentConfig::
+  GetRawHeightMeters`'s own doc comment - so sea level was already anchored to that slider before this
+  existed; the overlay just makes where that waterline actually sits visible at a glance instead of
+  only readable off the Height view's own blue/green color ramp).
 
 ## Pipeline
 

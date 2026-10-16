@@ -30,6 +30,11 @@ namespace
     constexpr int32_t ScreenHeight = 980;
     constexpr int32_t PanelWidth = 320;
 
+    // Ocean overlay mesh resolution - a plain constant-radius sphere, so far fewer vertices are
+    // needed than the terrain preview's own (height-bearing) mesh to still look smooth at this scale.
+    constexpr int32_t OceanGridWidth = 64;
+    constexpr int32_t OceanGridHeight = 32;
+
     enum class EViewMode : int32_t { Height = 0, Biome = 1 };
 
     // Visualization-only - NOT part of any node's own config. Default height values are a very small
@@ -57,6 +62,11 @@ namespace
         int32_t MeshGridWidth = 256;
         int32_t MeshGridHeight = 128;
         EViewMode ViewMode = EViewMode::Height;
+
+        // On by default - the whole point of this overlay is to make "where is sea level" obvious at
+        // a glance rather than something only readable from the Height view's blue/green color ramp.
+        // See its draw call in main() for why it's drawn at exactly PreviewRadiusMeters, un-exaggerated.
+        bool bShowOceanOverlay = true;
     };
 
     // Grid topology (vertex count, triangle winding) depends only on MeshGridWidth/Height, which never
@@ -99,6 +109,31 @@ namespace
 
         UploadMesh(&RMesh, true); // dynamic=true - these buffers are rewritten in place every update
         return LoadModelFromMesh(RMesh);
+    }
+
+    // Ocean overlay - same topology/winding as CreatePreviewModel (built via that exact function, at
+    // OceanGridWidth/Height), just a plain constant-RadiusMeters sphere with no height displacement
+    // and no per-vertex color variation (DrawModel's own tint parameter supplies the single translucent
+    // color - see its call site's own comment for why this mirrors PreviewModel's pattern instead of a
+    // raylib GenMeshSphere scaled via DrawModel's `scale` parameter). Colors are left at
+    // CreatePreviewModel's own default fill (opaque white) permanently - never touched again after the
+    // one-time allocation, since DrawModel's tint already does the only coloring this overlay needs.
+    void UpdateOceanModel(Model& OceanModel, int32_t Width, int32_t Height, float RadiusMeters)
+    {
+        const FLatLongGrid Grid(Width, Height);
+        Mesh& RMesh = OceanModel.meshes[0];
+        Grid.ForEachCell([&](int32_t Idx, const Vec3& Dir, double, double)
+        {
+            const Vec3 Pos = Dir * (double)RadiusMeters;
+            RMesh.vertices[Idx * 3 + 0] = (float)Pos.X;
+            RMesh.vertices[Idx * 3 + 1] = (float)Pos.Z; // raylib Y-up remap, same convention as UpdatePreviewModel
+            RMesh.vertices[Idx * 3 + 2] = (float)Pos.Y;
+            RMesh.normals[Idx * 3 + 0] = (float)Dir.X;
+            RMesh.normals[Idx * 3 + 1] = (float)Dir.Z;
+            RMesh.normals[Idx * 3 + 2] = (float)Dir.Y;
+        });
+        UpdateMeshBuffer(RMesh, 0, RMesh.vertices, (int)(sizeof(float) * 3 * RMesh.vertexCount), 0);
+        UpdateMeshBuffer(RMesh, 2, RMesh.normals, (int)(sizeof(float) * 3 * RMesh.vertexCount), 0);
     }
 
     Color HeightRampColor(float HeightMeters, float MinH, float MaxH)
@@ -196,13 +231,10 @@ int main()
     InitWindow(ScreenWidth, ScreenHeight, "SolarOrbz Standalone - Terrain Pipeline Preview");
     SetTargetFPS(60);
 
-    // raylib's default far clip plane (1000 units) assumes small-scene scale - our world coordinates
-    // are in meters at planet-preview scale (tens of thousands+), so without widening this the whole
-    // model (and the camera's own orbit distance) sits beyond the far plane and nothing renders. Set
-    // generously past the "Radius (km)" slider's own max (100,000 km) times the camera's initial 3.5x
-    // orbit distance, plus headroom for scrolling further out - a too-tight far plane here would clip
-    // the whole planet invisible the moment Radius is pushed up near that max.
-    rlSetClipPlanes(0.1, 2000000000.0);
+    // Clip planes are recomputed every frame instead of set once here - see the per-frame call right
+    // before BeginMode3D below for why a single fixed value (this used to be a constant 0.1..2e9,
+    // sized to cover the "Radius (km)" slider's max of 100,000 km regardless of its CURRENT value)
+    // caused visible z-fighting once the Ocean Overlay was added.
     rlEnableBackfaceCulling();
 
     TerrainPipeline Pipeline;
@@ -262,6 +294,14 @@ int main()
     Model PreviewModel = CreatePreviewModel(Viz.MeshGridWidth, Viz.MeshGridHeight);
     float ReferenceLineRadius = Viz.PreviewRadiusMeters;
     UpdatePreviewModel(PreviewModel, BakedTerrain, Biomes, Viz, ReferenceLineRadius);
+
+    // Ocean overlay - built via CreatePreviewModel itself (same static-topology-once/UpdateMeshBuffer-
+    // per-frame pattern as PreviewModel - see UpdateOceanModel's own comment for why NOT a raylib
+    // GenMeshSphere scaled via DrawModel's `scale` parameter, which was tried first and didn't reliably
+    // depth-test against the terrain on this host). World-space positions baked in immediately so the
+    // very first frame (before any toggle/radius change calls UpdateOceanModel again) is already correct.
+    Model OceanModel = CreatePreviewModel(OceanGridWidth, OceanGridHeight);
+    UpdateOceanModel(OceanModel, OceanGridWidth, OceanGridHeight, Viz.PreviewRadiusMeters);
 
     auto RebakeBase = [&]()
     {
@@ -339,11 +379,55 @@ int main()
             Distance * std::cos(Pitch) * std::cos(Yaw)
         };
 
+        // Clip planes sized to the CURRENT scene scale (camera Distance/ReferenceLineRadius), not a
+        // single fixed value wide enough to cover every radius the "Radius (km)" slider allows
+        // regardless of its actual current setting (the old 0.1..2e9 constant, sized for a 100,000 km
+        // planet, was ~7 orders of magnitude wider than this tool's own 400 km default ever needs).
+        // Standard (non-reversed) depth buffers pack almost all their usable precision close to the
+        // near plane and starve it near the far plane - a near/far ratio that huge left nowhere near
+        // enough precision at the planet's actual surface to tell the Ocean Overlay's sea-level shell
+        // apart from land only a few hundred meters above/below it, which read as per-pixel flickering
+        // speckle (confirmed via screenshot the moment Ocean Overlay was added - every single previous
+        // feature in this file only ever needed ONE surface visible at a given pixel, so this exact
+        // failure mode had nothing to expose it before now). Recomputed every frame (not just once)
+        // since Distance changes continuously while orbiting/zooming and ReferenceLineRadius changes
+        // with Radius/Height Exaggeration/the baked terrain itself. Both bounds keep generous (2x-10x)
+        // margin past what's actually needed so normal zooming/panel use never clips the sphere away.
+        const float NearPlane = std::max(Distance * 0.0005f, 0.05f);
+        const float FarPlane = std::max((Distance + ReferenceLineRadius) * 2.0f, NearPlane * 10.0f);
+        rlSetClipPlanes(NearPlane, FarPlane);
+
         BeginDrawing();
         ClearBackground(Color{ 18, 18, 24, 255 });
 
         BeginMode3D(Camera);
         DrawModel(PreviewModel, { 0, 0, 0 }, 1.0f, WHITE);
+
+        // Ocean overlay - a translucent shell at exactly sea level (Viz.PreviewRadiusMeters, the same
+        // "Radius (km)" slider value BuildSphereMesh itself adds Height to - see SphereMesh.h). NOT
+        // multiplied by Height Exaggeration: sea level is always height=0 by this tool's own
+        // convention (ContinentLayer.h: "Height in meters above/below sea level"), and 0 exaggerated
+        // by any factor is still 0 - so the overlay's radius has to stay exactly PreviewRadiusMeters
+        // regardless of the Exaggeration slider, or it would drift away from the terrain mesh's own
+        // true waterline the moment Exaggeration != 1.
+        //
+        // Built the SAME way PreviewModel itself is (CreatePreviewModel's own static-topology-once/
+        // UpdateMeshBuffer-per-frame pattern, world-space positions baked directly into the vertex
+        // buffer) rather than a raylib GenMeshSphere scaled via DrawModel's own `scale` parameter - an
+        // earlier version tried that and, even fully opaque, it rendered in front of the terrain
+        // UNCONDITIONALLY regardless of draw order or actual radius (confirmed via screenshot: a
+        // sphere drawn at HALF PreviewRadiusMeters, entirely inside the terrain and so geometrically
+        // impossible to see from outside it, still rendered as a solid circle covering everything).
+        // Never fully root-caused (something about this environment's software GL rasterizer and a
+        // DrawModel `scale` factor applied via the transform matrix to a tiny 1.0-radius mesh, rather
+        // than real-world-scale positions baked into the vertex buffer itself, the way every other
+        // mesh in this file already works) - side-stepped by reusing the one pattern already proven
+        // reliable here instead of chasing the exact mechanism further.
+        if (Viz.bShowOceanOverlay)
+        {
+            UpdateOceanModel(OceanModel, OceanGridWidth, OceanGridHeight, Viz.PreviewRadiusMeters);
+            DrawModel(OceanModel, { 0, 0, 0 }, 1.0f, Color{ 50, 110, 190, 110 });
+        }
 
         // Visual-reference-only overlay: a line through both poles (the sphere's own rotation axis)
         // and a great circle through the prime meridian (0 deg longitude) AND its antimeridian (180
@@ -649,6 +733,10 @@ int main()
         }
         Y += 28;
         SliderFloat("Height Exaggeration", Viz.HeightExaggeration, 1.0f, 15.0f, &bNeedsClimateRefresh);
+        // Pure draw-time visualization flag read directly every frame (see its draw call above) - no
+        // rebake/refresh needed, unlike most other controls here, so this just binds straight to it.
+        GuiCheckBox(Rectangle{ 10, (float)Y, 20, 20 }, "Ocean Overlay (sea level)", &Viz.bShowOceanOverlay);
+        Y += 26;
 
         if (GuiButton(Rectangle{ 10, (float)Y, PanelWidth - 20.0f, 26 }, "Regenerate (discards erosion)") || bNeedsRebuild)
         {
@@ -747,6 +835,7 @@ int main()
     }
 
     UnloadModel(PreviewModel);
+    UnloadModel(OceanModel);
     CloseWindow();
     return 0;
 }
