@@ -84,6 +84,25 @@ struct FContinentConfig
     int32_t NumPlates = 12;
     float OceanicPlateFraction = 0.55f;
     float BoundaryInfluenceDegrees = 8.0f;
+    // Plate boundaries are otherwise assigned by raw nearest-seed-direction comparison (see
+    // BakePlateTectonics' PlateId loop) - a spherical Voronoi diagram, whose cell edges are EXACT
+    // great-circle arcs between two seeds. At a visible-at-a-glance test (a handful of large plates
+    // on a planet-sized sphere), that reads as an unmistakably artificial dead-straight/polygonal
+    // coastline - confirmed via the GUI (see ROADMAP.md's Mars-test entry). These two fields warp the
+    // DIRECTION used for that nearest-seed comparison only (same domain-warp technique
+    // GetRawHeightRadialSeeds already uses via CoastlineWarpStrength/Frequency - see that function's
+    // own comment - just applied to plate assignment instead of a seed-radius falloff), so the
+    // resulting boundary wiggles rather than following an exact geodesic. Deliberately separate
+    // fields from CoastlineWarpStrength/Frequency (not a reuse of those) so Plate Tectonics' boundary
+    // jaggedness can be tuned independently of Radial Seeds' coastline warp - this is a different
+    // visual: continent-scale coastline wobble vs. per-mountain-range-scale boundary crenellation.
+    float PlateBoundaryWarpStrength = 0.5f;
+    // Deliberately higher than CoastlineWarpFrequency's 1.2 default: Radial Seeds' warp is meant to
+    // bow whole landmass coastlines in broad sweeps, but a Voronoi plate boundary is already
+    // thousands of km long, so a warp at the SAME broad frequency would just bend the whole boundary
+    // in one direction rather than breaking up its straightness - a higher frequency puts multiple
+    // independent wiggles along one boundary's length instead.
+    float PlateBoundaryWarpFrequency = 4.0f;
     float MountainHeightMeters = 3000.0f;
     float TrenchDepthMeters = -3000.0f;
     float RidgeHeightMeters = 600.0f;

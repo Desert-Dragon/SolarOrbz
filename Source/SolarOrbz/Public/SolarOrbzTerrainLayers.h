@@ -1061,6 +1061,37 @@ public:
 	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Continent|Plates", meta = (ClampMin = "1.0", ClampMax = "45.0", EditCondition = "Algorithm == ESolarOrbzContinentAlgorithm::PlateTectonics"))
 	float BoundaryInfluenceDegrees = 8.0f;
 
+	/**
+	 * Plate Tectonics only. Plate boundaries are otherwise an EXACT spherical Voronoi diagram -
+	 * BakePlateTectonics' PlateId loop assigns each cell to its single nearest plate SeedDirection by
+	 * raw dot product, with nothing perturbing that comparison - so every boundary is a true geodesic
+	 * (great-circle arc) between two seeds, and at a visible-at-a-glance test (a handful of large
+	 * plates on a planet-sized sphere) that reads as an unmistakably artificial dead-straight/
+	 * polygonal coastline (confirmed hands-on via the standalone tool's GUI - see ROADMAP.md's
+	 * Mars-test entry, and that tool's own matching fix/field in ContinentLayer.h). This warps the
+	 * DIRECTION used for that nearest-seed comparison only - same domain-warp technique
+	 * CoastlineWarpStrength/Frequency above already use for Radial Seeds' own coastlines, just applied
+	 * to plate assignment instead of a seed-radius falloff - so the resulting boundary wiggles rather
+	 * than following an exact geodesic. Deliberately separate fields from CoastlineWarpStrength/
+	 * Frequency (not a reuse): those are EditCondition-gated to Radial Seeds only and tuned for
+	 * whole-landmass coastline bowing, whereas this needs to be tunable independently for Plate
+	 * Tectonics' much larger (and otherwise perfectly straight) boundary edges. 0 = off, the original
+	 * exact-Voronoi look.
+	 */
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Continent|Plates", meta = (ClampMin = "0.0", ClampMax = "2.0", EditCondition = "Algorithm == ESolarOrbzContinentAlgorithm::PlateTectonics"))
+	float PlateBoundaryWarpStrength = 0.5f;
+
+	/**
+	 * Plate Tectonics only. Frequency of the warp field used by Plate Boundary Warp Strength above -
+	 * deliberately higher than CoastlineWarpFrequency's own 1.2 default: Radial Seeds' warp is meant
+	 * to bow a single landmass's whole coastline in broad sweeps, but a Voronoi plate boundary is
+	 * already thousands of km long, so a warp at that same broad frequency would just bend the whole
+	 * boundary in one direction rather than breaking up its straightness - a higher frequency puts
+	 * multiple independent wiggles along one boundary's length instead.
+	 */
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Continent|Plates", meta = (ClampMin = "0.01", EditCondition = "Algorithm == ESolarOrbzContinentAlgorithm::PlateTectonics && PlateBoundaryWarpStrength > 0.0"))
+	float PlateBoundaryWarpFrequency = 4.0f;
+
 	/** Plate Tectonics only. Peak extra height, meters, where two continental plates converge (collision mountains - the Himalaya case). */
 	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Continent|Plates", meta = (ClampMin = "0.0", Units = "m", EditCondition = "Algorithm == ESolarOrbzContinentAlgorithm::PlateTectonics"))
 	float MountainHeightMeters = 3000.0f;

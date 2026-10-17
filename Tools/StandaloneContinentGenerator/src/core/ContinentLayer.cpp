@@ -317,11 +317,29 @@ void ContinentLayer::BakePlateTectonics()
     std::vector<int32_t> PlateId(NumCells);
     for (int32_t Idx = 0; Idx < NumCells; ++Idx)
     {
+        // Warp the direction used for nearest-seed comparison only (see PlateBoundaryWarpStrength's
+        // own header comment) - CellDirections[Idx] itself, used for everything else below (height
+        // sampling, boundary axis, polar overrides), stays exact. Same domain-warp shape as
+        // GetRawHeightRadialSeeds' own CoastlineWarpStrength/Frequency, deliberately duplicated
+        // rather than factored into a shared helper: these two warps are tuned independently (see
+        // PlateBoundaryWarpFrequency's comment on why its default differs from Radial Seeds'), and at
+        // only ~10 lines each, a shared helper would cost more in indirection than it saves.
+        Vec3 WarpedDirection = CellDirections[Idx];
+        if (Config.PlateBoundaryWarpStrength > 0.0f)
+        {
+            const Vec3 WarpPos = CellDirections[Idx] * Config.PlateBoundaryWarpFrequency;
+            const Vec3 Warp(
+                NoiseBasis::PerlinNoise3D(WarpPos),
+                NoiseBasis::PerlinNoise3D(WarpPos + Vec3(31.7, 0.0, 0.0)),
+                NoiseBasis::PerlinNoise3D(WarpPos + Vec3(0.0, 57.3, 0.0)));
+            WarpedDirection = (CellDirections[Idx] + Warp * Config.PlateBoundaryWarpStrength).GetSafeNormal();
+        }
+
         int32_t BestPlate = 0;
         double BestDot = -2.0;
         for (int32_t P = 0; P < PlateCount; ++P)
         {
-            const double Dot = Vec3::Dot(CellDirections[Idx], Plates[P].SeedDirection);
+            const double Dot = Vec3::Dot(WarpedDirection, Plates[P].SeedDirection);
             if (Dot > BestDot)
             {
                 BestDot = Dot;

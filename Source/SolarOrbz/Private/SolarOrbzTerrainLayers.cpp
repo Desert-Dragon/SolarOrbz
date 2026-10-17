@@ -1549,11 +1549,29 @@ void USolarOrbzContinentTerrainLayer::BakePlateTectonics(bool bEffectiveNorthPol
 	PlateId.SetNumUninitialized(NumCells);
 	for (int32 Idx = 0; Idx < NumCells; ++Idx)
 	{
+		// Warp the direction used for nearest-seed comparison only (see PlateBoundaryWarpStrength's
+		// own header comment) - CellDirections[Idx] itself, used for everything else below (height
+		// sampling, boundary axis, polar overrides), stays exact. Same domain-warp shape as
+		// GetRawHeightRadialSeeds' own CoastlineWarpStrength/Frequency, deliberately duplicated rather
+		// than factored into a shared helper: these two warps are tuned independently (see
+		// PlateBoundaryWarpFrequency's comment on why its default differs from Radial Seeds' own), and
+		// at only ~10 lines each, a shared helper would cost more in indirection than it saves.
+		FVector WarpedDirection = CellDirections[Idx];
+		if (PlateBoundaryWarpStrength > 0.0f)
+		{
+			const FVector WarpPos = CellDirections[Idx] * PlateBoundaryWarpFrequency;
+			const FVector Warp(
+				FMath::PerlinNoise3D(WarpPos),
+				FMath::PerlinNoise3D(WarpPos + FVector(31.7f, 0.0f, 0.0f)),
+				FMath::PerlinNoise3D(WarpPos + FVector(0.0f, 57.3f, 0.0f)));
+			WarpedDirection = (CellDirections[Idx] + Warp * PlateBoundaryWarpStrength).GetSafeNormal();
+		}
+
 		int32 BestPlate = 0;
 		float BestDot = -2.0f;
 		for (int32 P = 0; P < PlateCount; ++P)
 		{
-			const float Dot = FVector::DotProduct(CellDirections[Idx], Plates[P].SeedDirection);
+			const float Dot = FVector::DotProduct(WarpedDirection, Plates[P].SeedDirection);
 			if (Dot > BestDot)
 			{
 				BestDot = Dot;

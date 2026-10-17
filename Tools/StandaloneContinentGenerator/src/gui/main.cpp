@@ -602,6 +602,13 @@ int main()
             SliderInt("Num Plates", ContinentNodeRaw->Config.NumPlates, 2, 64, &bNeedsRebuild);
             SliderFloat("Mountain Height (m)", ContinentNodeRaw->Config.MountainHeightMeters, 0.0f, 10000.0f, &bNeedsRebuild);
             SliderFloat("Trench Depth (m)", ContinentNodeRaw->Config.TrenchDepthMeters, -10000.0f, 0.0f, &bNeedsRebuild);
+            // Plate boundaries are otherwise an exact spherical-Voronoi nearest-seed comparison - dead
+            // straight/polygonal-looking at a glance (confirmed via this same GUI - see ROADMAP.md's
+            // Mars-test entry). These warp the direction used for that comparison only, same domain-
+            // warp technique as Radial Seeds' own (CLI-only) CoastlineWarpStrength/Frequency - see
+            // PlateBoundaryWarpStrength's own header comment in ContinentLayer.h.
+            SliderFloat("Boundary Warp Strength", ContinentNodeRaw->Config.PlateBoundaryWarpStrength, 0.0f, 2.0f, &bNeedsRebuild);
+            SliderFloat("Boundary Warp Freq", ContinentNodeRaw->Config.PlateBoundaryWarpFrequency, 0.5f, 20.0f, &bNeedsRebuild);
             SliderInt("Steps Per Run", ContinentNodeRaw->Config.StepsPerRun, 1, 50, nullptr);
             SliderFloat("Myr Per Step", ContinentNodeRaw->Config.MillionYearsPerStep, 0.1f, 50.0f, nullptr);
 

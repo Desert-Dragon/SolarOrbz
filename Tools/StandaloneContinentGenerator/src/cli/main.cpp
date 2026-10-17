@@ -81,6 +81,8 @@ namespace
         if (J.contains("NumPlates")) Config.NumPlates = J.at("NumPlates").get<int32_t>();
         if (J.contains("OceanicPlateFraction")) Config.OceanicPlateFraction = J.at("OceanicPlateFraction").get<float>();
         if (J.contains("BoundaryInfluenceDegrees")) Config.BoundaryInfluenceDegrees = J.at("BoundaryInfluenceDegrees").get<float>();
+        if (J.contains("PlateBoundaryWarpStrength")) Config.PlateBoundaryWarpStrength = J.at("PlateBoundaryWarpStrength").get<float>();
+        if (J.contains("PlateBoundaryWarpFrequency")) Config.PlateBoundaryWarpFrequency = J.at("PlateBoundaryWarpFrequency").get<float>();
         if (J.contains("MountainHeightMeters")) Config.MountainHeightMeters = J.at("MountainHeightMeters").get<float>();
         if (J.contains("TrenchDepthMeters")) Config.TrenchDepthMeters = J.at("TrenchDepthMeters").get<float>();
         if (J.contains("RidgeHeightMeters")) Config.RidgeHeightMeters = J.at("RidgeHeightMeters").get<float>();

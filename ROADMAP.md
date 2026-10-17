@@ -1664,6 +1664,38 @@ commitment or a schedule - just a place these don't get lost between sessions.
       registering as a press-then-release under Xvfb, same family of flakiness already noted for
       Shape Stamps above) was worked around with an explicit `mousedown`/short sleep/`mouseup`
       instead, not a product issue.
+  - **Mars-test via the GUI: Plate Tectonics' continent outlines read as dead-straight/polygonal, not
+    organic.** **Done (fixed, in both this tool and the real UE plugin).** Built a Mars-like test
+    planet directly in `solarorbz_gui` (Plate Tectonics, Mountain Height ~9000m, Trench Depth
+    ~-8000m, a Volcano Shape Stamp) specifically to look at large-scale terrain/mountains with color
+    ignored. Found two real things: the single Shape Stamp volcano was there and correctly positioned
+    (confirmed via a tight crop showing its caldera) but visually swallowed by the already-larger
+    Plate-Tectonics relief around it (a settings/scale observation, not a bug - not touched here); and
+    the plate/continent outline itself was an unmistakably artificial dead-straight polygon, a real
+    root-cause bug: `BakePlateTectonics`' plate-assignment loop (`ContinentLayer.cpp` here;
+    `SolarOrbzTerrainLayers.cpp`'s identical loop in the real plugin) is a pure nearest-seed-direction
+    (spherical Voronoi) comparison with nothing perturbing it, so every boundary is an exact geodesic
+    - at a handful of large plates on a planet-sized sphere, that reads as a ruler-straight edge, not
+    a coastline. Fixed in both codebases the same way: a new `PlateBoundaryWarpStrength`/
+    `PlateBoundaryWarpFrequency` pair (own dedicated fields, not a reuse of Radial Seeds' own
+    `CoastlineWarpStrength`/`Frequency` - tuned independently, and `EditCondition`-gated to
+    `PlateTectonics` in the real plugin) warps the DIRECTION used for that one nearest-seed comparison
+    only, via the exact same domain-warp construction `GetRawHeightRadialSeeds` already uses for its
+    own coastlines - everything else that loop computes (height sampling, boundary axis, polar
+    overrides) still reads the unwarped direction. Verified via the CLI, not just by eye: a same-seed
+    before/after heightmap PNG comparison at `PlateBoundaryWarpStrength = 0` vs `0.5` (`Frequency =
+    4.0`, deliberately higher than Radial Seeds' own 1.2 default - a plate boundary is already
+    thousands of km long, so a broad-sweep warp would just bend the whole edge in one direction rather
+    than breaking up its straightness) turned the exact-arc boundaries into genuinely organic
+    coastlines (fjords, peninsulas, bays), re-confirmed live in the GUI afterward at the same
+    dramatic Mountain Height/Trench Depth settings. Deliberately did NOT also warp
+    `UpdateBoundaryStress`'s own separate, coarser nearest-seed grid (both codebases have one) - that
+    pass only classifies which two plates are adjacent for convergence/divergence stress bookkeeping,
+    not the visible boundary shape, so warping it would add risk (subtly changing stress accumulation)
+    for no visual benefit. Same standing caveat as the rest of this plugin for the
+    `SolarOrbzTerrainLayers.cpp`/`.h` side: not compiled (no UE5.8 compiler available in this
+    environment) - hand-matched line-for-line against the standalone tool's own version, which WAS
+    built and visually verified both via the CLI heightmap comparison and live in the GUI.
 
 ## Documentation
 
