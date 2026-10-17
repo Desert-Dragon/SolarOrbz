@@ -481,10 +481,20 @@ void USolarOrbzFractalNoiseTerrainLayerBase::Bake(const TFunctionRef<float(const
 	// PriorLayersHeight is deliberately unused - this Bake() exists purely as a "once per
 	// regenerate" hook to calibrate amplitude compensation via Monte Carlo sampling of this
 	// layer's OWN noise, not for whole-surface height data the way Erosion/Terrace use it.
+	// RadiusCm WAS unused for the same reason, until WavelengthMeters (below) needed it to convert
+	// a real-world wavelength into this noise machinery's own dimensionless Frequency convention.
 
 	// Depends only on Seed, constant for the whole bake - compute once here rather than
 	// recomputing it on every single ComputeNormalizedNoiseUncompensated call (i.e. every vertex).
 	CachedSeedOffset = SolarOrbzNoiseBasis::ComputeSeedOffset(Seed);
+
+	// WavelengthMeters -> Frequency unit conversion (see that field's own comment for the
+	// derivation) - also computed once here rather than per vertex. RadiusCm is only available to
+	// this function (passed in by PrepareLayers/Bake's caller), not stored on the layer itself, so
+	// this is the one place that conversion can happen.
+	CachedEffectiveFrequency = bWavelengthInMeters
+		? (float)((RadiusCm / 100.0) / FMath::Max((double)WavelengthMeters, (double)KINDA_SMALL_NUMBER))
+		: Frequency;
 
 	if (!bCompensateAmplitude)
 	{
@@ -551,7 +561,7 @@ float USolarOrbzFractalNoiseTerrainLayerBase::ComputeNormalizedNoiseUncompensate
 	// recomputing it per vertex (the old behavior) was pure wasted sin/Frac work in the hot loop.
 	const FVector& SeedOffset = CachedSeedOffset;
 
-	FVector SamplePos = UnitDirection * Frequency + SeedOffset;
+	FVector SamplePos = UnitDirection * CachedEffectiveFrequency + SeedOffset;
 
 	if (WarpStrength > 0.0f)
 	{

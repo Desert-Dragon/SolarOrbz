@@ -1045,6 +1045,33 @@ commitment or a schedule - just a place these don't get lost between sessions.
     UE5.8 compiler available in this environment) - hand-matched against this file's existing
     conventions and verified by independent hand-computation of the depth formula, not by running
     it.
+  - **Gave the Noise/Planetary Noise Layers an actual way to author ground-scale (meter-range)
+    detail, so the depth cap above has real terrain to resolve rather than just subdividing
+    already-smooth noise.** **Done.** The gap the previous item's own depth cap didn't fix by
+    itself: `USolarOrbzFractalNoiseTerrainLayerBase`'s `Frequency` is dimensionless - "cycles per
+    trip around the sphere" - so its real-world wavelength is `RadiusMeters / Frequency`; reaching a
+    4-meter wavelength on an Earth-like planet needs `Frequency ~1,592,750`, not a number anyone
+    would stumble into by hand. Without a usable way to dial that in, the chunked system could mesh
+    all the way down to a 1-4m quad and still just be subdividing continent-scale noise with nothing
+    new to show at that scale - detail resolution with no detail. Fixed by adding
+    `WavelengthMeters` (authored directly in real-world meters - the base octave's actual ground
+    wavelength) and a `bWavelengthInMeters` toggle to switch the base class's base-octave knob from
+    `Frequency` to it; converted to the equivalent `Frequency` once per `Bake()` (which is handed
+    `RadiusCm`, previously unused by this class) via `RadiusMeters / WavelengthMeters` - cached as
+    `CachedEffectiveFrequency` rather than recomputed per vertex, same pattern this file already
+    uses for `CachedSeedOffset`/`CachedAmplitudeScale`. A pure unit conversion, not a different noise
+    algorithm - `NoiseType`/`Octaves`/`Lacunarity`/`Persistence`/`Warp` all behave identically
+    either way, and both `USolarOrbzNoiseTerrainLayer` and `USolarOrbzPlanetaryNoiseTerrainLayer`
+    inherit this for free since both build on the same base. One precision question worth closing
+    explicitly rather than assuming away, given how large the underlying Frequency values get: this
+    project's `FVector` is UE5's double-precision (LWC) type, not single-precision float, so the
+    noise lattice's integer-floor/fractional-part math stays exact at these magnitudes - no
+    aliasing/precision loss the way there would be under single-precision floats. Off by default
+    (`bWavelengthInMeters = false`) so every layer authored before this existed keeps using
+    `Frequency` exactly as before. Same standing caveat as the rest of this plugin: not compiled -
+    hand-verified the `RadiusMeters / WavelengthMeters` conversion numerically instead (4m and 1m
+    wavelength targets at Earth-like Radius reproduce the exact Frequency values this item's own
+    header comment quotes).
 
 - **Real-time orbit and rotation.** Planets need to actually orbit their star and rotate on their
   axis in real time, with players able to seamlessly leave one planet and travel to another. This

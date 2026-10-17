@@ -331,10 +331,51 @@ public:
 
 	/**
 	 * Base frequency, roughly "noise cycles per trip around the sphere". Small values (0.5-3) give
-	 * continent-scale features; large values (20+) give fine surface roughness.
+	 * continent-scale features; large values (20+) give fine surface roughness. Hidden when
+	 * bWavelengthInMeters is on (WavelengthMeters replaces it below) - the two are different units
+	 * for the exact same underlying knob, never combined.
+	 *
+	 * Ground truth for what "cycles per trip around the sphere" actually means in real-world terms:
+	 * SamplePos = UnitDirection * Frequency (see ComputeNormalizedNoiseUncompensated) places the
+	 * sample on a sphere of radius = Frequency in noise-basis space, so this field's own real-world
+	 * wavelength is `RadiusMeters / Frequency` - e.g. on an Earth-like planet (Radius ~6,371,000 m),
+	 * reaching a 4-meter wavelength this way needs Frequency ~1,592,750, not a number anyone should
+	 * have to compute by hand. See WavelengthMeters below for the actually-usable way to dial in
+	 * ground-scale (meter-range) detail directly.
 	 */
-	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Noise", meta = (ClampMin = "0.01"))
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Noise", meta = (ClampMin = "0.01", EditCondition = "!bWavelengthInMeters"))
 	float Frequency = 2.0f;
+
+	/**
+	 * Alternative to Frequency above, authored directly in real-world meters - this field's own
+	 * wavelength IS the actual ground distance between successive peaks (or valleys) of this layer's
+	 * base octave, not a dimensionless "cycles around the sphere" count that needs converting by
+	 * hand. Exists specifically so ground-scale detail (the kind the chunked terrain streaming
+	 * system's TargetQuadEdgeMeters, SolarOrbzChunkLODPolicy.h, now resolves down to - 4 m by
+	 * default, optionally 1 m) is something a designer can actually dial in directly, rather than
+	 * fighting the huge Frequency values the sphere-relative convention above would otherwise
+	 * require (see Frequency's own comment for a concrete Earth-scale example of just how huge).
+	 * Converted into the equivalent dimensionless Frequency once per Bake() via
+	 * `RadiusMeters / WavelengthMeters` - this is a straight unit conversion, not a different noise
+	 * algorithm, so NoiseType/Octaves/Lacunarity/Persistence/Warp all behave identically either way;
+	 * only where the BASE octave's wavelength lands changes. A real-precision concern this does NOT
+	 * have, worth calling out since the Frequency values involved are large: FVector is UE5's
+	 * double-precision (LWC) type, not single-precision float, so sampling at a frequency in the
+	 * hundreds of thousands to millions loses no meaningful precision the way it would under
+	 * single-precision floats - the noise lattice's integer-floor/fractional-part math stays exact
+	 * at these magnitudes.
+	 */
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Noise", meta = (ClampMin = "0.01", Units = "m", EditCondition = "bWavelengthInMeters"))
+	float WavelengthMeters = 4.0f;
+
+	/**
+	 * Switches the base-octave size knob from Frequency (dimensionless, sphere-relative) to
+	 * WavelengthMeters (real-world meters) - see WavelengthMeters' own comment for why this exists.
+	 * Off by default so every layer authored before this field existed keeps using Frequency exactly
+	 * as before.
+	 */
+	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Noise")
+	bool bWavelengthInMeters = false;
 
 	/** Frequency multiplier applied each octave. >1 makes each successive octave finer. */
 	UPROPERTY(EditAnywhere, Category = "SolarOrbz|Noise", meta = (ClampMin = "1.0"))
@@ -398,6 +439,16 @@ private:
 
 	/** Set by Bake() each regenerate - depends only on Seed, so it's computed once here rather than on every ComputeNormalizedNoiseUncompensated call (i.e. every vertex). */
 	mutable FVector CachedSeedOffset = FVector::ZeroVector;
+
+	/**
+	 * The actual dimensionless frequency ComputeNormalizedNoiseUncompensated samples with - either
+	 * Frequency verbatim (bWavelengthInMeters off) or `RadiusMeters / WavelengthMeters` (on),
+	 * computed once per Bake() (which is handed RadiusCm) rather than every vertex. See
+	 * WavelengthMeters' own comment for the derivation and why this is a pure unit conversion, not a
+	 * different noise algorithm. Defaults to Frequency's own default so a never-baked layer still
+	 * answers sensibly rather than with 0.
+	 */
+	mutable float CachedEffectiveFrequency = 2.0f;
 };
 
 // ================================================================================================
