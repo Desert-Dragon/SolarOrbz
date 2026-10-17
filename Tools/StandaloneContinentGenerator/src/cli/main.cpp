@@ -109,6 +109,8 @@ namespace
         if (J.contains("Lacunarity")) Config.Lacunarity = J.at("Lacunarity").get<float>();
         if (J.contains("AmplitudeMeters")) Config.AmplitudeMeters = J.at("AmplitudeMeters").get<float>();
         if (J.contains("SeedOffset")) Config.SeedOffset = J.at("SeedOffset").get<int32_t>();
+        if (J.contains("bWavelengthInMeters")) Config.bWavelengthInMeters = J.at("bWavelengthInMeters").get<bool>();
+        if (J.contains("WavelengthMeters")) Config.WavelengthMeters = J.at("WavelengthMeters").get<float>();
     }
 
     EShapeStampArchetype ShapeStampArchetypeFromString(const std::string& S)
@@ -273,6 +275,10 @@ int main(int argc, char** argv)
     if (RootJson.contains("GridHeight")) Pipeline.GridHeight = RootJson.at("GridHeight").get<int32_t>();
     if (RootJson.contains("Seed")) Pipeline.Context.Seed = RootJson.at("Seed").get<int32_t>();
     if (bHasSeedOverride) Pipeline.Context.Seed = SeedOverride;
+    // Same --radius-meters value WritePcgPointsCsv's Slope column already uses - now also the one
+    // real-world scale a WavelengthMeters-authored noise node needs to convert to its actual sampling
+    // Frequency (see FPipelineContext::RadiusMeters' own comment).
+    Pipeline.Context.RadiusMeters = RadiusMeters;
 
     // Continent: always present (the base layer), defaults match ContinentLayer's own if the
     // config file omits the "Continent" key entirely.

@@ -19,6 +19,18 @@
 struct FPipelineContext
 {
     int32_t Seed = 0;
+
+    // The actual planet radius, meters - every OTHER height value in this pipeline (Continent's
+    // OceanFloorDepthMeters, Noise's AmplitudeMeters, etc.) is already a real, absolute meters value,
+    // independent of radius; this field exists purely so a node's internal noise-sampling FREQUENCY
+    // (cycles per trip around the unit sphere its direction vectors live on) can be converted to/from
+    // a real-world WAVELENGTH, the same way it needs to be convertible in the UE plugin's own
+    // USolarOrbzFractalNoiseTerrainLayerBase::TargetQuadEdgeMeters work (see that class's
+    // WavelengthMeters field for the full derivation this mirrors: wavelength = RadiusMeters /
+    // Frequency). Set by the caller (GUI from Viz.PreviewRadiusMeters, CLI from --radius-meters)
+    // before Bake() - defaults to Earth's own mean radius so a node reading this before any caller
+    // sets it still gets a sane answer rather than 0.
+    double RadiusMeters = 6378137.0;
 };
 
 class ITerrainNode

@@ -12,6 +12,7 @@
 #include "Climate.h"
 #include "BiomeClassifier.h"
 #include "SphereMesh.h"
+#include "GroundPatchMesh.h"
 #include "PlanetExport.h"
 
 #include <raylib.h>
@@ -224,6 +225,85 @@ namespace
         UpdateMeshBuffer(RMesh, 2, RMesh.normals, (int)(sizeof(float) * 3 * RMesh.vertexCount), 0);
         UpdateMeshBuffer(RMesh, 3, RMesh.colors, (int)(sizeof(unsigned char) * 4 * RMesh.vertexCount), 0);
     }
+
+    // Ground View - "stand on the ground and look around" counterpart to PreviewModel's whole-planet
+    // orbit view (see GroundPatchMesh.h's own top comment for why a separate flat local mesh, not a
+    // finer BuildSphereMesh bake, is what actually makes ground-scale noise visible at all). Same
+    // static-topology-once/UpdateMeshBuffer-per-update pattern as CreatePreviewModel/UpdatePreviewModel
+    // above - GroundPatchResolution never changes at runtime, so only the Resolution the caller first
+    // creates this with matters; later terrain/location changes go through UpdateGroundPatchModel.
+    Model CreateGroundPatchModel(int32_t Resolution)
+    {
+        Resolution = std::max(Resolution, 2);
+        Mesh RMesh = { 0 };
+        RMesh.vertexCount = Resolution * Resolution;
+        RMesh.triangleCount = (Resolution - 1) * (Resolution - 1) * 2;
+        RMesh.vertices = (float*)MemAlloc(sizeof(float) * 3 * RMesh.vertexCount);
+        RMesh.normals = (float*)MemAlloc(sizeof(float) * 3 * RMesh.vertexCount);
+        RMesh.colors = (unsigned char*)MemAlloc(sizeof(unsigned char) * 4 * RMesh.vertexCount);
+        RMesh.indices = (unsigned short*)MemAlloc(sizeof(unsigned short) * RMesh.triangleCount * 3);
+
+        std::fill(RMesh.vertices, RMesh.vertices + 3 * RMesh.vertexCount, 0.0f);
+        std::fill(RMesh.normals, RMesh.normals + 3 * RMesh.vertexCount, 0.0f);
+        std::fill(RMesh.colors, RMesh.colors + 4 * RMesh.vertexCount, (unsigned char)255);
+
+        size_t IndexCursor = 0;
+        for (int32_t Row = 0; Row < Resolution - 1; ++Row)
+        {
+            for (int32_t Col = 0; Col < Resolution - 1; ++Col)
+            {
+                const unsigned short I00 = (unsigned short)(Row * Resolution + Col);
+                const unsigned short I10 = (unsigned short)(Row * Resolution + Col + 1);
+                const unsigned short I01 = (unsigned short)((Row + 1) * Resolution + Col);
+                const unsigned short I11 = (unsigned short)((Row + 1) * Resolution + Col + 1);
+                // Same verified front-facing order as CreatePreviewModel's own index generation.
+                RMesh.indices[IndexCursor++] = I00; RMesh.indices[IndexCursor++] = I11; RMesh.indices[IndexCursor++] = I10;
+                RMesh.indices[IndexCursor++] = I00; RMesh.indices[IndexCursor++] = I01; RMesh.indices[IndexCursor++] = I11;
+            }
+        }
+
+        UploadMesh(&RMesh, true);
+        return LoadModelFromMesh(RMesh);
+    }
+
+    void UpdateGroundPatchModel(Model& PatchModel, const FGroundPatchMesh& Src)
+    {
+        Mesh& RMesh = PatchModel.meshes[0];
+        for (size_t i = 0; i < Src.Vertices.size(); ++i)
+        {
+            const FGroundPatchVertex& V = Src.Vertices[i];
+            RMesh.vertices[i * 3 + 0] = V.X;
+            RMesh.vertices[i * 3 + 1] = V.Y;
+            RMesh.vertices[i * 3 + 2] = V.Z;
+            RMesh.normals[i * 3 + 0] = (float)V.Normal.X;
+            RMesh.normals[i * 3 + 1] = (float)V.Normal.Y;
+            RMesh.normals[i * 3 + 2] = (float)V.Normal.Z;
+
+            // Same cheap fixed-direction Lambertian trick UpdatePreviewModel's own comment explains in
+            // full (raylib's default material is unlit - DrawModel just interpolates vertex colors
+            // verbatim, so without this, flat per-vertex color would make the patch's own relief
+            // completely invisible from any angle steep enough that its silhouette against the sky
+            // doesn't give it away - confirmed via screenshot: looking straight down at Ground Detail's
+            // 0.4m bumps showed nothing at all under a flat tint, only the horizon-silhouette view
+            // revealed them, and a ground-level preview whose detail is only visible from ONE specific
+            // viewing angle isn't a useful preview). Same LightDir, same base-color-times-Shade shape -
+            // deliberately NOT factored into a shared helper with UpdatePreviewModel's copy, since one
+            // takes a biome-aware base color per vertex and this one has a single constant base color;
+            // a shared function would need to take that color as a parameter either way, which is the
+            // entire body of this one.
+            static const Vec3 LightDir = Vec3(0.5, 0.75, -0.4).GetSafeNormal();
+            const float NdotL = (float)std::max(Vec3::Dot(V.Normal, LightDir), 0.0);
+            const float Shade = 0.45f + 0.65f * NdotL;
+            auto Tone = [Shade](unsigned char Channel) { return (unsigned char)MathUtil::Clamp((float)Channel * Shade, 0.0f, 255.0f); };
+            RMesh.colors[i * 4 + 0] = Tone(150);
+            RMesh.colors[i * 4 + 1] = Tone(130);
+            RMesh.colors[i * 4 + 2] = Tone(100);
+            RMesh.colors[i * 4 + 3] = 255;
+        }
+        UpdateMeshBuffer(RMesh, 0, RMesh.vertices, (int)(sizeof(float) * 3 * RMesh.vertexCount), 0);
+        UpdateMeshBuffer(RMesh, 2, RMesh.normals, (int)(sizeof(float) * 3 * RMesh.vertexCount), 0);
+        UpdateMeshBuffer(RMesh, 3, RMesh.colors, (int)(sizeof(unsigned char) * 4 * RMesh.vertexCount), 0);
+    }
 }
 
 int main()
@@ -272,6 +352,38 @@ int main()
     NoiseNode* NoiseNodeRaw = NoiseNodePtr.get();
     Pipeline.Nodes.push_back(std::move(NoiseNodePtr));
 
+    // Ground Detail - a SECOND, independent Noise node, specifically for the scale a standing/walking
+    // viewer actually sees underfoot, not the hill/mountain-scale relief NoiseNodeRaw above already
+    // covers. Real gap this closes: the chunked terrain streaming system (SolarOrbzChunkLODPolicy.h's
+    // TargetQuadEdgeMeters) can mesh a planet down to a 1-4m quad, and the UE plugin's own Noise Layer
+    // can now author a real-world WavelengthMeters directly (same fix, ported here) - but neither one
+    // puts anything THERE unless a layer actually exists at that wavelength. Without this second node,
+    // a fresh planet has zero ground-level variation: the mesh would get finer, but finer sampling of
+    // the SAME hill-scale noise field just means smoother-looking hills, not new small-scale texture -
+    // confirmed by eye, the exact complaint this node exists to fix. On by default (not an opt-in
+    // slider at 0) specifically because the ask was for this to be procedurally there, not something a
+    // designer has to remember to add. WavelengthMeters uses this tool's own new FPipelineContext::
+    // RadiusMeters conversion (see FNoiseNodeConfig::WavelengthMeters' own comment) - 3m default
+    // wavelength, Octaves=4 reaches down to roughly 3m/2^3 = 0.375m at the finest octave, a plausible
+    // "uneven ground, loose rock" scale without the single-rock blockiness a too-low Octave count or
+    // too-coarse a base wavelength would give. Kept deliberately subtle (AmplitudeMeters 0.4 - ankle-
+    // height variation) rather than dramatic: this rides OVER whatever hills/mountains/coastline
+    // terrain the rest of the stack already shaped, so it needs to read as ground TEXTURE, not fight
+    // the large-scale landform it's sitting on. Perlin, not Ridged like the hills layer above - Ridged
+    // here would read as a field of small sharp blades, not the duller all-over unevenness real ground
+    // actually has at this scale.
+    auto DetailNoiseNodePtr = std::make_unique<NoiseNode>();
+    DetailNoiseNodePtr->Config.Type = ENoiseType::Perlin;
+    DetailNoiseNodePtr->Config.Octaves = 4;
+    DetailNoiseNodePtr->Config.Persistence = 0.5f;
+    DetailNoiseNodePtr->Config.Lacunarity = 2.0f;
+    DetailNoiseNodePtr->Config.AmplitudeMeters = 0.4f;
+    DetailNoiseNodePtr->Config.bWavelengthInMeters = true;
+    DetailNoiseNodePtr->Config.WavelengthMeters = 3.0f;
+    DetailNoiseNodePtr->Config.SeedOffset = 7919; // decorrelate from NoiseNodeRaw's own seed offset (0) - an arbitrary prime, same role as every other SeedOffset in this file
+    NoiseNode* DetailNoiseNodeRaw = DetailNoiseNodePtr.get();
+    Pipeline.Nodes.push_back(std::move(DetailNoiseNodePtr));
+
     auto HeightAdjustNodePtr = std::make_unique<HeightAdjustNode>();
     HeightAdjustNode* HeightAdjustNodeRaw = HeightAdjustNodePtr.get();
     Pipeline.Nodes.push_back(std::move(HeightAdjustNodePtr));
@@ -286,11 +398,19 @@ int main()
     FClimateConfig ClimateConfig;
     FBiomeConfig BiomeConfig;
 
+    // Declared before the first Bake() (moved up from right after it) specifically so
+    // Pipeline.Context.RadiusMeters can be set from Viz.PreviewRadiusMeters below BEFORE that first
+    // bake runs - otherwise the very first bake would use FPipelineContext::RadiusMeters' own default
+    // (Earth's 6378137m) regardless of Viz's own default (400,000m), and any WavelengthMeters-authored
+    // noise node (the Ground Detail node above) would look wrong until the next Regenerate/Radius
+    // change happened to resync them.
+    FVisualizationSettings Viz;
+    Pipeline.Context.RadiusMeters = (double)Viz.PreviewRadiusMeters;
+
     FHeightField BakedTerrain = Pipeline.Bake();
     FClimateField Climate = SimulateClimate(BakedTerrain, ClimateConfig);
     FBiomeField Biomes = ClassifyBiomes(BakedTerrain, Climate, BiomeConfig);
 
-    FVisualizationSettings Viz;
     Model PreviewModel = CreatePreviewModel(Viz.MeshGridWidth, Viz.MeshGridHeight);
     float ReferenceLineRadius = Viz.PreviewRadiusMeters;
     UpdatePreviewModel(PreviewModel, BakedTerrain, Biomes, Viz, ReferenceLineRadius);
@@ -315,6 +435,60 @@ int main()
         Climate = SimulateClimate(BakedTerrain, ClimateConfig);
         Biomes = ClassifyBiomes(BakedTerrain, Climate, BiomeConfig);
         UpdatePreviewModel(PreviewModel, BakedTerrain, Biomes, Viz, ReferenceLineRadius);
+    };
+
+    // Ground View - see GroundPatchMesh.h's own top comment for why this exists (the orbit preview's
+    // whole-planet bake grid is many kilometers between samples, nowhere near fine enough to show a
+    // meter-scale Ground Detail layer's actual shape). GroundViewLatitude/LongitudeDegrees pick WHERE
+    // on the planet to stand, reusing the same Lat/Long convention Shape Stamps already use.
+    float GroundViewLatitudeDegrees = 0.0f;
+    float GroundViewLongitudeDegrees = 0.0f;
+    constexpr float GroundPatchSizeMeters = 40.0f; // a modest back-yard-sized patch - see this file's own README note on why not bigger
+    constexpr int32_t GroundPatchResolution = 128;
+    constexpr float GroundEyeHeightMeters = 1.8f;
+    bool bGroundViewActive = false;
+    // Starts true so the very first frame Ground View is ever entered already has a real patch built
+    // (CreateGroundPatchModel below only allocates the topology/buffers, every vertex starts at the
+    // origin) rather than a flat degenerate slab until something else happens to mark it dirty.
+    bool bGroundPatchDirty = true;
+    // Separate from the orbit camera's own Yaw/Pitch/Distance - a first-person look-around (mouse
+    // drag rotates the view direction in place) rather than an orbit around a fixed target.
+    float GroundViewYaw = 0.0f, GroundViewPitch = 0.0f;
+    Model GroundPatchModel = CreateGroundPatchModel(GroundPatchResolution);
+
+    auto RebuildGroundPatch = [&]()
+    {
+        const Vec3 CenterDir = Vec3(
+            std::cos(MathUtil::DegreesToRadians(GroundViewLatitudeDegrees)) * std::cos(MathUtil::DegreesToRadians(GroundViewLongitudeDegrees)),
+            std::cos(MathUtil::DegreesToRadians(GroundViewLatitudeDegrees)) * std::sin(MathUtil::DegreesToRadians(GroundViewLongitudeDegrees)),
+            std::sin(MathUtil::DegreesToRadians(GroundViewLatitudeDegrees))
+        ).GetSafeNormal();
+        Vec3 Tangent, Bitangent;
+        ComputeTangentBasis(CenterDir, Tangent, Bitangent);
+
+        // The coarse-grid's own (aliased/meaningless-shape, but still nonzero) sample of
+        // DetailNoiseNodeRaw's contribution AT EXACTLY the center point - subtracted back out below so
+        // the patch shows its real, continuously-evaluated detail noise as a pure DELTA from the
+        // center, not an absolute elevation. The planet's actual baked elevation at this spot
+        // (Continent shape, Shape Stamps, the hill-scale Noise layer) is deliberately NOT added back
+        // in - this patch exists to show ground-level TEXTURE, and centering it at Y=0 regardless of
+        // whether this spot is a mountainside or a beach keeps the camera/eye-height math below simple
+        // (stand at GroundEyeHeightMeters above local Y=0, full stop) instead of needing to know and
+        // offset by the planet's actual elevation here too.
+        const float DetailAtCenter = DetailNoiseNodeRaw->EvaluateAt(CenterDir, Pipeline.Context);
+
+        const FGroundPatchMesh Patch = BuildGroundPatchMesh(
+            [&](float LocalX, float LocalZ) -> float
+            {
+                // Tangent-plane direction for this sample - see ComputeTangentBasis' own comment for
+                // why this flat approximation is exact enough at this patch size.
+                const Vec3 Dir = (CenterDir + (Tangent * (double)LocalX + Bitangent * (double)LocalZ) * (1.0 / Pipeline.Context.RadiusMeters)).GetSafeNormal();
+                const float DetailHere = DetailNoiseNodeRaw->EvaluateAt(Dir, Pipeline.Context);
+                return DetailHere - DetailAtCenter;
+            },
+            GroundPatchSizeMeters, GroundPatchResolution);
+
+        UpdateGroundPatchModel(GroundPatchModel, Patch);
     };
 
     // Manual orbit camera - left-drag to orbit, wheel to zoom. Deliberately not raylib's built-in
@@ -357,10 +531,24 @@ int main()
             if (IsMouseButtonDown(MOUSE_BUTTON_LEFT))
             {
                 const Vector2 Delta = GetMouseDelta();
-                Yaw -= Delta.x * 0.005f;
-                Pitch = MathUtil::Clamp(Pitch - Delta.y * 0.005f, -1.5f, 1.5f);
+                if (bGroundViewActive)
+                {
+                    // First-person look-around (rotates the VIEW DIRECTION in place) rather than the
+                    // orbit camera's own "rotate the camera around a fixed target" - see Camera.target's
+                    // computation below for where GroundViewYaw/Pitch actually get used.
+                    GroundViewYaw -= Delta.x * 0.005f;
+                    GroundViewPitch = MathUtil::Clamp(GroundViewPitch - Delta.y * 0.005f, -1.5f, 1.5f);
+                }
+                else
+                {
+                    Yaw -= Delta.x * 0.005f;
+                    Pitch = MathUtil::Clamp(Pitch - Delta.y * 0.005f, -1.5f, 1.5f);
+                }
             }
-            Distance = std::max(Distance - GetMouseWheelMove() * Viz.PreviewRadiusMeters * 0.1f, Viz.PreviewRadiusMeters * 1.05f);
+            if (!bGroundViewActive)
+            {
+                Distance = std::max(Distance - GetMouseWheelMove() * Viz.PreviewRadiusMeters * 0.1f, Viz.PreviewRadiusMeters * 1.05f);
+            }
         }
         else
         {
@@ -373,11 +561,35 @@ int main()
         const float MaxPanelScroll = std::max(0.0f, MeasuredPanelContentHeight - (float)ScreenHeight + 16.0f);
         PanelScrollY = MathUtil::Clamp(PanelScrollY, 0.0f, MaxPanelScroll);
 
-        Camera.position = {
-            Distance * std::cos(Pitch) * std::sin(Yaw),
-            Distance * std::sin(Pitch),
-            Distance * std::cos(Pitch) * std::cos(Yaw)
-        };
+        if (bGroundViewActive && bGroundPatchDirty)
+        {
+            RebuildGroundPatch();
+            bGroundPatchDirty = false;
+        }
+
+        if (bGroundViewActive)
+        {
+            // Standing at the patch center (local origin, Y=0 - see RebuildGroundPatch's own comment
+            // on why the patch is centered there regardless of this spot's actual planetary elevation)
+            // at human eye height, looking in whatever direction GroundViewYaw/Pitch currently point.
+            const Vector3 EyePos{ 0.0f, GroundEyeHeightMeters, 0.0f };
+            const Vector3 LookDir{
+                std::cos(GroundViewPitch) * std::sin(GroundViewYaw),
+                std::sin(GroundViewPitch),
+                std::cos(GroundViewPitch) * std::cos(GroundViewYaw)
+            };
+            Camera.position = EyePos;
+            Camera.target = Vector3{ EyePos.x + LookDir.x, EyePos.y + LookDir.y, EyePos.z + LookDir.z };
+        }
+        else
+        {
+            Camera.target = { 0.0f, 0.0f, 0.0f };
+            Camera.position = {
+                Distance * std::cos(Pitch) * std::sin(Yaw),
+                Distance * std::sin(Pitch),
+                Distance * std::cos(Pitch) * std::cos(Yaw)
+            };
+        }
 
         // Clip planes sized to the CURRENT scene scale (camera Distance/ReferenceLineRadius), not a
         // single fixed value wide enough to cover every radius the "Radius (km)" slider allows
@@ -393,14 +605,51 @@ int main()
         // since Distance changes continuously while orbiting/zooming and ReferenceLineRadius changes
         // with Radius/Height Exaggeration/the baked terrain itself. Both bounds keep generous (2x-10x)
         // margin past what's actually needed so normal zooming/panel use never clips the sphere away.
-        const float NearPlane = std::max(Distance * 0.0005f, 0.05f);
-        const float FarPlane = std::max((Distance + ReferenceLineRadius) * 2.0f, NearPlane * 10.0f);
-        rlSetClipPlanes(NearPlane, FarPlane);
+        // Ground View's whole scene is a flat few-tens-of-meters patch around the origin - the orbit
+        // camera's own Distance-scaled clip planes above would be wildly wrong at this scale (sized
+        // for a planet-radius Distance, they'd either clip the entire patch away as "too close" or
+        // waste all the depth buffer's precision on a range the patch never approaches). Fixed, small,
+        // human-scale planes instead - 0.05m near (closer than that is "inside" the camera's own head)
+        // out to 4x the patch size (comfortably past its far edge regardless of look direction).
+        if (bGroundViewActive)
+        {
+            rlSetClipPlanes(0.05f, GroundPatchSizeMeters * 4.0f);
+        }
+        else
+        {
+            // Clip planes sized to the CURRENT scene scale (camera Distance/ReferenceLineRadius), not a
+            // single fixed value wide enough to cover every radius the "Radius (km)" slider allows
+            // regardless of its actual current setting (the old 0.1..2e9 constant, sized for a 100,000 km
+            // planet, was ~7 orders of magnitude wider than this tool's own 400 km default ever needs).
+            // Standard (non-reversed) depth buffers pack almost all their usable precision close to the
+            // near plane and starve it near the far plane - a near/far ratio that huge left nowhere near
+            // enough precision at the planet's actual surface to tell the Ocean Overlay's sea-level shell
+            // apart from land only a few hundred meters above/below it, which read as per-pixel flickering
+            // speckle (confirmed via screenshot the moment Ocean Overlay was added - every single previous
+            // feature in this file only ever needed ONE surface visible at a given pixel, so this exact
+            // failure mode had nothing to expose it before now). Recomputed every frame (not just once)
+            // since Distance changes continuously while orbiting/zooming and ReferenceLineRadius changes
+            // with Radius/Height Exaggeration/the baked terrain itself. Both bounds keep generous (2x-10x)
+            // margin past what's actually needed so normal zooming/panel use never clips the sphere away.
+            const float NearPlane = std::max(Distance * 0.0005f, 0.05f);
+            const float FarPlane = std::max((Distance + ReferenceLineRadius) * 2.0f, NearPlane * 10.0f);
+            rlSetClipPlanes(NearPlane, FarPlane);
+        }
 
         BeginDrawing();
         ClearBackground(Color{ 18, 18, 24, 255 });
 
         BeginMode3D(Camera);
+        if (bGroundViewActive)
+        {
+            // WHITE tint - the per-vertex colors UpdateGroundPatchModel writes (base color already
+            // Lambertian-shaded) carry the actual look; a non-white tint here would multiply on top
+            // of that a second time.
+            DrawModel(GroundPatchModel, { 0, 0, 0 }, 1.0f, WHITE);
+            DrawGrid(40, GroundPatchSizeMeters / 40.0f); // a visible scale reference underfoot - "how big is a meter here"
+        }
+        else
+        {
         DrawModel(PreviewModel, { 0, 0, 0 }, 1.0f, WHITE);
 
         // Ocean overlay - a translucent shell at exactly sea level (Viz.PreviewRadiusMeters, the same
@@ -464,6 +713,7 @@ int main()
             DrawCylinderEx(PrevPoint, NextPoint, TubeRadius, TubeRadius, 6, Color{ 255, 230, 60, 255 });
             PrevPoint = NextPoint;
         }
+        } // !bGroundViewActive
 
         EndMode3D();
 
@@ -524,11 +774,13 @@ int main()
 
         SectionLabel("Planet");
         {
-            // Radius is visualization-only in the sense that it's not a node Config field (no
-            // generation math reads it), but it IS the actual planet radius the preview sphere is
-            // built at - BuildSphereMesh displaces real vertices by HeightMeters against this exact
-            // RadiusMeters. Edited in km for a less awkward slider range than raw meters would give
-            // (Earth is ~6371 km; range covers small moons through gas-giant-scale bodies).
+            // Radius USED to be visualization-only (no generation math read it) - no longer true since
+            // Pipeline.Context.RadiusMeters feeds any WavelengthMeters-authored noise node's actual
+            // sampling Frequency (see FPipelineContext::RadiusMeters' own comment and the Ground Detail
+            // node this file adds by default). It's still ALSO the actual planet radius the preview
+            // sphere is built at - BuildSphereMesh displaces real vertices by HeightMeters against this
+            // exact RadiusMeters. Edited in km for a less awkward slider range than raw meters would
+            // give (Earth is ~6371 km; range covers small moons through gas-giant-scale bodies).
             float RadiusKm = Viz.PreviewRadiusMeters / 1000.0f;
             bool bRadiusDirty = false;
             SliderFloat("Radius (km)", RadiusKm, 1.0f, 100000.0f, &bRadiusDirty);
@@ -536,6 +788,7 @@ int main()
             {
                 const float OldRadius = Viz.PreviewRadiusMeters;
                 Viz.PreviewRadiusMeters = RadiusKm * 1000.0f;
+                Pipeline.Context.RadiusMeters = (double)Viz.PreviewRadiusMeters;
                 // Keep the camera's relative zoom level instead of leaving Distance fixed - a 10x
                 // radius change with Distance untouched would otherwise either strand the camera deep
                 // inside the new sphere or leave the old one looking like a speck.
@@ -544,10 +797,11 @@ int main()
                 // refreshing the mesh buffer, the sphere stays sized at whatever radius it was last
                 // baked at (confirmed via Xvfb: the preview shrank to a barely-visible speck after a
                 // large Radius change, because only the CAMERA had moved to match the new scale while
-                // the actual mesh verts were untouched). bNeedsClimateRefresh is this file's existing
-                // "cheap visual-only refresh" flag (see Height Exaggeration below) - reused here since
-                // Radius, like exaggeration, needs only UpdatePreviewModel, not a full Pipeline rebake.
-                bNeedsClimateRefresh = true;
+                // the actual mesh verts were untouched). Now ALSO needs a full Pipeline rebake (not
+                // just UpdatePreviewModel) - Pipeline.Context.RadiusMeters just changed above, and any
+                // WavelengthMeters-authored noise node's actual sampling Frequency depends on it, so
+                // the height field itself is stale until RebakeBase() re-runs the whole pipeline.
+                bNeedsRebuild = true;
             }
 
             // Grid Resolution drives BOTH the pipeline's bake resolution (Pipeline.GridWidth/Height)
@@ -698,6 +952,29 @@ int main()
         SliderFloat("Amplitude (m)", NoiseNodeRaw->Config.AmplitudeMeters, 0.0f, 1000.0f, &bNeedsRebuild);
         SliderFloat("Frequency", NoiseNodeRaw->Config.Frequency, 0.5f, 20.0f, &bNeedsRebuild);
 
+        // Ground Detail - DetailNoiseNodeRaw, a separate Noise node from NoiseNodeRaw above (see that
+        // node's own construction comment for why: hill/mountain-scale relief and walking-scale ground
+        // texture are different concerns that would fight each other sharing one noise field). Always
+        // authored in real-world WavelengthMeters, never exposed as a raw Frequency slider the way
+        // Secondary Noise above is - a 0.5-20 "cycles around the sphere" range can't reach a few-meter
+        // wavelength on a planet-sized body anyway (see FNoiseNodeConfig::WavelengthMeters' own
+        // comment), so there is no sane bWavelengthInMeters=false mode to expose here.
+        SectionLabel("Ground Detail");
+        {
+            int32_t DetailNoiseTypeIndex = (int32_t)DetailNoiseNodeRaw->Config.Type;
+            const int32_t OldDetailNoiseTypeIndex = DetailNoiseTypeIndex;
+            GuiToggleGroup(Rectangle{ 10, (float)Y, (PanelWidth - 20.0f) / 5.0f, 20 }, "Perlin;Ridged;Billow;Value;Voronoi", &DetailNoiseTypeIndex);
+            if (DetailNoiseTypeIndex != OldDetailNoiseTypeIndex)
+            {
+                DetailNoiseNodeRaw->Config.Type = (ENoiseType)DetailNoiseTypeIndex;
+                bNeedsRebuild = true;
+            }
+            Y += 26;
+        }
+        SliderFloat("Detail Amplitude (m)", DetailNoiseNodeRaw->Config.AmplitudeMeters, 0.0f, 5.0f, &bNeedsRebuild);
+        SliderFloat("Detail Wavelength (m)", DetailNoiseNodeRaw->Config.WavelengthMeters, 0.1f, 50.0f, &bNeedsRebuild);
+        SliderInt("Detail Octaves", DetailNoiseNodeRaw->Config.Octaves, 1, 6, &bNeedsRebuild);
+
         SectionLabel("Erosion (explicit - click to apply)");
         SliderInt("Droplets", HydraulicErosion.Config.NumDroplets, 1000, 100000, nullptr);
         SliderFloat("Hydraulic Rate", HydraulicErosion.Config.ErosionRate, 0.05f, 1.0f, nullptr);
@@ -745,11 +1022,36 @@ int main()
         GuiCheckBox(Rectangle{ 10, (float)Y, 20, 20 }, "Ocean Overlay (sea level)", &Viz.bShowOceanOverlay);
         Y += 26;
 
+        // Ground View - see GroundPatchMesh.h's own top comment and RebuildGroundPatch's construction
+        // comment for why this exists as a wholly separate camera/mesh/clip-plane path rather than
+        // just zooming the orbit camera all the way in: the whole-planet bake grid behind PreviewModel
+        // is many kilometers between samples, so there is nothing to zoom INTO - the mesh itself has
+        // no vertices closer together than that, regardless of camera distance.
+        SectionLabel("Ground View");
+        SliderFloat("Stand At Lat (deg)", GroundViewLatitudeDegrees, -90.0f, 90.0f, &bGroundPatchDirty);
+        SliderFloat("Stand At Long (deg)", GroundViewLongitudeDegrees, -180.0f, 180.0f, &bGroundPatchDirty);
+        if (GuiButton(Rectangle{ 10, (float)Y, PanelWidth - 20.0f, 26 }, bGroundViewActive ? "Back To Orbit View" : "Enter Ground View"))
+        {
+            bGroundViewActive = !bGroundViewActive;
+            if (bGroundViewActive)
+            {
+                // Always face back toward the planet's center on entry - an arbitrary but
+                // deterministic starting look direction, rather than whatever stale Yaw/Pitch was
+                // left over from the last time Ground View was active (or 0/0 looking at the
+                // horizon, equally arbitrary but less immediately orienting).
+                GroundViewYaw = 0.0f;
+                GroundViewPitch = -0.3f;
+                bGroundPatchDirty = true;
+            }
+        }
+        Y += 30;
+
         if (GuiButton(Rectangle{ 10, (float)Y, PanelWidth - 20.0f, 26 }, "Regenerate (discards erosion)") || bNeedsRebuild)
         {
             RebakeBase();
             bNeedsRebuild = false;
             bNeedsClimateRefresh = false;
+            bGroundPatchDirty = true; // the coarse baseline Ground View reads (BakedTerrain) just changed
         }
         Y += 30;
 
@@ -757,6 +1059,7 @@ int main()
         {
             RecomputeClimateAndRefresh();
             bNeedsClimateRefresh = false;
+            bGroundPatchDirty = true; // covers Radius/Height Exaggeration/erosion, which also land here
         }
 
         SectionLabel("Export");

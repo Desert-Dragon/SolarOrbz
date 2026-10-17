@@ -1696,6 +1696,57 @@ commitment or a schedule - just a place these don't get lost between sessions.
     `SolarOrbzTerrainLayers.cpp`/`.h` side: not compiled (no UE5.8 compiler available in this
     environment) - hand-matched line-for-line against the standalone tool's own version, which WAS
     built and visually verified both via the CLI heightmap comparison and live in the GUI.
+  - **"There isn't enough variation in terrain for on-the-ground detail when someone is walking
+    around" - and the request that it be procedurally generated, not hand-authored.** **Done,** in
+    the standalone tool. Root cause, found by actually trying to look: `NoiseNode`'s `Frequency` is
+    "cycles per trip around the sphere" (same dimensionless-unit problem `WavelengthMeters` already
+    fixed for the UE plugin's own Noise Layer, and for this tool's own hills-scale Noise node, earlier
+    this session) - but the deeper issue is architectural, not just a missing unit conversion: this
+    tool's ENTIRE preview (`FHeightField`, the bake grid behind both `solarorbz_cli`'s PNGs and
+    `solarorbz_gui`'s orbit-camera mesh) is a fixed whole-planet equirectangular grid, at most a few
+    hundred columns around an entire planet's circumference - many kilometers between samples. Baking
+    even a correctly-authored 3m-wavelength noise layer onto that grid doesn't make it visible, it
+    aliases it into meaningless per-cell jitter (confirmed: a before/after CLI heightmap PNG at that
+    wavelength showed no coherent shape at all, just noise-floor-level speckle) - there was nothing to
+    zoom the orbit camera INTO, no matter how fine the underlying noise function actually was.
+    Fixed with two pieces:
+    1. **`FNoiseNodeConfig::WavelengthMeters`/`bWavelengthInMeters`** (`NoiseNode.h`) - the exact same
+       fix as the UE plugin's own `WavelengthMeters`, needing a new `FPipelineContext::RadiusMeters`
+       (GUI syncs it from `Viz.PreviewRadiusMeters`, CLI from `--radius-meters`) since this tool's
+       pipeline previously had no concept of the planet's actual physical scale at all (every height
+       value is already real absolute meters - only noise FREQUENCY needed a radius to convert).
+       `NoiseNode::EvaluateAt` pulled out of `Apply()` as a reusable continuous (not grid-rasterized)
+       per-direction evaluator - `Apply()` now just calls it per grid cell, but it's also what the
+       next piece needs directly.
+    2. **A second, always-on `NoiseNode` ("Ground Detail")** added to the GUI's pipeline by default
+       (3m wavelength, 4 octaves, 0.4m amplitude, Perlin, its own `SeedOffset` so it doesn't look
+       identical to the hills layer) - added by default, not an opt-in slider at 0, specifically
+       because the ask was for this to be procedurally THERE, not something a designer has to
+       remember to add.
+    3. **"Ground View"** (`GroundPatchMesh.h`, new; `CreateGroundPatchModel`/`UpdateGroundPatchModel`/
+       `RebuildGroundPatch` in `main.cpp`) - the actual fix for "nothing to zoom into": a wholly
+       separate flat local-tangent-plane mesh (40m patch, 128x128), sampled by calling
+       `EvaluateAt` continuously at each of its own vertices (real per-point evaluation, not a bilinear
+       read of the coarse bake grid) - this is what finally makes Ground Detail's real shape visible
+       at all. A new "Ground View" GUI section (Stand At Lat/Long sliders, an Enter/Back-to-Orbit
+       toggle button) swaps the orbit camera for a first-person-style stand-and-look-around camera
+       (own Yaw/Pitch, fixed at `GroundEyeHeightMeters` = 1.8m) and its own human-scale clip planes -
+       the orbit camera's planet-scale ones would clip a 40m patch away entirely. The patch is
+       centered at local Y=0 regardless of this spot's actual planetary elevation (only the Ground
+       Detail layer's DELTA from its own value at the center point is shown - the coarse bake's
+       Continent/Stamp/hills-Noise elevation is deliberately not re-added, since this view exists to
+       show ground TEXTURE, not reproduce the orbit view's own job) - confirmed via a decisive before/
+       after screenshot pair: without per-vertex Lambertian shading (the same cheap fixed-light-
+       direction trick `UpdatePreviewModel` already uses, ported to `UpdateGroundPatchModel`), looking
+       straight down at the (genuinely present, geometrically real) 0.4m bumps showed nothing at all -
+       a flat-tinted unlit mesh has no visual cue for relief this subtle outside its own silhouette
+       against the sky. With shading, the same bumps read clearly from directly overhead.
+       Same standing caveat as the rest of this session's work: hand-verified via the CLI heightmap
+       comparison for the wavelength/radius conversion math, and hands-on in the GUI (entered/exited
+       Ground View repeatedly, confirmed no crash, confirmed the shaded patch actually shows relief)
+       for the rendering/camera piece - this tool is genuinely built and run in this environment
+       (unlike the UE plugin side), so this one is verified by actually using it, not just by
+       hand-matching source.
 
 ## Documentation
 
