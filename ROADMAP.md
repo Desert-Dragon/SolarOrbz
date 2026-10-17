@@ -1014,6 +1014,37 @@ commitment or a schedule - just a place these don't get lost between sessions.
     NOT wire up `BiomeStack` or a full whole-planet climate grid for masking - those remain a
     separate, already-documented gap (no per-vertex color field on chunk mesh data yet, no ASN_MK1
     gravity/atmosphere read yet).
+  - **Added an explicit ground-resolution target (`TargetQuadEdgeMeters`), capping the previously
+    uncoordinated interaction between the screen-size-ratio LOD depth and `ChunkResolution`.**
+    **Done.** Requested directly: terrain down to a 4-meter scale (2x2m = 1 quad) with the option to
+    go to 1 meter. Real architectural gap, not a tuning issue: `FSolarOrbzChunkLODPolicy`'s
+    screen-size-ratio metric has no awareness of a chunk's own internal `ChunkResolution`
+    subdivisions - left alone it settles around Depth 23 for a standing-height viewer on an
+    Earth-like planet (already sub-2-meter CHUNK edges, per this policy's own header comment), which
+    with the default `ChunkResolution` of 16 would produce ~5cm quads, about 80x finer than a 2m
+    target for no visual benefit and a large, unnecessary chunk/triangle count. Fixed by adding
+    `FSolarOrbzChunkLODSettings::TargetQuadEdgeMeters` (meters per quad edge, default 2.0) and
+    `FSolarOrbzChunkLODPolicy::ComputeMaxUsefulDepth(Radius, ChunkResolution,
+    TargetQuadEdgeMetersCm)`, which derives a depth CEILING from the base icosahedron's own edge
+    angle (read from `FSolarOrbzIcoSphereGenerator::GetBaseIcosahedron()`'s vertex data, this
+    plugin's usual verified-constant convention, not hand-typed trig) - enforced as an extra cap
+    threaded through `ShouldSplit`/`GatherDesiredLeaves`/`VisitNode`'s new `EffectiveMaxDepth`
+    parameter (defaults to `MAX_int32`, i.e. unchanged behavior, for any caller that doesn't pass
+    it), computed once per `UpdateResidentSet` call in `FSolarOrbzChunkResidentSetManager` from the
+    manager's own `Radius`/`ChunkResolution` plus `Settings.TargetQuadEdgeMeters * 100` (the meters-
+    to-centimeters conversion this chunk system's `Radius` convention already uses). This can only
+    make the result SHALLOWER than the screen-ratio metric alone would, never deeper - whichever of
+    the two says stop first, stops first. Verified by hand (independent of the C++): Earth-like
+    Radius with the default `ChunkResolution` (16) computes Depth 18 for the 2m target (not 23) and
+    Depth 19 for the 1m target - one level deeper for 2x the density, not an exponential jump in
+    chunk count. Deliberately does NOT thread `EffectiveMaxDepth` into
+    `FSolarOrbzChunkRestrictedQuadtree::ApplyNeighborDepthRestriction` (the 1-level neighbor-depth
+    fixpoint pass) in this same change - a bounded, at-most-one-level-deeper overshoot at LOD-
+    boundary chunks to satisfy that pre-existing invariant is an accepted trade-off, not a new
+    problem this introduces. Same standing caveat as the rest of this plugin: not compiled (no
+    UE5.8 compiler available in this environment) - hand-matched against this file's existing
+    conventions and verified by independent hand-computation of the depth formula, not by running
+    it.
 
 - **Real-time orbit and rotation.** Planets need to actually orbit their star and rotate on their
   axis in real time, with players able to seamlessly leave one planet and travel to another. This

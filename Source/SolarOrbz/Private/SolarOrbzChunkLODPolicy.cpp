@@ -3,6 +3,7 @@
 
 #include "SolarOrbzChunkLODPolicy.h"
 #include "SolarOrbzIcoSphereChunk.h" // FSolarOrbzChunkAddress::MaxDepth only - see ShouldSplit's CurrentDepth parameter.
+#include "SolarOrbzIcoSphere.h" // FSolarOrbzIcoSphereGenerator::GetBaseIcosahedron - see ComputeMaxUsefulDepth.
 
 namespace
 {
@@ -14,6 +15,24 @@ namespace
 	double EstimateChunkRadius(const FVector& CornerA, const FVector& CornerB, const FVector& CornerC)
 	{
 		return (CornerA.Length() + CornerB.Length() + CornerC.Length()) / 3.0;
+	}
+
+	// The angle (radians) between two ADJACENT base-icosahedron vertices, read off
+	// FSolarOrbzIcoSphereGenerator::GetBaseIcosahedron()'s own vertex data rather than hand-typed as a
+	// trig constant - this plugin's established convention (see e.g. GetEdgeNeighbor/
+	// GetPentagonVertexNeighbors' own verification notes in SolarOrbzIcoSphereChunk.h). Vertices[0] and
+	// Vertices[1] are confirmed adjacent via the base face list's second entry, {0, 5, 1} (both appear
+	// in a shared face with Vertices[0]) - see SolarOrbzIcoSphere.cpp's GetBaseIcosahedron. Every base
+	// edge has the same angular length by construction (a regular icosahedron), so any one adjacent
+	// pair gives the same answer as any other.
+	double ComputeBaseEdgeAngleRadians()
+	{
+		TArray<FVector> BaseVertices;
+		TArray<FIntVector> BaseFaces;
+		FSolarOrbzIcoSphereGenerator::GetBaseIcosahedron(BaseVertices, BaseFaces);
+		const FVector UnitA = BaseVertices[0].GetSafeNormal();
+		const FVector UnitB = BaseVertices[1].GetSafeNormal();
+		return FMath::Acos(FMath::Clamp(FVector::DotProduct(UnitA, UnitB), -1.0, 1.0));
 	}
 }
 
@@ -59,17 +78,34 @@ double FSolarOrbzChunkLODPolicy::ComputeScreenSizeRatio(const FVector& CornerA, 
 	return EdgeLength / SafeDistance;
 }
 
+int32 FSolarOrbzChunkLODPolicy::ComputeMaxUsefulDepth(double Radius, int32 ChunkResolution, double TargetQuadEdgeMetersCm)
+{
+	const int32 SafeChunkResolution = FMath::Max(ChunkResolution, 1);
+	const double SafeTargetQuadEdge = FMath::Max(TargetQuadEdgeMetersCm, (double)KINDA_SMALL_NUMBER);
+	const double BaseEdgeLength = Radius * ComputeBaseEdgeAngleRadians();
+
+	// BaseEdgeLength / (2^D * SafeChunkResolution) <= SafeTargetQuadEdge, solved for the smallest D.
+	const double RawDepth = FMath::Log2(BaseEdgeLength / (SafeChunkResolution * SafeTargetQuadEdge));
+	const int32 Depth = FMath::CeilToInt(RawDepth);
+	return FMath::Clamp(Depth, 0, FSolarOrbzChunkAddress::MaxDepth);
+}
+
 bool FSolarOrbzChunkLODPolicy::ShouldSplit(
 	const FVector& CornerA,
 	const FVector& CornerB,
 	const FVector& CornerC,
 	const FVector& ViewerWorldPosition,
 	const FSolarOrbzChunkLODSettings& Settings,
-	int32 CurrentDepth)
+	int32 CurrentDepth,
+	int32 EffectiveMaxDepth)
 {
-	if (CurrentDepth != INDEX_NONE && CurrentDepth >= FSolarOrbzChunkAddress::MaxDepth)
+	if (CurrentDepth != INDEX_NONE)
 	{
-		return false;
+		const int32 ActualMaxDepth = FMath::Min(EffectiveMaxDepth, FSolarOrbzChunkAddress::MaxDepth);
+		if (CurrentDepth >= ActualMaxDepth)
+		{
+			return false;
+		}
 	}
 
 	const double Ratio = ComputeScreenSizeRatio(CornerA, CornerB, CornerC, ViewerWorldPosition);

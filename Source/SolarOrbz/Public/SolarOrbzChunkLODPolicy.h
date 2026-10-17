@@ -192,6 +192,29 @@ struct SOLARORBZ_API FSolarOrbzChunkLODSettings
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "SolarOrbz|LOD", meta = (ClampMin = "0.01"))
 	double MergeScreenSizeRatio = 0.75;
+
+	/**
+	 * The actual ground resolution this planet aims for at the closest LOD, in meters per quad edge -
+	 * e.g. the default 2.0 means a 2x2 meter (4 square meter) quad, the "4 meter scale" ground
+	 * resolution target. Set to 1.0 for a 1x1 meter quad instead. This exists because the screen-size-
+	 * ratio metric above (SplitScreenSizeRatio) has NO awareness of a chunk's internal triangle density
+	 * (`ChunkResolution` on the owning actor) - left alone, it keeps splitting purely by on-screen
+	 * angular size, which for a standing-height viewer on an Earth-like planet settles around Depth 23
+	 * (see FSolarOrbzChunkLODPolicy's own header, "Threshold default" section) - already SUB-METER per
+	 * CHUNK before `ChunkResolution` even subdivides it further, so a default ChunkResolution of 16
+	 * would produce ~5 cm quads: roughly 80x finer than this field's own 2 m default, for no visual
+	 * benefit and a lot of wasted chunk/triangle count. FSolarOrbzChunkLODPolicy::ComputeMaxUsefulDepth
+	 * turns this field (plus Radius and ChunkResolution, both known to the resident-set manager) into a
+	 * depth CEILING - "don't split further than this, further splitting only produces finer-than-target
+	 * quads" - enforced as an extra cap alongside (not instead of) the screen-ratio metric: whichever of
+	 * the two says stop first, stops the recursion first; this field can only make the result SHALLOWER
+	 * than the screen-ratio metric would alone, never deeper. A plain planet-radius example: Earth-like
+	 * Radius (6,371,000 m) with the default ChunkResolution (16) and this field at 2.0 computes an
+	 * effective ceiling of Depth 18 (not 23) - at 1.0 (the "chance to go down to 1 meter" case), Depth
+	 * 19 - one level deeper for 2x the density, not an explosion in chunk count.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "SolarOrbz|LOD", meta = (ClampMin = "0.01", Units = "m"))
+	double TargetQuadEdgeMeters = 2.0;
 };
 
 /**
@@ -228,6 +251,19 @@ public:
 	 *                                   skip this check entirely and answer purely from geometry -
 	 *                                   enforcing MaxDepth is ultimately the tree-walker's own
 	 *                                   responsibility either way (see this file's header comment).
+	 * @param EffectiveMaxDepth           Optional. A second, lower depth ceiling on top of
+	 *                                   FSolarOrbzChunkAddress::MaxDepth - see ComputeMaxUsefulDepth's
+	 *                                   own comment for how a caller derives this from
+	 *                                   Settings.TargetQuadEdgeMeters, Radius, and ChunkResolution. The
+	 *                                   actual ceiling applied is min(EffectiveMaxDepth,
+	 *                                   FSolarOrbzChunkAddress::MaxDepth) - this parameter can only make
+	 *                                   the result SHALLOWER than MaxDepth alone would, never deeper.
+	 *                                   Defaults to MAX_int32 (no additional ceiling, i.e. only the
+	 *                                   hard MaxDepth applies) so existing callers that don't yet pass
+	 *                                   this keep their current behavior unchanged. Deliberately typed
+	 *                                   as a plain int32 rather than FSolarOrbzChunkAddress::MaxDepth's
+	 *                                   own type, to avoid pulling that struct's full definition into
+	 *                                   this otherwise engine/address-agnostic header.
 	 */
 	static bool ShouldSplit(
 		const FVector& CornerA,
@@ -235,7 +271,8 @@ public:
 		const FVector& CornerC,
 		const FVector& ViewerWorldPosition,
 		const FSolarOrbzChunkLODSettings& Settings,
-		int32 CurrentDepth = INDEX_NONE);
+		int32 CurrentDepth = INDEX_NONE,
+		int32 EffectiveMaxDepth = MAX_int32);
 
 	/**
 	 * True if a chunk whose 4 children are CURRENTLY resident should have them collapsed back,
@@ -266,6 +303,35 @@ public:
 		const FVector& CornerB,
 		const FVector& CornerC,
 		const FVector& ViewerWorldPosition);
+
+	/**
+	 * Converts a ground-resolution TARGET (FSolarOrbzChunkLODSettings::TargetQuadEdgeMeters, already
+	 * x100'd by the caller into the same centimeter convention as Radius - see
+	 * AASolarOrbzChunkedPlanetActor::ConstructResidentSetManager's own RadiusCm conversion) into a
+	 * quadtree depth CEILING: the depth beyond which a chunk's internal ChunkResolution subdivisions
+	 * would already be finer than TargetQuadEdgeMetersCm, making further splitting purely wasted
+	 * chunk/triangle count for no additional visible detail. Derivation: the base icosahedron's own
+	 * edge length at Radius is `Radius * BaseEdgeAngleRadians` (BaseEdgeAngleRadians = the angle
+	 * between two adjacent base vertices, computed from FSolarOrbzIcoSphereGenerator::
+	 * GetBaseIcosahedron()'s own vertex data rather than a hand-typed trig constant - this plugin's
+	 * established convention). Each depth level halves a chunk's edge length (4-way subdivision), so a
+	 * chunk at Depth D has edge length `Radius * BaseEdgeAngleRadians / 2^D`, and its own internal quad
+	 * edge (after ChunkResolution subdivisions) is that divided by ChunkResolution again. Solving
+	 * `Radius * BaseEdgeAngleRadians / (2^D * ChunkResolution) <= TargetQuadEdgeMetersCm` for the
+	 * smallest such D gives `D >= log2(Radius * BaseEdgeAngleRadians / (ChunkResolution *
+	 * TargetQuadEdgeMetersCm))`, rounded up and clamped to [0, FSolarOrbzChunkAddress::MaxDepth].
+	 *
+	 * @param Radius                  Planet radius, in the SAME unit as the caller's other chunk-system
+	 *                                 radii (this codebase's convention is centimeters - see
+	 *                                 AASolarOrbzChunkedPlanetActor::ConstructResidentSetManager).
+	 * @param ChunkResolution          Subdivisions per chunk edge (AASolarOrbzChunkedPlanetActor::
+	 *                                 ChunkResolution) - floored at 1 for safety.
+	 * @param TargetQuadEdgeMetersCm   FSolarOrbzChunkLODSettings::TargetQuadEdgeMeters, already
+	 *                                 converted to the same unit as Radius by the caller (x100 for the
+	 *                                 meters-to-centimeters convention this chunk system uses) - floored
+	 *                                 at KINDA_SMALL_NUMBER for safety.
+	 */
+	static int32 ComputeMaxUsefulDepth(double Radius, int32 ChunkResolution, double TargetQuadEdgeMetersCm);
 
 private:
 	/** The chunk's longest edge - see this file's header comment for why longest rather than shortest/average. */

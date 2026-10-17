@@ -11,7 +11,8 @@ void FSolarOrbzChunkResidencyWalker::GatherDesiredLeaves(
 	double Radius,
 	const FVector& ViewerWorldPosition,
 	const FSolarOrbzChunkLODSettings& Settings,
-	TArray<FSolarOrbzChunkAddress>& OutLeaves)
+	TArray<FSolarOrbzChunkAddress>& OutLeaves,
+	int32 EffectiveMaxDepth)
 {
 	OutLeaves.Reset();
 
@@ -21,7 +22,7 @@ void FSolarOrbzChunkResidencyWalker::GatherDesiredLeaves(
 
 	for (int32 BaseFaceIndex = 0; BaseFaceIndex < BaseFaces.Num(); ++BaseFaceIndex)
 	{
-		VisitNode(FSolarOrbzChunkAddress(BaseFaceIndex, 0, 0), Radius, ViewerWorldPosition, Settings, OutLeaves);
+		VisitNode(FSolarOrbzChunkAddress(BaseFaceIndex, 0, 0), Radius, ViewerWorldPosition, Settings, OutLeaves, EffectiveMaxDepth);
 	}
 }
 
@@ -30,8 +31,14 @@ void FSolarOrbzChunkResidencyWalker::VisitNode(
 	double Radius,
 	const FVector& ViewerWorldPosition,
 	const FSolarOrbzChunkLODSettings& Settings,
-	TArray<FSolarOrbzChunkAddress>& OutLeaves)
+	TArray<FSolarOrbzChunkAddress>& OutLeaves,
+	int32 EffectiveMaxDepth)
 {
+	// min() with the hard FSolarOrbzChunkAddress::MaxDepth ceiling - EffectiveMaxDepth (see
+	// FSolarOrbzChunkLODPolicy::ComputeMaxUsefulDepth) can only make the result SHALLOWER, never
+	// override MaxDepth itself.
+	const int32 ActualMaxDepth = FMath::Min(EffectiveMaxDepth, FSolarOrbzChunkAddress::MaxDepth);
+
 	FVector UnitA, UnitB, UnitC;
 	Node.GetCornerUnitDirections(UnitA, UnitB, UnitC);
 
@@ -45,8 +52,8 @@ void FSolarOrbzChunkResidencyWalker::VisitNode(
 
 	// Explicit, redundant-with-ShouldSplit's-own-check depth guard - the WALKER owns this bound, not
 	// just the policy function. See this file's header comment for why both checks exist.
-	const bool bWantsSplit = (Node.Depth < FSolarOrbzChunkAddress::MaxDepth)
-		&& FSolarOrbzChunkLODPolicy::ShouldSplit(WorldA, WorldB, WorldC, ViewerWorldPosition, Settings, Node.Depth);
+	const bool bWantsSplit = (Node.Depth < ActualMaxDepth)
+		&& FSolarOrbzChunkLODPolicy::ShouldSplit(WorldA, WorldB, WorldC, ViewerWorldPosition, Settings, Node.Depth, EffectiveMaxDepth);
 
 	if (!bWantsSplit)
 	{
@@ -58,6 +65,6 @@ void FSolarOrbzChunkResidencyWalker::VisitNode(
 	Node.GetChildren(Children);
 	for (int32 ChildIndex = 0; ChildIndex < 4; ++ChildIndex)
 	{
-		VisitNode(Children[ChildIndex], Radius, ViewerWorldPosition, Settings, OutLeaves);
+		VisitNode(Children[ChildIndex], Radius, ViewerWorldPosition, Settings, OutLeaves, EffectiveMaxDepth);
 	}
 }

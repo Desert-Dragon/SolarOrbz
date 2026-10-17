@@ -174,12 +174,22 @@ public:
 	 *                               guaranteed to matter to callers beyond "deterministic for the
 	 *                               same inputs"; this is simply whatever order the recursive visit
 	 *                               produces.
+	 * @param EffectiveMaxDepth     Optional second, lower depth ceiling - see
+	 *                               FSolarOrbzChunkLODPolicy::ComputeMaxUsefulDepth. Forwarded
+	 *                               unchanged into ShouldSplit at every node, and also folded into
+	 *                               this walker's own explicit MaxDepth guard (see this header's
+	 *                               "Why the walker owns an explicit MaxDepth guard too" section -
+	 *                               the same redundancy argument applies to this second ceiling).
+	 *                               Defaults to MAX_int32 (no additional ceiling beyond
+	 *                               FSolarOrbzChunkAddress::MaxDepth), matching ShouldSplit's own
+	 *                               default so existing callers are unaffected.
 	 */
 	static void GatherDesiredLeaves(
 		double Radius,
 		const FVector& ViewerWorldPosition,
 		const FSolarOrbzChunkLODSettings& Settings,
-		TArray<FSolarOrbzChunkAddress>& OutLeaves);
+		TArray<FSolarOrbzChunkAddress>& OutLeaves,
+		int32 EffectiveMaxDepth = MAX_int32);
 
 private:
 	/**
@@ -187,12 +197,13 @@ private:
 	 * its 4 children (split) or appends Node itself to OutLeaves (stay a leaf). See this header's
 	 * own top-of-file comment for why the `Node.Depth < FSolarOrbzChunkAddress::MaxDepth` guard here
 	 * is deliberately redundant with ShouldSplit's own internal CurrentDepth check rather than
-	 * relying solely on it.
+	 * relying solely on it - the same reasoning extends to EffectiveMaxDepth.
 	 */
 	static void VisitNode(
 		const FSolarOrbzChunkAddress& Node,
 		double Radius,
 		const FVector& ViewerWorldPosition,
 		const FSolarOrbzChunkLODSettings& Settings,
-		TArray<FSolarOrbzChunkAddress>& OutLeaves);
+		TArray<FSolarOrbzChunkAddress>& OutLeaves,
+		int32 EffectiveMaxDepth);
 };

@@ -63,8 +63,14 @@ void FSolarOrbzChunkResidentSetManager::UpdateResidentSet(const FVector& ViewerW
 	}
 
 	// --- Recompute the desired leaf-set (checklist items 1-4) ---
+	// Settings.TargetQuadEdgeMeters is authored in meters; Radius/ChunkResolution here are already in
+	// this chunk system's centimeter convention (see AASolarOrbzChunkedPlanetActor::
+	// ConstructResidentSetManager's RadiusCm conversion), so x100 it before handing it to
+	// ComputeMaxUsefulDepth - see that function's own header comment for the derivation.
+	const int32 EffectiveMaxDepth = FSolarOrbzChunkLODPolicy::ComputeMaxUsefulDepth(Radius, ChunkResolution, Settings.TargetQuadEdgeMeters * 100.0);
+
 	TArray<FSolarOrbzChunkAddress> DesiredLeaves;
-	FSolarOrbzChunkResidencyWalker::GatherDesiredLeaves(Radius, ViewerWorldPosition, Settings, DesiredLeaves);
+	FSolarOrbzChunkResidencyWalker::GatherDesiredLeaves(Radius, ViewerWorldPosition, Settings, DesiredLeaves, EffectiveMaxDepth);
 	FSolarOrbzChunkRestrictedQuadtree::ApplyNeighborDepthRestriction(DesiredLeaves);
 
 	// --- Diff against what's currently resident (FSolarOrbzChunkResidentSetDiff, pure/verified) ---
