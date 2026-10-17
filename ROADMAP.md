@@ -1612,3 +1612,20 @@ commitment or a schedule - just a place these don't get lost between sessions.
 - The `Docs/SolarOrbz_Reference_Guide.pdf` is stale as of the Profile system and the retrofit of
   Climate Simulation's Atmosphere Density. Update deferred on purpose until more of the above lands,
   so it's one documentation pass instead of several small ones.
+- **`Docs/PlayablePlanetRoadmap.md`** (new, mirrored as an Artifact per `CLAUDE.md`'s doc→Artifact
+  convention) - requested directly: a single dependency-ordered to-do list for "orbit to ground,"
+  spanning this repo's own mature terrain/biome pipeline, the unplayed chunked-streaming work, and
+  the (gravity/atmosphere/flight/on-foot movement/orbit-to-ground transition) gameplay layer that's
+  supposed to live in `all-systems-nominal`/ASN_MK1, plus `MMOBackend_Fork`'s networking. **A real,
+  load-bearing correction surfaced while writing it**: `Docs/ChunkedPlanetTerrain.md`'s "ASN_MK1
+  integration" section and multiple entries elsewhere in this file describe `AASNPlanetActor`/
+  `UASNPlanetGravityComponent`/`IASNAtmosphereSource` as existing types with an established contract.
+  Checked directly against `all-systems-nominal` (commit `184fbf7`) while building the new roadmap:
+  none of it exists - 3 commits deep, `Source/ASN_MK1/` is unmodified module boilerplate, `Content/`
+  holds only baked `SolarOrbz/Terrains` assets, no gravity/atmosphere/player/vehicle code anywhere.
+  Whatever prompted those earlier "ASN_MK1 already has X" descriptions wasn't verified against the
+  actual repo at the time - the new roadmap's own gravity/flight/on-foot stages are written as
+  problem statements from scratch, not integration points against code that turned out not to exist.
+  `MMOBackend_Fork`, by contrast, checked out as a real, non-trivial server skeleton (Login service,
+  DBHandler, Core/Protocol/Services, a TestClient) - not wired to anything terrain/gameplay-related
+  yet, but genuinely further along than ASN_MK1's gameplay layer.

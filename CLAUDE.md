@@ -76,6 +76,7 @@ point with other plugins - which these two always do.
 | `Docs/SolarOrbzTerrainGraphEditor.md` | https://claude.ai/artifact/79qFnMtpN95TsvT9iZxCgj (Terrain Graph Editor Design) |
 | `Docs/SolarOrbzTerrainGraphEditor_UsageGuide.md` | https://claude.ai/artifact/BprPEaMNDusrRVAYzhsu27 (Terrain Graph Editor Usage Guide) |
 | `Docs/SolarOrbzPlanetSpawnerGraph.md` | https://claude.ai/artifact/2R4w4wHFvUZzV2LYsWyxoJ (Planet Spawner Graph Design) |
+| `Docs/PlayablePlanetRoadmap.md` | https://claude.ai/artifact/VRyqTwR8MbR1bu6B23S4oo (Orbit to Ground) |
 
 Add a row here whenever a new subsystem doc gets its own Artifact mirror. A doc can have more than
 one companion Artifact (e.g. a full design-doc mirror plus a separate interactive checklist built
